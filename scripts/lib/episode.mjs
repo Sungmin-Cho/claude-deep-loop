@@ -232,6 +232,12 @@ export function recordEpisode(root, runId, episodeId, {
     const scopeTarget = episodeScopeTarget(loop, ep, {
       checkerTargetRequired: newPolicy && status === 'in_progress',
     });
+    // Change H: a maker's settlement (done) requires a workstream just as in_progress does. Without it the record
+    // creates an unbound-proof-episode dead-end (next-action.mjs:110/:117/:214) that has NO remedy — abandonEpisode
+    // rejects a done episode (episode.mjs:178) and ack cannot change routing (makerReviewed is checker-based).
+    if (newPolicy && ep.role === 'maker' && status === 'done' && !scopeTarget) {
+      throw new Error(`WORKSTREAM_REQUIRED: ${episodeId}`);
+    }
     if (newPolicy && status === 'in_progress' && ep.role === 'maker') {
       if (!scopeTarget) throw new Error(`WORKSTREAM_REQUIRED: ${episodeId}`);
       requireNonterminalWorkstream(loop, scopeTarget);

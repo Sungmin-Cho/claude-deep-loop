@@ -301,3 +301,28 @@ test('authentic legacy policy keeps direct maker terminal behavior unchanged', (
   ]);
   assert.equal(done.status, 0, done.stderr);
 });
+
+test('H: authentic legacy compact-in-place policy allows a workstream-less maker to record done', () => {
+  const { root, runId } = fixture();
+  const artifact = 'legacy-unbound-artifact.txt';
+  writeFileSync(join(root, artifact), 'artifact');
+  const episode = newEpisode(root, runId, { suffix: 'legacy-unbound' });
+  const loop = readState(root, runId).data;
+  loop.autonomy.continuation_policy = 'compact-in-place';
+  loop.autonomy.milestone_predicate = ['workstream_terminal'];
+  const maker = loop.episodes.find(item => item.id === episode);
+  assert.equal(maker.workstream_id, null);
+  maker.expected_artifacts = [artifact];
+  loop.session_chain.sessions[0].scope = {
+    kind: 'legacy', workstream_id: null, bound_at_seq: null,
+    terminal_event: null, closed_at: null,
+  };
+  writeState(root, runId, loop);
+
+  const done = runCli(root, runId, [
+    'episode', 'record', '--id', episode, '--status', 'done',
+    '--artifacts', JSON.stringify([artifact]),
+  ]);
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(readState(root, runId).data.episodes.find(item => item.id === episode).status, 'done');
+});

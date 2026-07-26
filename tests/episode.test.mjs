@@ -28,6 +28,23 @@ function seed() {
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
 function freshRun() { const { root, runId } = seed(); return { root, runId, fence: fence(runId) }; }
 
+test('H: a workstream-less maker cannot be recorded done under workstream-session', () => {
+  const { root, runId, fence } = freshRun();
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: ['art.txt'], fence });
+  assert.throws(() => recordEpisode(root, runId, id, { status: 'done', artifacts: ['art.txt'], fence }), /WORKSTREAM_REQUIRED/);
+});
+
+test('H: a workstream-bound maker still records in_progress → done normally', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence });
+  recordEpisode(root, runId, id, { status: 'done', artifacts: ['art.txt'], fence });
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === id).status, 'done');
+});
+
 test('newEpisode scaffolds request.md, bumps episodes_total, sets current', () => {
   const { root, runId } = seed();
   const { id, requestPath } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', fence: fence(runId) });
@@ -55,9 +72,19 @@ test('recordEpisode non-terminal status + result_* allowed', () => {
 test('recordEpisode done requires expected artifacts to exist', () => {
   const { root, runId } = seed();
   const f = fence(runId);
+  const ws = newWorkstream(root, runId, {
+    title: 'missing', branch: 'missing', worktree: '.claude/worktrees/missing', fence: f,
+  }).id;
   const art = join(root, 'out.txt');
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['out.txt'], fence: f });
-  assert.throws(() => recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt'], fence: f }), /EPISODE_TERMINAL_NO_PROOF/);
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['out.txt'], fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt'], fence: f }),
+    /EPISODE_TERMINAL_NO_PROOF/,
+  );
   writeFileSync(art, 'x');
   recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt'], fence: f });
   assert.equal(readState(root, runId).data.episodes[0].status, 'done');
@@ -94,13 +121,19 @@ test('newEpisode throws EPISODE_ARTIFACT_UNSAFE for absolute or path-traversal e
 test('recordEpisode done throws EPISODE_ARTIFACTS_INCOMPLETE when artifacts do not cover expected', () => {
   const { root, runId } = seed();
   const f = fence(runId);
+  const ws = newWorkstream(root, runId, {
+    title: 'incomplete', branch: 'incomplete', worktree: '.claude/worktrees/incomplete', fence: f,
+  }).id;
   const art = join(root, 'out.txt');
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['out.txt'], fence: f });
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['out.txt'], fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
   writeFileSync(art, 'x');
-  // artifacts: [] does not cover expected 'out.txt'
   assert.throws(
     () => recordEpisode(root, runId, id, { status: 'done', artifacts: [], fence: f }),
-    /EPISODE_ARTIFACTS_INCOMPLETE/
+    /EPISODE_ARTIFACTS_INCOMPLETE/,
   );
 });
 
@@ -131,13 +164,21 @@ test('recordEpisode twice on same episode with terminal status throws EPISODE_AL
 test('recordEpisode done throws EPISODE_ARTIFACT_ESCAPE for path-traversal in submitted artifacts', () => {
   const { root, runId } = seed();
   const f = fence(runId);
+  const ws = newWorkstream(root, runId, {
+    title: 'escape', branch: 'escape', worktree: '.claude/worktrees/escape', fence: f,
+  }).id;
   const artPath = join(root, 'out.txt');
   writeFileSync(artPath, 'x');
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['out.txt'], fence: f });
-  // Submitted artifact includes a path-traversal entry alongside the valid one
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['out.txt'], fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
   assert.throws(
-    () => recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt', '../outside'], fence: f }),
-    /EPISODE_ARTIFACT/
+    () => recordEpisode(root, runId, id, {
+      status: 'done', artifacts: ['out.txt', '../outside'], fence: f,
+    }),
+    /EPISODE_ARTIFACT/,
   );
 });
 
@@ -237,10 +278,20 @@ test('abandonEpisode: non-terminal maker -> abandoned, requires --confirm + reas
 
 test('abandonEpisode: already-terminal episode rejected', () => {
   const { root, runId, fence: f } = freshRun();
+  const ws = newWorkstream(root, runId, {
+    title: 'terminal', branch: 'terminal', worktree: '.claude/worktrees/terminal', fence: f,
+  }).id;
   writeFileSync(join(root, 'art.txt'), 'x');
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: ['art.txt'], fence: f });
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['art.txt'], fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
-  assert.throws(() => abandonEpisode(root, runId, id, { reason: 'late', confirm: true, fence: f }), /EPISODE_ALREADY_TERMINAL/);
+  assert.throws(
+    () => abandonEpisode(root, runId, id, { reason: 'late', confirm: true, fence: f }),
+    /EPISODE_ALREADY_TERMINAL/,
+  );
 });
 
 test('abandonEpisode: fence enforced', () => {
@@ -264,10 +315,20 @@ test('recordEpisode: cannot resurrect an abandoned episode to a non-terminal sta
 
 test('recordEpisode: cannot record over a done episode (current terminal immutable)', () => {
   const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, {
+    title: 'immutable', branch: 'immutable', worktree: '.claude/worktrees/immutable', fence,
+  }).id;
   writeFileSync(join(root, 'art.txt'), 'x');
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: ['art.txt'], fence });
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['art.txt'], fence,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence });
   recordEpisode(root, runId, id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
-  assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'in_progress', fence }),
+    /EPISODE_ALREADY_TERMINAL/,
+  );
 });
 
 test('recordEpisode: cannot resurrect an approved/rejected episode to non-terminal (R3 — all 4 terminals)', () => {
