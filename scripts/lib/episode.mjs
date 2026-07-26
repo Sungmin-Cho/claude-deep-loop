@@ -120,8 +120,9 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     if (scopeTarget) {
       requireNonterminalWorkstream(loop, scopeTarget);
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        // Change F: a checker created for a DONE target maker may be born under an unbound owner scope — that is
-        // exactly the lifecycle next-action directs. Any other checker keeps the bound-only rule.
+        // Change F defensively admits null owner scope for a done checker target; bound cross-workstream scope stays
+        // rejected. No kernel path to this topology has been demonstrated; the sole F test proves only that a
+        // non-done target remains rejected, so the positive path is unproven.
         const targetIsDone = role === 'checker' && targetMaker
           && loop.episodes.find(e => e.id === targetMaker)?.status === 'done';
         assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker || targetIsDone });
