@@ -72,7 +72,13 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --proj
 
 ### 6. 미검토 Episode
 
-comprehension `episodes_human_reviewed`가 낮으면 미검토 episode 목록을 출력하고 `/deep-loop-ack --actor human`을 안내한다(사람 검토만 게이트를 해제하며, `episodes_agent_reviewed`는 기계 리뷰 계상으로 debt에 무관하다).
+comprehension status의 `blocked === true`일 때만 미검토 episode 목록을 출력하고 `/deep-loop-ack --actor human`을 안내한다. 목록 대상은 아래 조건을 모두 만족하는 episode로만 고른다:
+
+- `role === 'maker'`
+- `status === 'done'`
+- `human_reviewed !== true`
+
+사람 검토만 게이트를 해제하며, `episodes_agent_reviewed`는 기계 리뷰 계상으로 debt에 무관하다. `episodes_total`과 `episodes_human_reviewed` 등 durable 카운터는 pending maker도 포함하는 감사 원본이므로 ack 대상 선택이나 이 섹션의 표시 여부에 사용하지 않는다.
 
 ### 7. 막힌(stranded) non-terminal episode
 

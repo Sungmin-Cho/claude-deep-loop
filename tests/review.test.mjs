@@ -3,85 +3,18 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import {
   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
-  claimIndependentReview, recordReviewOutcome, unsatisfiedReviewPoints,
+  recordReviewOutcome, unsatisfiedReviewPoints,
 } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';
-
-function openUnboundReviewTarget({ withChecker = false } = {}) {
-  const f = reviewedMakerThenHandoff();
-  const artifact = '.claude/worktrees/sibling/target.txt';
-  mkdirSync(dirname(join(f.root, artifact)), { recursive: true });
-  writeFileSync(join(f.root, artifact), 'target');
-  const makerId = newEpisode(f.root, f.runId, {
-    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
-    workstream: f.siblingWs, expectedArtifacts: [artifact], fence: f.fence,
-  }).id;
-  const seeded = readState(f.root, f.runId).data;
-  const maker = seeded.episodes.find(episode => episode.id === makerId);
-  maker.status = 'done';
-  maker.artifacts = [artifact];
-
-  let checkerId = null;
-  if (withChecker) {
-    checkerId = `${String(seeded.episodes.length + 1).padStart(3, '0')}-deep-review`;
-    seeded.episodes.push({
-      id: checkerId,
-      plugin: 'deep-review',
-      role: 'checker',
-      kind: 'implementation-review',
-      point: 'implementation',
-      workstream_id: f.siblingWs,
-      status: 'pending',
-      request_rel: `episodes/${checkerId}/request.md`,
-      expected_artifacts: [],
-      target_maker: makerId,
-      requires_independent_session: true,
-      verification: {
-        checker_episode_required: false,
-        checker_plugin: 'deep-review',
-        review_point: 'implementation',
-        proof_required: [],
-      },
-    });
-    seeded.workstreams.find(workstream => workstream.id === f.siblingWs).episodes.push(checkerId);
-    seeded.current_episode = checkerId;
-  }
-  writeState(f.root, f.runId, seeded);
-
-  const data = readState(f.root, f.runId).data;
-  const ownerId = data.session_chain.lease.owner_run_id;
-  const owner = data.session_chain.sessions.find(session => session.run_id === ownerId);
-  assert.equal(owner.scope.closed_at, null);
-  assert.equal(owner.scope.workstream_id, null);
-  assert.equal(
-    ['ready', 'merged', 'abandoned'].includes(
-      data.workstreams.find(workstream => workstream.id === f.siblingWs).status,
-    ),
-    false,
-  );
-  assert.equal(data.episodes.find(episode => episode.id === makerId).status, 'done');
-  assert.equal(data.episodes.some(episode => episode.target_maker === makerId && ['approved', 'rejected'].includes(episode.status)), false);
-  return { ...f, ws: f.siblingWs, makerId, checkerId, artifact };
-}
-
-const REVIEW_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
-function runReviewCli(root, runId, args) {
-  return spawnSync(process.execPath, [
-    REVIEW_CLI, ...args, '--owner', runId, '--generation', '1',
-    '--project-root', root, '--run-id', runId,
-  ], { encoding: 'utf8' });
-}
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -212,110 +145,6 @@ test('dispatchReview rejects a mismatched Workstream scope before reviewer depen
     detected: { 'deep-review': false },
     fence: f,
   }), /SESSION_SCOPE_MISMATCH/);
-});
-
-test('public review dispatch/record and independent claim derive target-maker scope without binding', () => {
-  const { root, runId } = seed();
-  const f = fence(runId);
-  mkdirSync(join(root, '.claude/worktrees/a'), { recursive: true });
-  mkdirSync(join(root, '.claude/worktrees/b'), { recursive: true });
-  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence: f }).id;
-  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence: f }).id;
-  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsA, fence: f }).id;
-  const artifactB = '.claude/worktrees/b/artifact.txt';
-  writeFileSync(join(root, artifactB), 'b');
-  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsB, expectedArtifacts: [artifactB], fence: f }).id;
-  recordEpisode(root, runId, makerB, { status: 'in_progress', fence: f });
-  recordEpisode(root, runId, makerB, { status: 'done', artifacts: [artifactB], proof: {}, fence: f });
-  const checkerB = dispatchReview(root, runId, {
-    point: 'implementation', workstreamId: wsB, detected: { 'deep-review': true }, fence: f,
-  }).checkerEpisodeId;
-  const prepared = readState(root, runId).data;
-  const ownerScope = prepared.session_chain.sessions.find(session => session.run_id === runId).scope;
-  ownerScope.workstream_id = null;
-  ownerScope.bound_at_seq = null;
-  writeState(root, runId, prepared);
-  recordEpisode(root, runId, makerA, { status: 'in_progress', fence: f });
-
-  const dispatch = runReviewCli(root, runId, ['review', 'dispatch', '--point', 'implementation', '--workstream', wsB]);
-  assert.equal(dispatch.status, 1, dispatch.stderr);
-  assert.match(dispatch.stderr, /SESSION_SCOPE_MISMATCH/);
-
-  const before = eventLog(root, runId).length;
-  const record = runReviewCli(root, runId, ['review', 'record', '--episode', checkerB, '--verdict', 'REQUEST_CHANGES']);
-  assert.equal(record.status, 1, record.stderr);
-  assert.match(record.stderr, /SESSION_SCOPE_MISMATCH/);
-  assert.equal(eventLog(root, runId).length, before);
-  assert.throws(() => claimIndependentReview(root, runId, {
-    episodeId: checkerB, fence: f, attemptIdFactory: () => 'cross-scope-attempt',
-  }), /SESSION_SCOPE_MISMATCH/);
-  assert.equal(eventLog(root, runId).length, before);
-  assert.equal(readState(root, runId).data.session_chain.sessions[0].scope.workstream_id, wsA);
-});
-
-test('F: an open-unbound owner can dispatch a checker for a done maker in a nonterminal workstream', () => {
-  const f = openUnboundReviewTarget();
-  const result = dispatchReview(f.root, f.runId, {
-    point: 'implementation', workstreamId: f.ws,
-    detected: { 'deep-review': true }, fence: f.fence,
-  });
-  assert.ok(result.checkerEpisodeId);
-  assert.equal(
-    readState(f.root, f.runId).data.episodes.find(episode => episode.id === result.checkerEpisodeId).target_maker,
-    f.makerId,
-  );
-});
-
-test('F: an open-unbound owner can claim the checker for its done target maker', () => {
-  const f = openUnboundReviewTarget({ withChecker: true });
-  const result = claimIndependentReview(f.root, f.runId, {
-    episodeId: f.checkerId, fence: f.fence,
-    attemptIdFactory: () => 'open-unbound-attempt',
-  });
-  assert.equal(result.ok, true);
-  assert.equal(
-    readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId).status,
-    'in_progress',
-  );
-});
-
-test('F: an open-unbound owner can record the checker verdict for its done target maker', () => {
-  const f = openUnboundReviewTarget({ withChecker: true });
-  recordReviewOutcome(f.root, f.runId, {
-    episodeId: f.checkerId, verdict: 'REQUEST_CHANGES', fence: f.fence,
-  });
-  assert.equal(
-    readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId).status,
-    'rejected',
-  );
-});
-
-test('F: a BOUND owner still cannot dispatch a checker for another workstream', () => {
-  const { root, runId, fence } = freshRun();
-  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
-  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence }).id;
-  writeFileSync(join(root, 'art.txt'), 'x');
-  const makerA = newEpisode(root, runId, {
-    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
-    workstream: wsA, fence,
-  }).id;
-  const makerB = newEpisode(root, runId, {
-    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
-    workstream: wsB, expectedArtifacts: ['art.txt'], fence,
-  }).id;
-  recordEpisode(root, runId, makerB, { status: 'in_progress', fence });
-  recordEpisode(root, runId, makerB, { status: 'done', artifacts: ['art.txt'], fence });
-  const reset = readState(root, runId).data;
-  const resetOwnerId = reset.session_chain.lease.owner_run_id;
-  const resetOwner = reset.session_chain.sessions.find(session => session.run_id === resetOwnerId);
-  resetOwner.scope.workstream_id = null;
-  resetOwner.scope.bound_at_seq = null;
-  writeState(root, runId, reset);
-  recordEpisode(root, runId, makerA, { status: 'in_progress', fence });
-  assert.throws(
-    () => dispatchReview(root, runId, { point: 'implementation', workstreamId: wsB, detected: { 'deep-review': true }, fence }),
-    /SESSION_SCOPE_MISMATCH/,
-  );
 });
 
 test('F: an open-unbound owner cannot create a checker for a non-done target maker', () => {

@@ -15,10 +15,13 @@ All notable changes to deep-loop are documented in this file.
   자기참조였다. `debt_ratio`의 의미가 바뀐다: pending/in_progress episode는 더 이상 부채가 아니다.
   durable 카운터(`episodes_total` / `episodes_human_reviewed`)는 감사 원본으로 남으며 이 판정에
   쓰이지 않는다.
-- **커널이 지시한 remedy가 거부되던 데드락 3종.** (1) orphan maker의 `episode abandon --confirm`이
+- **커널이 지시한 remedy가 거부되던 데드락 2종.** (1) orphan maker의 `episode abandon --confirm`이
   미바인딩 owner scope에서 거부되던 것, (2) 정착된 maker의 human ack이 owner의 workstream 밖이라는
-  이유로 거부되던 것 — 게이트는 run 전역인데 remedy만 scope에 갇혀 있었다, (3) 미바인딩 owner가
-  `dispatch_checker` 지시를 받고도 checker 라이프사이클 5지점에서 전부 막히던 것.
+  이유로 거부되던 것 — 게이트는 run 전역인데 remedy만 scope에 갇혀 있었다.
+- **복구/호환 상태의 review scope 판정을 방어적으로 강화했다.** 미바인딩 owner가 남아 있는 상태에서는
+  checker 라이프사이클이 target maker의 workstream을 기준으로 scope를 판정한다. 이는 정상 handoff가
+  미리뷰 `done` maker를 남긴 채 이 상태로 전이한다는 보장이 아니며, review import는 계속 준비된
+  claim의 lease owner/generation 일치를 강제한다.
 - **`comprehension-debt` action이 실제 ack 대상을 싣는다** — `blocking_episode_ids`. 기존
   `episode_id`는 debt 때문에 *막힌* episode였고 그것을 ack해도 게이트가 풀리지 않아, remedy가
   descriptor에서 발견 불가능했다.
