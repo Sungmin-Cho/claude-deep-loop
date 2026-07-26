@@ -70,7 +70,7 @@ const isOrphanMaker = (ep) => Array.isArray(ep.expected_artifacts) && ep.expecte
 
 // 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고,
 // 그 외엔 canonical finish 게이트(finishProofState)를 재사용 — finish 추천 ≡ finishRun 집행 (divergence 제거).
-function finishOrAdvance(loop, gate, fanoutBlocked) {
+function finishOrAdvance(loop, gate, fanoutBlocked, blockingMakers) {
   const eps = loop.episodes || [];
   const wsExists = (id) => !!id && (loop.workstreams || []).some(w => w.id === id);
   const pendingMaker = eps.find(e => e.role === 'maker' && e.status === 'pending');
@@ -80,7 +80,7 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
     // never complete regardless of debt). Keeps next-action ↔ finishProofState consistent (orphan = unsettled).
     if (isOrphanMaker(pendingMaker)) return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
     // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
-    if (fanoutBlocked && pendingMaker.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'comprehension-debt' }, '/deep-loop-status');
+    if (fanoutBlocked && pendingMaker.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'comprehension-debt', blocking_episode_ids: blockingMakers }, '/deep-loop-status');
     return A(gate, { type: 'dispatch_maker', episode_id: pendingMaker.id, point: pendingMaker.point, workstream_id: pendingMaker.workstream_id }, '/deep-loop-continue');
   }
   // Unified: find an unresolved rejected checker via rejectionResolved — the SAME predicate finishProofState.settledEp
@@ -122,6 +122,13 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
   const b = checkBudget(loop, { now });
   const br = checkBreaker(loop);
   const debt = computeDebt(loop);
+  // The remedy must be discoverable from the descriptor, and it must be computed from the SAME input the gate
+  // uses — the GLOBAL loop. finishOrAdvance's first parameter is named `loop` but receives `routingLoop` (the
+  // scoped view, :185), so computing this inside that function silently yields [] whenever the blocking maker
+  // lives in another workstream — precisely the case this field exists for.
+  const blockingMakers = (Array.isArray(loop.episodes) ? loop.episodes : [])
+    .filter(e => e?.role === 'maker' && e.status === 'done' && e.human_reviewed !== true)
+    .map(e => e.id);
   const workstreamSession = loop.autonomy?.continuation_policy === 'workstream-session';
   const currentSession = ownerSession(loop);
 
@@ -133,7 +140,9 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
   );
   if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
 
-  // comprehension-debt 는 **새 fan-out(discover)만** 막는다 — 현재 episode 진행/fix/리뷰/handoff/finish 는 허용 (spec §15, Codex r2 🔴4).
+  // comprehension-debt는 **정착된(done) 미리뷰 maker 산출물이 존재할 때에만** 새 fan-out을 막는다 —
+  // `discover`(:190)와 새 non-fix pending maker의 dispatch(:83/:201)가 그 대상이다. 현재 episode 진행/fix/
+  // 리뷰/handoff/finish는 허용한다. pending maker는 debt 산식에 들어가지 않는다(computeDebt, 변경 A′).
   const consumed = loop.session_chain?.consumed_milestones || [];
   const unconsumedMilestones = (loop.workstreams || [])
     .flatMap(w => w.terminal_events || [])
@@ -187,10 +196,10 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
     const ep = (routingLoop.episodes || []).find(e => e.id === routingLoop.current_episode);
     if (!ep) {
       if (!routingLoop.episodes || routingLoop.episodes.length === 0) {
-        if (debt.blocked) return A(gate, { type: 'await_human', reason: 'comprehension-debt' }, '/deep-loop-status');  // discover=fan-out → debt 면 사람 검토 먼저
+        if (debt.blocked) return A(gate, { type: 'await_human', reason: 'comprehension-debt', blocking_episode_ids: blockingMakers }, '/deep-loop-status');  // discover=fan-out → debt 면 사람 검토 먼저
         return A(gate, { type: 'discover' }, '/deep-loop-discover');
       }
-      return finishOrAdvance(routingLoop, gate, debt.blocked);
+      return finishOrAdvance(routingLoop, gate, debt.blocked, blockingMakers);
     }
     if (ep.role === 'maker') {
       if (ep.status === 'pending') {
@@ -198,7 +207,7 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
         // BEFORE the debt check (an orphan can never complete regardless of debt). See finishOrAdvance for rationale.
         if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
         // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
-        if (debt.blocked && ep.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'comprehension-debt' }, '/deep-loop-status');
+        if (debt.blocked && ep.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'comprehension-debt', blocking_episode_ids: blockingMakers }, '/deep-loop-status');
         return A(gate, { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
       }
       if (ep.status === 'in_progress') {
@@ -227,9 +236,9 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
       // gate — current_episode points at the last-created episode, so a redundant re-review on an already-approved point
       // can leave a (resolved) rejected checker as current_episode; this path must not diverge from finishProofState.
       if (ep.status === 'rejected' && !rejectionResolved(routingLoop, ep)) return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
-      if (ep.status === 'approved') return finishOrAdvance(routingLoop, gate, debt.blocked);
+      if (ep.status === 'approved') return finishOrAdvance(routingLoop, gate, debt.blocked, blockingMakers);
     }
-    return finishOrAdvance(routingLoop, gate, debt.blocked);
+    return finishOrAdvance(routingLoop, gate, debt.blocked, blockingMakers);
   };
   return withAdvice(route());
 }

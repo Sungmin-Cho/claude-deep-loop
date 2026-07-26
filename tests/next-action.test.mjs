@@ -470,6 +470,8 @@ test('finish gated on review of done makers AND zero active workstreams', () => 
   assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
 });
 
+const hasKey = (a) => Object.hasOwn(a, 'blocking_episode_ids');
+
 // Codex r2 🔴4: comprehension-debt 는 discover(새 fan-out)만 막고 fix flow 는 막지 않는다.
 test('comprehension-debt blocks discover but not the fix flow', () => {
   const l = loop();
@@ -484,6 +486,8 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   assert.equal(r0.action.type, 'await_human');
   assert.equal(r0.action.reason, 'comprehension-debt');
   assert.ok(r0.gate.blocked_by.includes('comprehension-debt'));
+  assert.deepEqual(r0.action.blocking_episode_ids, ['001-deep-work']);
+  assert.equal(Object.hasOwn(r0.action, 'episode_id'), false, ':190 has no blocked episode to name');
   // Keep the discover half unbound so scopedRoutingView reaches the empty-view branch at next-action.mjs:190.
   // Bind only the fix-flow half to ws-01: next-action.mjs:39-40 then keeps terminal ws-01 episodes visible.
   l.session_chain.sessions[0].scope = {
@@ -494,6 +498,115 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   l.episodes.push({ id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' });
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');
+});
+
+test('E: :201 (current pending maker) carries blocking_episode_ids', () => {
+  const l = loop();
+  l.workstreams = [{ id: 'ws-01', status: 'in_progress', episodes: [], terminal_events: [] }];
+  l.session_chain.sessions[0].scope = { kind: 'workstream', workstream_id: 'ws-01', bound_at_seq: 1, terminal_event: null, closed_at: null, superseded_at: null };
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01', human_reviewed: false },
+    { id: '002-deep-work', role: 'maker', status: 'pending', kind: 'implementation', point: 'plan', workstream_id: 'ws-01', expected_artifacts: ['a'] },
+  ];
+  l.current_episode = '002-deep-work';
+  const a = nextAction(l, { now: 0 }).action;
+  assert.equal(a.reason, 'comprehension-debt');
+  assert.deepEqual(a.blocking_episode_ids, ['001-deep-work']);
+});
+
+test('E: :230 (current approved checker) carries the key', () => {
+  const l = loop();
+  l.workstreams = [{ id: 'ws-01', status: 'in_progress', episodes: [], terminal_events: [] }];
+  l.session_chain.sessions[0].scope = { kind: 'workstream', workstream_id: 'ws-01', bound_at_seq: 1, terminal_event: null, closed_at: null, superseded_at: null };
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01', human_reviewed: false },
+    { id: '002-deep-work', role: 'maker', status: 'pending', kind: 'implementation', point: 'plan', workstream_id: 'ws-01', expected_artifacts: ['a'] },
+    { id: '003-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+  ];
+  l.current_episode = '003-deep-review';
+  const a = nextAction(l, { now: 0 }).action;
+  assert.equal(a.reason, 'comprehension-debt');
+  assert.ok(hasKey(a), 'the key must be present, not dropped by JSON.stringify');
+  assert.deepEqual(a.blocking_episode_ids, ['001-deep-work']);
+});
+
+test('E: :232 (current abandoned maker) carries the key', () => {
+  const l = loop();
+  l.workstreams = [{ id: 'ws-01', status: 'in_progress', episodes: [], terminal_events: [] }];
+  l.session_chain.sessions[0].scope = { kind: 'workstream', workstream_id: 'ws-01', bound_at_seq: 1, terminal_event: null, closed_at: null, superseded_at: null };
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01', human_reviewed: false },
+    { id: '002-deep-work', role: 'maker', status: 'pending', kind: 'implementation', point: 'plan', workstream_id: 'ws-01', expected_artifacts: ['a'] },
+    { id: '003-deep-work', role: 'maker', status: 'abandoned', point: 'plan', workstream_id: 'ws-01' },
+  ];
+  l.current_episode = '003-deep-work';
+  const a = nextAction(l, { now: 0 }).action;
+  assert.equal(a.reason, 'comprehension-debt');
+  assert.ok(hasKey(a));
+  assert.deepEqual(a.blocking_episode_ids, ['001-deep-work']);
+});
+
+test('E: cross-workstream blocker is visible even though routing is scoped', () => {
+  const l = loop();
+  l.workstreams = [
+    { id: 'ws-01', status: 'in_progress', episodes: [], terminal_events: [] },
+    { id: 'ws-02', status: 'in_progress', episodes: [], terminal_events: [] },
+  ];
+  l.session_chain.sessions[0].scope = { kind: 'workstream', workstream_id: 'ws-01', bound_at_seq: 1, terminal_event: null, closed_at: null, superseded_at: null };
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-02', human_reviewed: false },
+    { id: '002-deep-work', role: 'maker', status: 'pending', kind: 'implementation', point: 'plan', workstream_id: 'ws-01', expected_artifacts: ['a'] },
+  ];
+  l.current_episode = null;                      // routes through :193 → finishOrAdvance → :83
+  const a = nextAction(l, { now: 0 }).action;
+  assert.equal(a.reason, 'comprehension-debt');
+  assert.deepEqual(a.blocking_episode_ids, ['001-deep-work'],
+    'computing blockingMakers inside finishOrAdvance would yield [] here — the scoped view hides ws-02');
+});
+
+test('E: acking exactly blocking_episode_ids advances the next tick to dispatch_maker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-debt-remedy-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'debt remedy', detected: { 'deep-review': true },
+    now: new Date('2026-07-25T00:00:00.000Z'),
+  });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const worktree = '.claude/worktrees/remedy';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const ws = newWorkstream(root, runId, {
+    title: 'remedy', branch: 'remedy', worktree, fence,
+  }).id;
+  const artifact = `${worktree}/done.txt`;
+  writeFileSync(join(root, artifact), 'done');
+  const doneMaker = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: [artifact], fence,
+  }).id;
+  recordEpisode(root, runId, doneMaker, { status: 'in_progress', fence });
+  recordEpisode(root, runId, doneMaker, { status: 'done', artifacts: [artifact], fence });
+  const checker = dispatchReview(root, runId, {
+    point: 'implementation', workstreamId: ws,
+    detected: { 'deep-review': true }, fence,
+  }).checkerEpisodeId;
+  const report = `${worktree}/review.md`;
+  writeFileSync(join(root, report), '# review\n\nAPPROVE\n');
+  recordReviewOutcome(root, runId, {
+    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence,
+  });
+  const nextMaker = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: [`${worktree}/next.txt`], fence,
+  }).id;
+
+  const blocked = nextAction(readState(root, runId).data, { now: 0 }).action;
+  assert.equal(blocked.reason, 'comprehension-debt');
+  assert.deepEqual(blocked.blocking_episode_ids, [doneMaker]);
+  for (const episodeId of blocked.blocking_episode_ids) {
+    ack(root, runId, episodeId, { actor: 'human', confirm: true, env: {}, fence });
+  }
+  const advanced = nextAction(readState(root, runId).data, { now: 0 }).action;
+  assert.equal(advanced.type, 'dispatch_maker');
+  assert.equal(advanced.episode_id, nextMaker);
 });
 
 test('A′: the first maker of a new workstream-session run routes directly to dispatch_maker', () => {
