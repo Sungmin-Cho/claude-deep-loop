@@ -69,7 +69,10 @@ function claimedContext(root, loop, episodeId, attemptId, fence) {
   if (!context.workstream || checker.workstream_id !== context.maker.workstream_id
     || checker.point !== context.maker.point) throw new Error('REVIEW_CLAIM_BINDING_INVALID');
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, context.maker.workstream_id);
+    // Change F is defensive: allowUnbound admits only a null owner scope; a bound cross-workstream owner stays
+    // rejected. No kernel path to this topology has been demonstrated, and the sole F test proves only rejection
+    // for a non-done target, not this positive path.
+    assertScopeAllows(loop, context.maker.workstream_id, { allowUnbound: true });
   }
   const artifacts = deriveReviewArtifactContract(root, context.maker, context.workstream);
   const lease = loop.session_chain?.lease || {};
@@ -358,7 +361,9 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // mask a cross-Workstream dispatch and make the same durable state behave
   // differently between a developer checkout and a clean CI host.
   if (data.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(data, workstreamId);
+    // Change F is defensive: null scope is admitted, while bound cross-workstream scope remains rejected.
+    // No kernel reachability is demonstrated; the sole F test covers only non-done-target rejection.
+    assertScopeAllows(data, workstreamId, { allowUnbound: true });
   }
   const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
@@ -489,7 +494,9 @@ function checkedContext(loop, episodeId, { reviewSource } = {}) {
   }
   if (!context.workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${checker.workstream_id}`);
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, maker.workstream_id);
+    // Change F is defensive: null scope is admitted, while bound cross-workstream scope remains rejected.
+    // No kernel reachability is demonstrated; the sole F test covers only non-done-target rejection.
+    assertScopeAllows(loop, maker.workstream_id, { allowUnbound: true });
   }
   return context;
 }

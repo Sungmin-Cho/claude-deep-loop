@@ -158,7 +158,9 @@ export function validateImportedEvidence(root, loop, input, { checker, maker, wo
     throw new Error(`REVIEW_IMPORT_TARGET_MISMATCH: ${input.target_maker} != ${checker.target_maker}`);
   }
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, maker.workstream_id);
+    // Change F is defensive: null scope is admitted, while bound cross-workstream scope remains rejected.
+    // No kernel reachability is demonstrated; the sole F test covers only non-done-target rejection.
+    assertScopeAllows(loop, maker.workstream_id, { allowUnbound: true });
   }
 
   const claim = checker.review_claim;

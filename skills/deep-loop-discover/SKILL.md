@@ -32,7 +32,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root 
 
 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 새로 읽는다. 이후 state patch는 이 current fence와 불변 `<run_id>`를 함께 쓴다.
 
-comprehension debt(`debt_ratio`)가 임계치(보통 0.5)를 초과하면 새 fan-out 자제 — 사람 검토(`/deep-loop-ack --actor human`)를 먼저 요청한다. 기계 리뷰(checker APPROVE)는 debt를 줄이지 않으므로 사람 ack만 새 fan-out을 해제한다.
+comprehension debt(`debt_ratio`)가 임계치(보통 0.5) **이상**(`>=`)이면 새 fan-out 자제 — 사람 검토(`/deep-loop-ack --actor human`)를 먼저 요청한다. 이 값은 **정착된(done) maker 기준**이다: 아직 실행되지 않은 pending episode는 부채에 포함되지 않는다. 기계 리뷰(checker APPROVE)는 debt를 줄이지 않으므로 사람 ack만 새 fan-out을 해제한다.
 
 ## 단계 2: 스캔
 

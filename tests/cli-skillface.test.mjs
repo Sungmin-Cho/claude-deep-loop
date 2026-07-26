@@ -148,12 +148,48 @@ test('budget record drives migrated rotate-per-unit cap → legacy unattended ha
   assert.equal(na.action.reason, 'per_session_turn_cap');
 });
 
-// Codex r3 sf-2: 스킬이 쓰는 CLI 경로(episode new --artifacts → record done)가 실제로 통과하는지 통합 검증.
+// Codex r3 sf-2: 스킬이 쓰는 CLI 경로(workstream new → episode new --workstream --artifacts
+// → record in_progress → record done)가 실제로 통과하는지 통합 검증.
 test('episode new --artifacts then record done (the skill flow)', () => {
   const { root, runId } = seed();
-  writeFileSync(join(root, 'art.txt'), 'x');   // expected artifact 가 root 하위에 존재해야 done 통과
-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
-  run(root, ['episode', 'record', '--id', ep.id, '--status', 'done', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']);
+  const worktree = '.claude/worktrees/skill-flow';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const ws = JSON.parse(run(root, [
+    'workstream', 'new',
+    '--title', 'skill flow',
+    '--branch', 'test/skill-flow',
+    '--worktree', worktree,
+    '--owner', runId,
+    '--generation', '1',
+  ]));
+  const artifact = `${worktree}/art.txt`;
+  writeFileSync(join(root, artifact), 'x');
+  const ep = JSON.parse(run(root, [
+    'episode', 'new',
+    '--plugin', 'deep-work',
+    '--role', 'maker',
+    '--kind', 'implementation',
+    '--point', 'implementation',
+    '--workstream', ws.id,
+    '--artifacts', JSON.stringify([artifact]),
+    '--owner', runId,
+    '--generation', '1',
+  ]));
+  run(root, [
+    'episode', 'record',
+    '--id', ep.id,
+    '--status', 'in_progress',
+    '--owner', runId,
+    '--generation', '1',
+  ]);
+  run(root, [
+    'episode', 'record',
+    '--id', ep.id,
+    '--status', 'done',
+    '--artifacts', JSON.stringify([artifact]),
+    '--owner', runId,
+    '--generation', '1',
+  ]);
   assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
 });
 

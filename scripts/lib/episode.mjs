@@ -120,7 +120,12 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     if (scopeTarget) {
       requireNonterminalWorkstream(loop, scopeTarget);
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker });
+        // Change F defensively admits null owner scope for a done checker target; bound cross-workstream scope stays
+        // rejected. No kernel path to this topology has been demonstrated; the sole F test proves only that a
+        // non-done target remains rejected, so the positive path is unproven.
+        const targetIsDone = role === 'checker' && targetMaker
+          && loop.episodes.find(e => e.id === targetMaker)?.status === 'done';
+        assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker || targetIsDone });
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });
@@ -182,7 +187,10 @@ export function abandonEpisode(root, runId, episodeId, {
         throw new Error(`WORKSTREAM_NOT_FOUND: ${scopeTarget}`);
       }
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        assertScopeAllows(loop, scopeTarget);
+        // next-action.mjs:81 routes an orphan maker to await_human BEFORE the debt check, and the status skill
+        // offers `episode abandon --confirm` as the only recovery. That remedy must be executable before the owner
+        // scope is bound. abandon only READS the scope — binding stays exclusive to bindMakerScope.
+        assertScopeAllows(loop, scopeTarget, { allowUnbound: true });
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });
@@ -209,6 +217,16 @@ export function recordEpisode(root, runId, episodeId, {
       && loop.autonomy?.continuation_policy === 'workstream-session') {
       bindMakerScope(loop, ep, tx.event_identity.seq);
     }
+    // Review credit belongs to a SETTLED diff. When a maker confirms its output, any review flag recorded before
+    // that point was about a change which did not exist yet, so it is invalidated here. Same anchored transaction
+    // as the episode-record event (invariant 3) and no new lock (invariant 7) — mirrors abandonEpisode's counter
+    // adjustment. Math.max keeps the counters non-negative; `done` cannot be re-recorded (see the preCheck), so
+    // this can never double-decrement.
+    if (status === 'done' && ep.role === 'maker') {
+      const c = loop.comprehension || (loop.comprehension = {});
+      if (ep.human_reviewed) { ep.human_reviewed = false; c.episodes_human_reviewed = Math.max(0, (c.episodes_human_reviewed || 0) - 1); }
+      if (ep.agent_reviewed) { ep.agent_reviewed = false; c.episodes_agent_reviewed = Math.max(0, (c.episodes_agent_reviewed || 0) - 1); }
+    }
     ep.status = status;
     if (artifacts.length) ep.artifacts = artifacts;
     for (const [k, v] of Object.entries(proof)) if (/^result_[A-Za-z0-9_]+$/.test(k)) ep[k] = v;
@@ -225,6 +243,12 @@ export function recordEpisode(root, runId, episodeId, {
     const scopeTarget = episodeScopeTarget(loop, ep, {
       checkerTargetRequired: newPolicy && status === 'in_progress',
     });
+    // Change H: a maker's settlement (done) requires a workstream just as in_progress does. Without it the record
+    // creates an unbound-proof-episode dead-end (next-action.mjs:110/:117/:214) that has NO remedy — abandonEpisode
+    // rejects a done episode (episode.mjs:178) and ack cannot change routing (makerReviewed is checker-based).
+    if (newPolicy && ep.role === 'maker' && status === 'done' && !scopeTarget) {
+      throw new Error(`WORKSTREAM_REQUIRED: ${episodeId}`);
+    }
     if (newPolicy && status === 'in_progress' && ep.role === 'maker') {
       if (!scopeTarget) throw new Error(`WORKSTREAM_REQUIRED: ${episodeId}`);
       requireNonterminalWorkstream(loop, scopeTarget);

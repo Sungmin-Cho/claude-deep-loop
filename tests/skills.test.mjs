@@ -979,6 +979,48 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+(?:finish|workstream terminal)/);
 });
 
+test('status skill reads the gate decision and durable counters from their real sources', () => {
+  const md = readFileSync(skillPath('deep-loop-status'), 'utf8');
+  assert.match(md, /comprehension status/);
+  assert.match(md, /state get --field comprehension/);
+  assert.match(md, /`debt_ratio`, `blocked`/);
+  assert.match(md, /`episodes_total`, `episodes_human_reviewed`, `episodes_agent_reviewed`/);
+});
+test('status skill gates ack targets on live blocked debt and settled unreviewed makers', () => {
+  const md = readFileSync(skillPath('deep-loop-status'), 'utf8');
+  const selection = md.match(/### 6\. 미검토 Episode([\s\S]*?)### 7\./)?.[1] ?? '';
+  assert.match(selection, /`blocked === true`일 때만/);
+  assert.match(selection, /아래 조건을 모두 만족/);
+  assert.match(selection, /`role === 'maker'`/);
+  assert.match(selection, /`status === 'done'`/);
+  assert.match(selection, /`human_reviewed !== true`/);
+  assert.match(selection, /durable 카운터[\s\S]*ack 대상 선택이나 이 섹션의 표시 여부에 사용하지 않는다/);
+  assert.doesNotMatch(selection, /`episodes_human_reviewed`가 낮으면/);
+});
+test('continue skill surfaces the debt remedy', () => {
+  const md = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  assert.match(md, /blocking_episode_ids/);
+});
+test('ack skill selects every settled maker whose human review is not true', () => {
+  const md = readFileSync(skillPath('deep-loop-ack'), 'utf8');
+  const selection = md.split('\n').find(line =>
+    line.includes('`status`가 `done`') && line.includes('`human_reviewed`'));
+  assert.ok(selection, 'ack guidance must define the settled-maker selector');
+  assert.match(selection, /`status`가 `done`인 maker 중/);
+  assert.match(selection, /`human_reviewed`가 `true`가 아닌/);
+  assert.match(selection, /속성이 없는 경우와 값이 명시적으로 `false`인 경우를 모두 포함/);
+  assert.doesNotMatch(md, /`human_reviewed:\s*false`인 episode/,
+    'a false-only selector misses normal never-acked makers');
+});
+test('ack skill resumes fan-out only from the kernel blocked decision, including threshold equality', () => {
+  const md = readFileSync(skillPath('deep-loop-ack'), 'utf8');
+  const report = md.match(/## 단계 3: 결과 보고([\s\S]*)/)?.[1] ?? '';
+  assert.match(report, /comprehension status/);
+  assert.match(report, /`blocked === false`일 때만[\s\S]*fan-out을 재개/);
+  assert.match(report, /`debt_ratio`와 임계치를 스킬에서 직접 비교해 재개 여부를 판단하지 않는다/);
+  assert.doesNotMatch(report, /debt_ratio가 임계치 (?:이하|미만|이상이면|초과하면)[\s\S]*fan-out을 재개/);
+});
+
 // Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.
 // 마커 선정 기준: budget/breaker/comprehension 검사 지시, fence 플래그(--owner/--generation/--expect-generation),
 // human-only confirm(--confirm/--actor human/recover --confirm), proposal-only 선언 등 "게이트 의미"를 담은

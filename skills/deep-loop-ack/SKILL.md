@@ -38,7 +38,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root 
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field episodes --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`human_reviewed: false`인 episode 목록을 확인한다.
+`status`가 `done`인 maker 중 `human_reviewed`가 `true`가 아닌 episode를 확인한다. 즉 `human_reviewed` 속성이 없는 경우와 값이 명시적으로 `false`인 경우를 모두 포함한다. 아직 정착되지 않은(pending/in_progress) maker는 ack 대상이 아니다. ack해도 게이트에 영향이 없고, 정착 시점에 그 크레딧이 무효화된다.
 
 ## 단계 2: 검토 표시
 
@@ -48,7 +48,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field episodes --project
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension ack --episode <episode_id> --actor human --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-- 성공 시 `{ ok: true, debt_ratio }` 반환.
+- 성공 시 `{ ok: true, ... }` 반환.
 - **maker episode만 ack 대상** — checker 등 비-maker episode를 ack하면 `ACK_NOT_MAKER`(exit 1)로 거부된다(comprehension debt 분모는 maker만 세므로).
 - `--confirm` 누락 시 `CONFIRM_REQUIRED`(exit 2). headless 세션이 `--actor human`을 주장하면 `ACK_REJECTED`(exit 2)로 거부되고 `comprehension-ack-rejected`가 event-log에 남는다.
 - 이미 검토된 episode는 멱등 처리됨(카운트 중복 증가 없음).
@@ -57,7 +57,11 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension ack --episode <episode
 
 ## 단계 3: 결과 보고
 
-갱신된 `debt_ratio`를 출력한다.
+ack 뒤 실시간 게이트 판정을 다시 읽고, 갱신된 `debt_ratio`와 `blocked`를 출력한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root "<canonical_project_root>" --run-id <run_id>
+```
 
 - comprehension 게이트(사람 검토)는 `--actor human`만 해제한다. checker의 기계 리뷰(APPROVE)와 `--actor agent` ack는 별도 agent 카운터로만 계상되어 debt를 줄이지 않는다(`require_human_ack`는 정직 신호로 true default이나, human/agent 카운터 분리가 실질 강제다).
-- debt_ratio가 임계치 이하이면 `/deep-loop-continue`로 fan-out을 재개할 수 있음을 안내한다.
+- 새 `comprehension status` 결과의 `blocked === false`일 때만 `/deep-loop-continue`로 fan-out을 재개할 수 있음을 안내한다. `debt_ratio`와 임계치를 스킬에서 직접 비교해 재개 여부를 판단하지 않는다.

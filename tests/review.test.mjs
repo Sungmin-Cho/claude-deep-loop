@@ -3,27 +3,18 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import {
   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
-  claimIndependentReview, recordReviewOutcome, unsatisfiedReviewPoints,
+  recordReviewOutcome, unsatisfiedReviewPoints,
 } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
-
-const REVIEW_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
-function runReviewCli(root, runId, args) {
-  return spawnSync(process.execPath, [
-    REVIEW_CLI, ...args, '--owner', runId, '--generation', '1',
-    '--project-root', root, '--run-id', runId,
-  ], { encoding: 'utf8' });
-}
+import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -156,97 +147,20 @@ test('dispatchReview rejects a mismatched Workstream scope before reviewer depen
   }), /SESSION_SCOPE_MISMATCH/);
 });
 
-test('public review dispatch/record and independent claim derive target-maker scope without binding', () => {
-  const { root, runId } = seed();
-  const f = fence(runId);
-  mkdirSync(join(root, '.claude/worktrees/a'), { recursive: true });
-  mkdirSync(join(root, '.claude/worktrees/b'), { recursive: true });
-  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence: f }).id;
-  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence: f }).id;
-  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsA, fence: f }).id;
-  const artifactB = '.claude/worktrees/b/artifact.txt';
-  writeFileSync(join(root, artifactB), 'b');
-  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsB, expectedArtifacts: [artifactB], fence: f }).id;
-  recordEpisode(root, runId, makerB, { status: 'in_progress', fence: f });
-  recordEpisode(root, runId, makerB, { status: 'done', artifacts: [artifactB], proof: {}, fence: f });
-  const checkerB = dispatchReview(root, runId, {
-    point: 'implementation', workstreamId: wsB, detected: { 'deep-review': true }, fence: f,
-  }).checkerEpisodeId;
-  const prepared = readState(root, runId).data;
-  const ownerScope = prepared.session_chain.sessions.find(session => session.run_id === runId).scope;
-  ownerScope.workstream_id = null;
-  ownerScope.bound_at_seq = null;
-  writeState(root, runId, prepared);
-  recordEpisode(root, runId, makerA, { status: 'in_progress', fence: f });
-
-  const dispatch = runReviewCli(root, runId, ['review', 'dispatch', '--point', 'implementation', '--workstream', wsB]);
-  assert.equal(dispatch.status, 1, dispatch.stderr);
-  assert.match(dispatch.stderr, /SESSION_SCOPE_MISMATCH/);
-
-  const before = eventLog(root, runId).length;
-  const record = runReviewCli(root, runId, ['review', 'record', '--episode', checkerB, '--verdict', 'REQUEST_CHANGES']);
-  assert.equal(record.status, 1, record.stderr);
-  assert.match(record.stderr, /SESSION_SCOPE_MISMATCH/);
-  assert.equal(eventLog(root, runId).length, before);
-  assert.throws(() => claimIndependentReview(root, runId, {
-    episodeId: checkerB, fence: f, attemptIdFactory: () => 'cross-scope-attempt',
-  }), /SESSION_SCOPE_MISMATCH/);
-  assert.equal(eventLog(root, runId).length, before);
-  assert.equal(readState(root, runId).data.session_chain.sessions[0].scope.workstream_id, wsA);
-});
-
-test('checker dispatch, claim, and record reject an unbound owner without binding or durable mutation', () => {
-  const setup = () => {
-    const { root, runId } = seed();
-    const f = fence(runId);
-    mkdirSync(join(root, '.claude/worktrees/w'), { recursive: true });
-    const ws = newWorkstream(root, runId, {
-      title: 'w', branch: 'w', worktree: '.claude/worktrees/w', fence: f,
-    }).id;
-    doneMaker(root, runId, ws, 'implementation', f, '.claude/worktrees/w/artifact.txt');
-    return { root, runId, f, ws };
-  };
-  const clearOwnerScope = ({ root, runId }) => {
-    const state = readState(root, runId).data;
-    const scope = state.session_chain.sessions.find(session => session.run_id === runId).scope;
-    scope.workstream_id = null;
-    scope.bound_at_seq = null;
-    writeState(root, runId, state);
-  };
-
-  {
-    const f = setup();
-    clearOwnerScope(f);
-    const before = runInventory(f.root, f.runId);
-    const dispatch = runReviewCli(f.root, f.runId, [
-      'review', 'dispatch', '--point', 'implementation', '--workstream', f.ws,
-    ]);
-    assert.equal(dispatch.status, 1, dispatch.stderr);
-    assert.match(dispatch.stderr, /SESSION_SCOPE_MISMATCH/);
-    assert.deepEqual(runInventory(f.root, f.runId), before);
-  }
-
-  for (const route of ['claim', 'record']) {
-    const f = setup();
-    const checkerId = dispatchReview(f.root, f.runId, {
-      point: 'implementation', workstreamId: f.ws, detected: { 'deep-review': true }, fence: f.f,
-    }).checkerEpisodeId;
-    clearOwnerScope(f);
-    const before = runInventory(f.root, f.runId);
-    if (route === 'claim') {
-      assert.throws(() => claimIndependentReview(f.root, f.runId, {
-        episodeId: checkerId, fence: f.f, attemptIdFactory: () => 'unbound-attempt',
-      }), /SESSION_SCOPE_MISMATCH/);
-    } else {
-      const record = runReviewCli(f.root, f.runId, [
-        'review', 'record', '--episode', checkerId, '--verdict', 'REQUEST_CHANGES',
-      ]);
-      assert.equal(record.status, 1, record.stderr);
-      assert.match(record.stderr, /SESSION_SCOPE_MISMATCH/);
-    }
-    assert.deepEqual(runInventory(f.root, f.runId), before, route);
-    assert.equal(readState(f.root, f.runId).data.session_chain.sessions[0].scope.workstream_id, null);
-  }
+test('F: an open-unbound owner cannot create a checker for a non-done target maker', () => {
+  const f = reviewedMakerThenHandoff();
+  const pendingMaker = newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: f.siblingWs, fence: f.fence,
+  }).id;
+  assert.throws(
+    () => newEpisode(f.root, f.runId, {
+      plugin: 'deep-review', role: 'checker', kind: 'implementation-review',
+      point: 'implementation', workstream: f.siblingWs, targetMaker: pendingMaker,
+      fence: f.fence,
+    }),
+    /SESSION_SCOPE_MISMATCH/,
+  );
 });
 
 test('recordReviewOutcome derives checker terminal + drives breaker/comprehension/points', () => {

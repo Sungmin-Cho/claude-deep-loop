@@ -5,20 +5,26 @@ import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { assertScopeAllows } from './session-scope.mjs';
 
-function assertEpisodeScope(loop, episode) {
+function assertEpisodeScope(loop, episode, { allowCrossWorkstream = false } = {}) {
   if (loop.autonomy?.continuation_policy === 'workstream-session' && episode?.workstream_id) {
-    assertScopeAllows(loop, episode.workstream_id);
+    assertScopeAllows(loop, episode.workstream_id, { allowCrossWorkstream });
   }
 }
 
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
-  const total = c.episodes_total || 0;
-  // Only the HUMAN counter releases the gate. Machine (agent) reviews accrue to episodes_agent_reviewed,
-  // which computeDebt deliberately ignores — a machine APPROVE must never lower comprehension debt (#1).
-  const reviewed = c.episodes_human_reviewed || 0;
-  const debt_ratio = total === 0 ? 0 : 1 - reviewed / total;
-  return { debt_ratio, blocked: total > 0 && debt_ratio >= (c.debt_threshold ?? 0.5) };
+  // comprehension debt = change a human has not yet understood that ALREADY EXISTS. A pending/in_progress maker
+  // has produced no diff, so it belongs in neither the numerator nor the denominator — counting it makes the
+  // blocking cause the blocked episode itself, and the pre-emptive ack that clears it burns the review credit for
+  // a diff that does not exist yet. The durable counters (episodes_total / episodes_human_reviewed) stay as the
+  // audit record and are deliberately NOT read here: they include pending makers, so they mean something else.
+  // Only the HUMAN flag releases the gate — a machine APPROVE sets agent_reviewed (review.mjs:569-571) and must
+  // never lower comprehension debt.
+  const episodes = Array.isArray(loop.episodes) ? loop.episodes : [];
+  const settled = episodes.filter(e => e?.role === 'maker' && e.status === 'done');
+  const reviewed = settled.filter(e => e.human_reviewed === true).length;
+  const debt_ratio = settled.length === 0 ? 0 : 1 - reviewed / settled.length;
+  return { debt_ratio, blocked: settled.length > 0 && debt_ratio >= (c.debt_threshold ?? 0.5) };
 }
 
 // Acknowledge that an episode's diff has been reviewed. tamper-evident + 절차 금지 + headless fail-closed (design #1):
@@ -78,7 +84,11 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       // impl-R3 Fix 5: ack is a MAKER-review signal. episodes_total counts only makers, so acking a checker would
       // inflate episodes_human_reviewed past episodes_total and drive debt_ratio below threshold with no maker reviewed.
       if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');
-      assertEpisodeScope(loop, ep);
+      // The debt gate is run-global (computeDebt reads the whole loop), so its remedy must be reachable
+      // run-globally too. Only a settled (done) maker's HUMAN ack gets the exemption: an agent ack does not
+      // release the gate, so widening it would be pure isolation loss. The headless rejection precheck below
+      // stays strict — it only appends a rejection event and must not reference foreign workstreams.
+      assertEpisodeScope(loop, ep, { allowCrossWorkstream: isHuman && ep.status === 'done' });
     },
     { floor: MUTATION_TURN_FLOOR });
   return out;

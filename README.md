@@ -96,7 +96,7 @@ The payload (`insights_schema_version` stays `1` — these are additive fields) 
 
 ## Installation and Discovery
 
-The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.11.0 has already been published.
+The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.12.0 has already been published.
 
 | Surface | Local installation and discovery | After a local plugin change |
 |---|---|---|

@@ -5,6 +5,52 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.12.0] — 2026-07-26
+
+### Fixed
+
+- **workstream-session 신규 run 전면 차단 해소.** `computeDebt`가 부채를 **정착된(`done`) maker**
+  기준으로 산출한다. 이전에는 `episode new`가 `episodes_total`을 즉시 올려, 첫 maker가 만들어지는 순간
+  `debt_ratio = 1.0`이 되어 **그 maker 자신의 dispatch가 막혔다** — 차단 원인이 차단 대상 자신인
+  자기참조였다. `debt_ratio`의 의미가 바뀐다: pending/in_progress episode는 더 이상 부채가 아니다.
+  durable 카운터(`episodes_total` / `episodes_human_reviewed`)는 감사 원본으로 남으며 이 판정에
+  쓰이지 않는다.
+- **커널이 지시한 remedy가 거부되던 데드락 2종.** (1) orphan maker의 `episode abandon --confirm`이
+  미바인딩 owner scope에서 거부되던 것, (2) 정착된 maker의 human ack이 owner의 workstream 밖이라는
+  이유로 거부되던 것 — 게이트는 run 전역인데 remedy만 scope에 갇혀 있었다.
+- **복구/호환 상태의 review scope 판정을 방어적으로 강화했다.** 미바인딩 owner가 남아 있는 상태에서는
+  checker 라이프사이클이 target maker의 workstream을 기준으로 scope를 판정한다. 이는 정상 handoff가
+  미리뷰 `done` maker를 남긴 채 이 상태로 전이한다는 보장이 아니며, review import는 계속 준비된
+  claim의 lease owner/generation 일치를 강제한다.
+- **`comprehension-debt` action이 실제 ack 대상을 싣는다** — `blocking_episode_ids`. 기존
+  `episode_id`는 debt 때문에 *막힌* episode였고 그것을 ack해도 게이트가 풀리지 않아, remedy가
+  descriptor에서 발견 불가능했다.
+- **workstream 없는 maker의 `done` 기록을 거부한다**(`WORKSTREAM_REQUIRED`). 그 상태는 remedy가 없는
+  `unbound-proof-episode` dead-end를 만든다 — `abandonEpisode`는 done을 거부하고 ack은 라우팅을
+  바꾸지 못한다. 신규 발생을 차단하며, 기존 사례의 복구는 백로그다.
+- **`done` 전이 시 선행 리뷰 크레딧을 무효화한다.** maker가 정착되기 전에 기록된
+  `human_reviewed` / `agent_reviewed`는 아직 존재하지 않던 diff에 대한 것이므로 지워지고 카운터가
+  감산된다.
+
+### Changed
+
+- Execution plane 4개 스킬이 새 게이트 의미에 맞춰졌다. `deep-loop-discover`는 `>=` 경계와
+  settled-maker 기준을 명시하고, `deep-loop-ack`은 `human_reviewed`가 **`true`가 아닌**(속성 부재
+  포함) done maker를 대상으로 하며, `deep-loop-status`는 실시간 게이트 값과 durable 카운터를 각각
+  `comprehension status`와 `state get --field comprehension`에서 읽고, `deep-loop-continue`는
+  `action.blocking_episode_ids`를 remedy로 제시한다.
+- `CLAUDE.md` 불변식 8에 게이트 발화 조건(정착된 미리뷰 maker 존재)이 명시됐다.
+
+### Migration
+
+- **v1.12.0 이전에 시작된 run**에서, maker가 `done`이 되기 **전에** 기록된 사람 ack은 그 maker의 실제
+  산출물에 대한 검토가 아닐 수 있다. 이번 릴리스는 **이후의** done 전이부터 그 크레딧을 무효화하므로,
+  업그레이드 시점에 이미 `done`인 에피소드의 크레딧은 그대로 남는다. 해당 run에서는 `done` maker를
+  한 번 재검토할 것을 권한다. 선-ack과 정상 ack을 구분하는 정보는 event-log 순서에만 있고
+  `computeDebt`도 마이그레이션도 그것을 보지 못하므로, 자동 정리는 백로그로 남겼다. 이 고지는
+  `workstream-session` run에도 해당한다.
+- 기존 플러그인 캐시를 쓰는 세션은 재설치/캐시 갱신 전까지 계속 이전 동작을 만난다.
+
 ## [1.11.0] — 2026-07-24
 
 Workstream-scoped session continuity release. New runs keep one Workstream in one session across
