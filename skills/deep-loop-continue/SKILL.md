@@ -72,6 +72,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuat
 - `await_human`: `action.reason`과 커널 진단을 그대로 보고하고
   `/deep-loop-status`를 안내한 뒤 멈춘다. 이 autonomous tick은 recovery,
   budget relief, breaker reset, 또는 attended approval을 실행하지 않는다.
+  `action.reason`이 `comprehension-debt`이면 `action.blocking_episode_ids`가 **실제 ack 대상**(정착된 미리뷰 maker)이다. `action.episode_id`가 있으면 그것은 debt 때문에 막힌 episode이지 ack 대상이 아니다 — 그것을 ack해도 게이트는 풀리지 않는다. 차단된 개별 episode가 없는 discover 분기에서는 `action.episode_id`가 없을 수 있다.
 - `handoff`: `continuation_policy`가 `workstream-session`이면 §4의
   exact-boundary 경로만 수행한다. migrated `compact-in-place` 또는
   `rotate-per-unit`이면 아래 legacy compatibility 경로만 수행한다.

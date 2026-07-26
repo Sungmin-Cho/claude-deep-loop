@@ -38,7 +38,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root 
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field episodes --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`human_reviewed: false`인 episode 목록을 확인한다.
+`status`가 `done`인 maker 중 `human_reviewed`가 `true`가 아닌 episode를 확인한다. 즉 `human_reviewed` 속성이 없는 경우와 값이 명시적으로 `false`인 경우를 모두 포함한다. 아직 정착되지 않은(pending/in_progress) maker는 ack 대상이 아니다. ack해도 게이트에 영향이 없고, 정착 시점에 그 크레딧이 무효화된다.
 
 ## 단계 2: 검토 표시
 

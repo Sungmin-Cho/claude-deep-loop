@@ -979,6 +979,29 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+(?:finish|workstream terminal)/);
 });
 
+test('status skill reads the gate decision and durable counters from their real sources', () => {
+  const md = readFileSync(skillPath('deep-loop-status'), 'utf8');
+  assert.match(md, /comprehension status/);
+  assert.match(md, /state get --field comprehension/);
+  assert.match(md, /`debt_ratio`, `blocked`/);
+  assert.match(md, /`episodes_total`, `episodes_human_reviewed`, `episodes_agent_reviewed`/);
+});
+test('continue skill surfaces the debt remedy', () => {
+  const md = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  assert.match(md, /blocking_episode_ids/);
+});
+test('ack skill selects every settled maker whose human review is not true', () => {
+  const md = readFileSync(skillPath('deep-loop-ack'), 'utf8');
+  const selection = md.split('\n').find(line =>
+    line.includes('`status`가 `done`') && line.includes('`human_reviewed`'));
+  assert.ok(selection, 'ack guidance must define the settled-maker selector');
+  assert.match(selection, /`status`가 `done`인 maker 중/);
+  assert.match(selection, /`human_reviewed`가 `true`가 아닌/);
+  assert.match(selection, /속성이 없는 경우와 값이 명시적으로 `false`인 경우를 모두 포함/);
+  assert.doesNotMatch(md, /`human_reviewed:\s*false`인 episode/,
+    'a false-only selector misses normal never-acked makers');
+});
+
 // Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.
 // 마커 선정 기준: budget/breaker/comprehension 검사 지시, fence 플래그(--owner/--generation/--expect-generation),
 // human-only confirm(--confirm/--actor human/recover --confirm), proposal-only 선언 등 "게이트 의미"를 담은

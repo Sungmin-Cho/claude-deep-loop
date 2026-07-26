@@ -44,9 +44,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget check --project-root "<canoni
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field comprehension --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`debt_ratio`, `episodes_total`, `episodes_human_reviewed`를 출력한다.
+첫 번째 조회의 `debt_ratio`, `blocked`와 두 번째 조회의 `episodes_total`, `episodes_human_reviewed`, `episodes_agent_reviewed`를 출력한다. `debt_ratio`/`blocked`는 **정착된(done) maker 기준**의 실시간 게이트 판정이고, durable 카운터는 pending을 포함한 감사 원본이다 — 서로 다른 것을 세므로 불일치는 정상이다. 두 번째 조회에 저장된 정적 `debt_ratio`는 실시간 판정으로 사용하지 않는다.
 
 ### 4. Circuit Breaker
 
