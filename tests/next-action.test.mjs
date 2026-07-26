@@ -473,17 +473,46 @@ test('finish gated on review of done makers AND zero active workstreams', () => 
 // Codex r2 🔴4: comprehension-debt 는 discover(새 fan-out)만 막고 fix flow 는 막지 않는다.
 test('comprehension-debt blocks discover but not the fix flow', () => {
   const l = loop();
-  l.comprehension = { episodes_total: 4, episodes_human_reviewed: 0, debt_threshold: 0.5 };  // debt=1.0 blocked
-  l.episodes = []; l.current_episode = null;
+  l.workstreams = [
+    { id: 'ws-01', status: 'merged', episodes: [], terminal_events: [] },
+    { id: 'ws-02', status: 'in_progress', episodes: [], terminal_events: [] },
+  ];
+  l.session_chain.sessions[0].scope = { kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: null, superseded_at: null };
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01', human_reviewed: false }];
+  l.current_episode = null;
   const r0 = nextAction(l, { now: 0 });
   assert.equal(r0.action.type, 'await_human');
+  assert.equal(r0.action.reason, 'comprehension-debt');
   assert.ok(r0.gate.blocked_by.includes('comprehension-debt'));
-  // The fix flow is driven by a BOUND rejected checker (target_maker set). debt must not block it.
-  l.episodes = [
-    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-    { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
+  // Keep the discover half unbound so scopedRoutingView reaches the empty-view branch at next-action.mjs:190.
+  // Bind only the fix-flow half to ws-01: next-action.mjs:39-40 then keeps terminal ws-01 episodes visible.
+  l.session_chain.sessions[0].scope = {
+    kind: 'workstream', workstream_id: 'ws-01', bound_at_seq: 1,
+    terminal_event: null, closed_at: null, superseded_at: null,
+  };
+  // fix flow is driven by a BOUND rejected checker; debt must not block it.
+  l.episodes.push({ id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' });
   l.current_episode = '002-deep-review';
-  assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');
+});
+
+test('A′: the first maker of a new workstream-session run routes directly to dispatch_maker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-first-maker-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'first maker', now: new Date('2026-07-25T00:00:00.000Z'),
+  });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const ws = newWorkstream(root, runId, {
+    title: 'first', branch: 'first', worktree: '.claude/worktrees/first', fence,
+  }).id;
+  const makerId = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['first.txt'], fence,
+  }).id;
+  const action = nextAction(readState(root, runId).data, { now: 0 }).action;
+  assert.equal(action.type, 'dispatch_maker');
+  assert.equal(action.episode_id, makerId);
+  assert.equal(action.workstream_id, ws);
 });
 
 // #1: after a machine APPROVE, the bound maker is AGENT-reviewed only (not human_reviewed); the comprehension

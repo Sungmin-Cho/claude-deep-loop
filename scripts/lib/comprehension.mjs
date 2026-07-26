@@ -13,12 +13,18 @@ function assertEpisodeScope(loop, episode, { allowCrossWorkstream = false } = {}
 
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
-  const total = c.episodes_total || 0;
-  // Only the HUMAN counter releases the gate. Machine (agent) reviews accrue to episodes_agent_reviewed,
-  // which computeDebt deliberately ignores — a machine APPROVE must never lower comprehension debt (#1).
-  const reviewed = c.episodes_human_reviewed || 0;
-  const debt_ratio = total === 0 ? 0 : 1 - reviewed / total;
-  return { debt_ratio, blocked: total > 0 && debt_ratio >= (c.debt_threshold ?? 0.5) };
+  // comprehension debt = change a human has not yet understood that ALREADY EXISTS. A pending/in_progress maker
+  // has produced no diff, so it belongs in neither the numerator nor the denominator — counting it makes the
+  // blocking cause the blocked episode itself, and the pre-emptive ack that clears it burns the review credit for
+  // a diff that does not exist yet. The durable counters (episodes_total / episodes_human_reviewed) stay as the
+  // audit record and are deliberately NOT read here: they include pending makers, so they mean something else.
+  // Only the HUMAN flag releases the gate — a machine APPROVE sets agent_reviewed (review.mjs:569-571) and must
+  // never lower comprehension debt.
+  const episodes = Array.isArray(loop.episodes) ? loop.episodes : [];
+  const settled = episodes.filter(e => e?.role === 'maker' && e.status === 'done');
+  const reviewed = settled.filter(e => e.human_reviewed === true).length;
+  const debt_ratio = settled.length === 0 ? 0 : 1 - reviewed / settled.length;
+  return { debt_ratio, blocked: settled.length > 0 && debt_ratio >= (c.debt_threshold ?? 0.5) };
 }
 
 // Acknowledge that an episode's diff has been reviewed. tamper-evident + 절차 금지 + headless fail-closed (design #1):

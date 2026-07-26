@@ -38,18 +38,64 @@ function freshRun(runtime = 'claude') {
 }
 
 test('debt ratio computed; blocked when over threshold', () => {
-  const r = computeDebt({ comprehension: { episodes_total: 10, episodes_human_reviewed: 4, debt_threshold: 0.5 } });
+  const episodes = [];
+  for (let i = 0; i < 10; i += 1) episodes.push({ id: `m${i}`, role: 'maker', status: 'done', human_reviewed: i < 4 });
+  const r = computeDebt({ comprehension: { debt_threshold: 0.5 }, episodes });
   assert.equal(r.debt_ratio, 0.6);
   assert.equal(r.blocked, true);
 });
 test('under threshold not blocked', () => {
-  const r = computeDebt({ comprehension: { episodes_total: 10, episodes_human_reviewed: 6, debt_threshold: 0.5 } });
+  const episodes = [];
+  for (let i = 0; i < 10; i += 1) episodes.push({ id: `m${i}`, role: 'maker', status: 'done', human_reviewed: i < 6 });
+  const r = computeDebt({ comprehension: { debt_threshold: 0.5 }, episodes });
   assert.equal(r.blocked, false);
 });
 test('zero episodes → debt 0, not blocked', () => {
   const r = computeDebt({ comprehension: { episodes_total: 0, episodes_human_reviewed: 0, debt_threshold: 0.5 } });
   assert.equal(r.debt_ratio, 0);
   assert.equal(r.blocked, false);
+});
+
+test('A′: pending makers alone never block', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['a'], fence });
+  const d = computeDebt(readState(root, runId).data);
+  assert.equal(d.blocked, false);
+  assert.equal(d.debt_ratio, 0);
+  assert.equal(Object.hasOwn(d, 'settled_debt_ratio'), false);
+});
+
+test('A′: adding a pending maker does not flip an unblocked run to blocked', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const ids = [];
+  for (let i = 0; i < 3; i += 1) {
+    const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence }).id;
+    recordEpisode(root, runId, m, { status: 'in_progress', fence });
+    recordEpisode(root, runId, m, { status: 'done', artifacts: ['art.txt'], fence });
+    ids.push(m);
+  }
+  ack(root, runId, ids[0], { actor: 'human', confirm: true, env: ATTENDED, fence });
+  ack(root, runId, ids[1], { actor: 'human', confirm: true, env: ATTENDED, fence });
+  assert.equal(computeDebt(readState(root, runId).data).blocked, false);
+  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence });
+  assert.equal(computeDebt(readState(root, runId).data).blocked, false, 'a new pending maker must not block itself');
+});
+
+test('A′: a done unreviewed maker above threshold still blocks', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence }).id;
+  recordEpisode(root, runId, m, { status: 'in_progress', fence });
+  recordEpisode(root, runId, m, { status: 'done', artifacts: ['art.txt'], fence });
+  assert.equal(computeDebt(readState(root, runId).data).blocked, true);
+});
+
+test('A′: a non-array episodes field does not throw', () => {
+  assert.doesNotThrow(() => computeDebt({ comprehension: { debt_threshold: 0.5 }, episodes: 'not-an-array' }));
 });
 
 test('ack is idempotent and validates episode existence', () => {
