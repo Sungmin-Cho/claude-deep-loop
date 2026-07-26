@@ -10,7 +10,9 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { ack, computeDebt } from '../scripts/lib/comprehension.mjs';
 
+const ATTENDED = {};
 const EPISODE_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
 function runEpisodeCli(root, runId, args) {
   return spawnSync(process.execPath, [
@@ -27,6 +29,41 @@ function seed() {
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
 function freshRun() { const { root, runId } = seed(); return { root, runId, fence: fence(runId) }; }
+
+test('C: the done transition clears a pre-emptive human ack credit', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const sibling = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence }).id;
+  recordEpisode(root, runId, sibling, { status: 'in_progress', fence });          // binds owner scope to ws
+  const target = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence }).id;
+  ack(root, runId, target, { actor: 'human', confirm: true, env: ATTENDED, fence });
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 1);
+
+  recordEpisode(root, runId, target, { status: 'in_progress', fence });
+  recordEpisode(root, runId, target, { status: 'done', artifacts: ['art.txt'], fence });
+  const d = readState(root, runId).data;
+  assert.equal(d.episodes.find(e => e.id === target).human_reviewed, false);
+  assert.equal(d.comprehension.episodes_human_reviewed, 0);
+  assert.equal(computeDebt(d).blocked, true, 'the settled diff must still need a real human review');
+});
+
+test('C: the done transition clears a pre-emptive agent ack credit too', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const sibling = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence }).id;
+  recordEpisode(root, runId, sibling, { status: 'in_progress', fence });
+  const target = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: ws, expectedArtifacts: ['art.txt'], fence }).id;
+  ack(root, runId, target, { actor: 'agent', env: ATTENDED, fence });
+  assert.equal(readState(root, runId).data.comprehension.episodes_agent_reviewed, 1);
+
+  recordEpisode(root, runId, target, { status: 'in_progress', fence });
+  recordEpisode(root, runId, target, { status: 'done', artifacts: ['art.txt'], fence });
+  const d = readState(root, runId).data;
+  assert.equal(d.episodes.find(e => e.id === target).agent_reviewed, false);
+  assert.equal(d.comprehension.episodes_agent_reviewed, 0);
+});
 
 test('H: a workstream-less maker cannot be recorded done under workstream-session', () => {
   const { root, runId, fence } = freshRun();

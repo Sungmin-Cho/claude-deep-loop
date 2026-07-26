@@ -216,6 +216,16 @@ export function recordEpisode(root, runId, episodeId, {
       && loop.autonomy?.continuation_policy === 'workstream-session') {
       bindMakerScope(loop, ep, tx.event_identity.seq);
     }
+    // Review credit belongs to a SETTLED diff. When a maker confirms its output, any review flag recorded before
+    // that point was about a change which did not exist yet, so it is invalidated here. Same anchored transaction
+    // as the episode-record event (invariant 3) and no new lock (invariant 7) — mirrors abandonEpisode's counter
+    // adjustment. Math.max keeps the counters non-negative; `done` cannot be re-recorded (see the preCheck), so
+    // this can never double-decrement.
+    if (status === 'done' && ep.role === 'maker') {
+      const c = loop.comprehension || (loop.comprehension = {});
+      if (ep.human_reviewed) { ep.human_reviewed = false; c.episodes_human_reviewed = Math.max(0, (c.episodes_human_reviewed || 0) - 1); }
+      if (ep.agent_reviewed) { ep.agent_reviewed = false; c.episodes_agent_reviewed = Math.max(0, (c.episodes_agent_reviewed || 0) - 1); }
+    }
     ep.status = status;
     if (artifacts.length) ep.artifacts = artifacts;
     for (const [k, v] of Object.entries(proof)) if (/^result_[A-Za-z0-9_]+$/.test(k)) ep[k] = v;
