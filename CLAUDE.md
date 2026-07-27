@@ -28,8 +28,8 @@ New runs use `workstream-session` with interactive same-conversation affinity un
 - `scripts/lib/*.mjs` — deterministic kernel, portable path/write helpers, runtime descriptors, executable trust, isolated Codex transport, review import, and durable receipt modules; `scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention, and freshness selection.
 - `scripts/hooks-impl/{precompact-handoff,sessionstart-restore,drive-headless}.mjs` — emit-only compaction hook glue, read-only restore glue, and measured headless driver.
 - `hooks/hooks.json` (static shell-free Node bootstraps) → `scripts/hooks-impl/precompact-handoff.mjs` and `scripts/hooks-impl/sessionstart-restore.mjs`; headless driver: `scripts/hooks-impl/drive-headless.mjs`.
-- `skills/deep-loop*/SKILL.md` (10) + `skills/deep-loop-workflow/references/*.md` — Execution plane.
-- `protocols/*.json` · `recipes/*.json` (+ `automation/*.yml`) · `schemas/*.json` — declarative adapters, policies, and durable/input schemas.
+- `skills/deep-loop*/SKILL.md` + `skills/deep-loop-workflow/references/*.md` — Execution plane.
+- `protocols/*.json` · `recipes/*.json` (+ `recipes/automation/*.yml`) · `schemas/*.json` — declarative adapters, policies, and durable/input schemas.
 - `tests/*.test.mjs` (`node --test`) · `docs/` · `integration/deep-suite.patch.md`.
 
 ## Hard invariants — DO NOT break (enforced by code + Codex review)
