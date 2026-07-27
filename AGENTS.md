@@ -11,8 +11,8 @@ To check the current version: `node -e "console.log(require('./.claude-plugin/pl
 - Claude Code manifest: `.claude-plugin/plugin.json` · Codex manifest: `.codex-plugin/plugin.json`
 - Control plane (Node, the only state-change boundary): `scripts/deep-loop.mjs` (CLI) + `scripts/lib/*.mjs`
 - Execution plane (skills): `skills/deep-loop*/SKILL.md` + `skills/deep-loop-workflow/references/*.md`
-- Hook + headless: `hooks/hooks.json` (static shell-free Node bootstrap) → `scripts/hooks-impl/precompact-handoff.mjs`; unattended driver: `scripts/hooks-impl/drive-headless.mjs`
-- Declarative: `protocols/*.json` · `recipes/*.json` (+ `automation/*.yml`) · `schemas/*.json`
+- Hook + headless: `hooks/hooks.json` (static shell-free Node bootstraps) → `scripts/hooks-impl/precompact-handoff.mjs` (PreCompact) + `scripts/hooks-impl/sessionstart-restore.mjs` (SessionStart, `compact` source); unattended driver: `scripts/hooks-impl/drive-headless.mjs`
+- Declarative: `protocols/*.json` · `recipes/*.json` (+ `recipes/automation/*.yml`) · `schemas/*.json`
 - Durable state (runtime, git-ignored): `<project-root>/.deep-loop/runs/<run-id>/`
 
 ## Verification
@@ -20,7 +20,7 @@ To check the current version: `node -e "console.log(require('./.claude-plugin/pl
 ```bash
 npm run preflight   # = npm run validate (schema + builder self-test) && npm test (node --test)
 ```
-Must pass before release. No external deps. Time-sensitive tests inject a fixed `now` (no `Date.now()` flakes). The PreCompact hook uses a static shell-free Node bootstrap.
+Must pass before release. No external deps. Time-sensitive tests inject a fixed `now` (no `Date.now()` flakes). The PreCompact and SessionStart hooks use static shell-free Node bootstraps.
 
 ## Non-negotiable invariants (see CLAUDE.md for detail)
 
@@ -29,7 +29,7 @@ Must pass before release. No external deps. Time-sensitive tests inject a fixed 
 - Event + state change = one `appendAnchored` transaction; terminal states proof-derived (per-maker review via `target_maker`); `finish completed` is proof-gated.
 - Irreversible external actions (push/PR/merge/publish/delete and marketplace/deep-suite sync) are proposal-only, always separately human-approved.
 - Unattended autonomy forces headless + measured **fail-closed**; respawn gate budget→breaker→max_sessions→wallclock→auto_handoff; breaker latches (human reset).
-- No writes outside `<project-root>/.deep-loop/` (final-report + finish's deep-memory/deep-wiki delegation excepted).
+- Kernel durable writes stay inside `<project-root>/.deep-loop/`; skills write only `final-report.md` there; Execution-plane worktree creation is allowed **only** under `<root>/.claude/worktrees/` (or `.worktrees/`); `/deep-loop-finish` may delegate to deep-memory/deep-wiki's own skills.
 
 ## Release: post-merge deep-suite sync (required)
 
