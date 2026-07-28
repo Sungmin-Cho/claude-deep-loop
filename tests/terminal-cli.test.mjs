@@ -395,6 +395,11 @@ test('CLI lease acquire runtime mismatch exits 3 with structured RUNTIME_FENCED 
     reason: 'RUNTIME_FENCED',
     expected: 'claude',
     actual: 'codex',
+    // 의도된 shape 변경 — spec §3.1. RUNTIME_FENCED 는 runtimeFence 객체를 그대로 복원하므로
+    // `generation` 이 없고, 계약 3필드만 더해진다.
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(readState(root, runId).data, before);
 });

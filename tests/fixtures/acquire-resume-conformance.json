@@ -1,0 +1,131 @@
+{
+  "contract": "deep-loop-acquire-resume-conformance",
+  "version": 2,
+  "now": { "T0": "2026-07-27T00:00:00.000Z", "T1": "2026-07-27T00:10:00.000Z", "T2": "2026-07-27T00:20:00.000Z" },
+  "now_binding": {
+    "rule": "harness MUST bind $T0/$T1/$T2 to (replay-start + offset_sec), keeping the reference spacing. The literal `now` values above are the reference vectors and are only usable verbatim when the kernel's own wallclock is controlled.",
+    "why": "recovery safety (recoverySafetyReason) samples the REAL clock inside the lock and cannot be injected by a caller, so a fixture pinned to absolute past timestamps drifts past budget.max_wallclock_sec and the principal-death ordering flips to BUDGET_BLOCKED depending on when it is replayed. Binding relatively makes the response contract time-independent; the fixture never compares timestamps, only {exit, ok, reason, proceed} and the `final` subset.",
+    "offsets_sec": { "T0": -1200, "T1": -600, "T2": 0 }
+  },
+  "seed": [
+    { "op": "cli", "argv": ["init-run", "--runtime", "claude", "--goal", "conformance",
+        "--review", "{\"points\":[\"implementation\"],\"reviewer\":\"subagent-checker\",\"mode\":\"cross-model\",\"flags\":[],\"converge\":true,\"max_review_rounds\":5,\"require_human_ack\":false}",
+        "--now", "$T0", "--project-root", "$ROOT"],
+      "expect": { "exit": 0 }, "capture": { "$RUN": "run_id" } },
+    { "op": "mkdir", "rel": ".claude/worktrees/closure" },
+    { "op": "mkdir", "rel": ".claude/worktrees/sibling" },
+    { "op": "cli", "argv": ["workstream", "new", "--title", "closure", "--branch", "feature/closure", "--worktree", ".claude/worktrees/closure", "--owner", "$RUN", "--generation", "1"],
+      "expect": { "exit": 0 }, "capture": { "$WS": "id" } },
+    { "op": "cli", "argv": ["workstream", "new", "--title", "sibling", "--branch", "feature/sibling", "--worktree", ".claude/worktrees/sibling", "--owner", "$RUN", "--generation", "1"],
+      "expect": { "exit": 0 }, "capture": { "$WS2": "id" } },
+    { "op": "write-file", "rel": ".claude/worktrees/closure/impl.txt", "content": "impl\n" },
+    { "op": "cli", "argv": ["episode", "new", "--plugin", "deep-work", "--role", "maker", "--kind", "implementation", "--point", "implementation", "--workstream", "$WS", "--artifacts", "[\".claude/worktrees/closure/impl.txt\"]", "--owner", "$RUN", "--generation", "1"],
+      "expect": { "exit": 0 }, "capture": { "$MAKER": "id" } },
+    { "op": "cli", "argv": ["episode", "record", "--id", "$MAKER", "--status", "in_progress", "--owner", "$RUN", "--generation", "1"], "expect": { "exit": 0 } },
+    { "op": "cli", "argv": ["episode", "record", "--id", "$MAKER", "--status", "done", "--artifacts", "[\".claude/worktrees/closure/impl.txt\"]", "--proof", "{}", "--owner", "$RUN", "--generation", "1"], "expect": { "exit": 0 } },
+    { "op": "cli", "argv": ["review", "dispatch", "--point", "implementation", "--workstream", "$WS", "--owner", "$RUN", "--generation", "1"],
+      "expect": { "exit": 0 }, "capture": { "$CHECKER": "checkerEpisodeId" } },
+    { "op": "write-file", "rel": ".claude/worktrees/closure/impl-review.md", "content": "# review\nAPPROVE\n" },
+    { "op": "cli", "argv": ["review", "record", "--episode", "$CHECKER", "--verdict", "APPROVE", "--report", ".claude/worktrees/closure/impl-review.md", "--owner", "$RUN", "--generation", "1"], "expect": { "exit": 0 } },
+    { "op": "cli", "argv": ["workstream", "terminal", "--id", "$WS", "--status", "ready", "--proof", "{}", "--now", "$T1", "--owner", "$RUN", "--generation", "1"], "expect": { "exit": 0 } },
+    { "op": "cli", "argv": ["state", "get", "--field", "session_chain.sessions.0.scope.terminal_event.seq"], "expect": { "exit": 0 }, "capture": { "$SEQ": "" } },
+    { "op": "cli", "argv": ["state", "get", "--field", "session_chain.sessions.0.scope.terminal_event.checksum"], "expect": { "exit": 0 }, "capture": { "$SUM": "" } },
+    { "op": "cli", "argv": ["handoff", "emit", "--boundary-event", "$SEQ:$SUM", "--reason", "workstream-terminal", "--trigger", "workstream-terminal", "--now", "$T1", "--owner", "$RUN", "--generation", "1"],
+      "expect": { "exit": 0, "json": { "ok": true } }, "capture": { "$CHILD": "childRunId" } }
+  ],
+  "orderings": [
+    {
+      "id": "raw-first",
+      "steps": [
+        { "op": "cli", "argv": ["resume-command"],
+          "expect": { "exit": 0, "stdout_has": ["Lease:", "handoff_phase=emitted", "child_run_id=$CHILD"] } },
+        { "op": "write-file", "rel": ".claude/worktrees/closure/.resume-attempt-id", "content": "01KRAWRESUMEATTEMPT000000\n",
+          "comment": "r6 추가(R5-W2): §3.6.1/§3.6.5가 요구하는 '호출 전 durable 영속화'를 fixture가 실제로 수행한다. raw resume 경로의 nonce 계약이 (c)의 '모든 public 경로' 적합성 검증에 포함되어야 하는데 r5까지 이 ordering은 --attempt-id 없이 인수해 그 계약을 전혀 실행하지 않았다." },
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KRAWRESUMEATTEMPT000000", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true, "replayed": false } } },
+        { "op": "cli", "argv": ["state", "get", "--field", "session_chain.lease.acquisition_receipt.attempt_id"],
+          "expect": { "exit": 0, "stdout_has": ["01KRAWRESUMEATTEMPT000000"] },
+          "comment": "영수증이 attempt_id를 기록했음을 확인 — replay 가능성의 전제." },
+        { "op": "cli", "argv": ["resume-command"],
+          "expect": { "exit": 0, "stdout_has": ["Handoff: consumed child_run_id=$CHILD", "Status: consumed"] } }
+      ],
+      "final": { "status": "running", "owner_run_id": "$CHILD", "generation": 2, "handoff_phase": "acquired" }
+    },
+    {
+      "id": "wrapper-first",
+      "comment": "wrapper의 위임-전 사전 acquire는 오용이다(§3.4). 오용자의 preserve-pause 의무 이행 자체를 결과가 assert되는 step으로 포함한다 — 이행하지 않는 wrapper는 final에서 실패한다.",
+      "steps": [
+        { "op": "cli", "actor": "wrapper", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true } } },
+        { "op": "cli", "actor": "wrapper", "argv": ["pause", "--owner", "$CHILD", "--generation", "2", "--reason", "acquire-misuse", "--mode", "preserve", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "status": "paused" } } },
+        { "op": "cli", "actor": "delegated-session", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "2", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
+          "comment": "같은-owner 멱등은 paused에서도 성립하되 proceed:false — 위임 세션은 승격하지 않고 멈춘다(§3.4)" }
+      ],
+      "final": { "status": "paused", "owner_run_id": "$CHILD", "generation": 2, "handoff_phase": "acquired" }
+    },
+    {
+      "id": "duplicate",
+      "steps": [
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true } } },
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
+          "comment": "정확히 1회만 proceed:true — harness는 이 ordering에서 proceed:true 응답이 1건임을 추가로 센다" }
+      ],
+      "final": { "status": "running", "owner_run_id": "$CHILD", "generation": 2, "handoff_phase": "acquired" }
+    },
+    {
+      "id": "stale-invocation",
+      "steps": [
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true } } },
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
+          "comment": "같은 owner + 옛 generation: 같은-owner 멱등이 generation 검사보다 선행(§1.3) — 계약으로 고정" },
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "01KUNRELATEDOWNER0000000000", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": false, "reason": "generation-mismatch", "proceed": false } } }
+      ],
+      "final": { "status": "running", "owner_run_id": "$CHILD", "generation": 2, "handoff_phase": "acquired" }
+    },
+    {
+      "id": "lost-ack",
+      "comment": "M1 — 응답 유실, 주체 생존. 1번 step의 응답을 소비자가 유실했다고 가정한다(유실은 소비자 상태이지 커널 상태가 아니므로 harness는 응답 형태를 그대로 assert한다). 같은 attempt_id로 재시도하면 커널이 진행 권한을 재발급하므로 사람 개입 없이 회복된다 — 이 ordering의 final이 running인 것은 (b) 위반이 아니라 '주체가 진행 중'이라는 정상 상태다.",
+      "steps": [
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KATTEMPTAAAAAAAAAAAAAAAA", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true, "replayed": false } } },
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KATTEMPTAAAAAAAAAAAAAAAA", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true, "replayed": true } },
+          "comment": "같은 attempt_id → replay. proceed:true를 재수신해 주체가 자력으로 진행 권한을 회복한다(§3.6)." },
+        { "op": "cli", "argv": ["resume-command"],
+          "expect": { "exit": 0, "stdout_has": ["Handoff: consumed child_run_id=$CHILD", "Consumed: takeover_kind=boundary-handoff", "Status: consumed"] } }
+      ],
+      "final": { "status": "running", "owner_run_id": "$CHILD", "generation": 2, "handoff_phase": "acquired" }
+    },
+    {
+      "id": "principal-death",
+      "comment": "M2 — 소비 후 주체 사망. 커널이 자동 해소하지 못하는 (b)의 잔여를 문서화하고, 그 회복이 런북으로 실제 가능함을 asserted step으로 고정한다. 대체 주체는 다른 attempt를 시작하므로 replay 대상이 아니며(2번 step), 회복은 사람이 개시한 pause -> recover -> fresh acquire 체인으로만 이루어진다. final이 paused가 아니라 running인 이유는 마지막 step에서 새 주체가 정상 인수를 완료했기 때문이다 -- 중간의 3번 step이 (b) 준수 상태(paused)로의 복귀를 assert한다.",
+      "steps": [
+        { "op": "cli", "actor": "dying-principal", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KATTEMPTBBBBBBBBBBBBBBBB", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true, "replayed": false } },
+          "comment": "이 직후 주체가 죽었다고 가정한다. harness는 프로세스를 실제로 죽이지 않는다 -- 이후 step에서 이 attempt_id를 다시 쓰지 않는 것이 '죽음'의 표현이다." },
+        { "op": "cli", "actor": "replacement", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "2", "--runtime", "claude", "--attempt-id", "01KATTEMPTCCCCCCCCCCCCCCCC", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
+          "comment": "대체 주체는 새 attempt이므로 replay 불가 -- 이것이 M2가 커널로 닫히지 않는 지점이다(§4-(b)③)." },
+        { "op": "cli", "actor": "human-runbook", "argv": ["pause", "--owner", "$CHILD", "--generation", "2", "--reason", "orphaned-principal", "--mode", "preserve", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "status": "paused" } },
+          "comment": "런북 1단계. 여기서 run이 (b) 준수 상태로 복귀한다 -- 자동이 아니라 사람이 개시한다." },
+        { "op": "cli", "actor": "human-runbook", "argv": ["recover", "--confirm", "--owner", "$CHILD", "--generation", "2", "--now", "$T2"],
+          "expect": { "exit": 0 },
+          "capture": { "$RECOVERED_CHILD": "child_run_id" },
+          "comment": "런북 2단계. recover는 fenced이므로 owner/generation이 필수이고(deep-loop.mjs:1062) generation을 올리지 않는다. workstream-session 정책에서는 recoverBoundary가 실행되어 결정론적 replacement child id를 계산·예약하고(recover.mjs:625-632, exactRecoveryLease :157-186,767-776) 그 id를 child_run_id로 반환한다(:797-809) -- 반드시 캡처해야 한다. 호출자가 이 id를 고를 수 없다." },
+        { "op": "cli", "actor": "fresh-principal", "argv": ["lease", "acquire", "--owner", "$RECOVERED_CHILD", "--generation", "2", "--runtime", "claude", "--attempt-id", "01KATTEMPTDDDDDDDDDDDDDDDD", "--now", "$T2"],
+          "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true, "replayed": false } },
+          "expect_consumed_takeover_kind": "boundary-recovery",
+          "comment": "런북 3단계 -- 예약된 정확한 replacement child로 인수해야 한다. 임의 owner를 쓰면 boundary-recovery 분기(lease.mjs:199-202)가 child-not-reserved exit 3을 낸다. 성공 응답은 3.5의 boundary-recovery 행대로 consumed{takeover_kind:'boundary-recovery'}를 실으므로 consumed는 null이 아니다. expectGeneration은 현재 세대인 2이며 결과는 3." }
+      ],
+      "final": { "status": "running", "owner_run_id": "$RECOVERED_CHILD", "generation": 3, "handoff_phase": "acquired" }
+    }
+  ]
+}

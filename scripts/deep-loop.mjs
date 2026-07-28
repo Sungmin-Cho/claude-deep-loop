@@ -598,6 +598,32 @@ const handlers = {
     const childRunId = typeof lease.handoff_child_run_id === 'string'
       ? lease.handoff_child_run_id
       : null;
+    // spec §3.3 acquired 브랜치 — 전부 durable 영수증 기준이며 read-only 다(이벤트 로그를 읽지 않는다).
+    // 판별: 현재 세대의 영수증이고(`to_generation === lease.generation`) 실제로 예약을 소비했을 때만
+    // (`takeover_kind !== 'released-takeover'`) 진입한다 → 일반 재획득·stale 영수증은 절대 consumed 를
+    // 내지 않는다(B-2(ii) 해소, T1 부정 케이스).
+    const receipt = lease.acquisition_receipt;
+    if (lease.handoff_phase === 'acquired'
+      && receipt && typeof receipt === 'object'
+      && receipt.to_generation === lease.generation
+      && receipt.takeover_kind !== 'released-takeover') {
+      const consumedChild = (data.session_chain?.sessions || [])
+        .find(session => session.run_id === receipt.child_run_id);
+      const boundary = receipt.boundary_event
+        ? `${receipt.boundary_event.seq}:${receipt.boundary_event.checksum}`
+        : 'none';
+      const head = ['boundary-recovery', 'affinity-supersession', 'project-root'].includes(receipt.takeover_kind)
+        ? `Recovery: consumed kind=${receipt.takeover_kind} capsule=${consumedChild?.recovery_rel || 'none'}`
+        : `Handoff: consumed child_run_id=${receipt.child_run_id} boundary_event=${boundary} binding_generation=${receipt.project_binding_generation ?? 'none'} root_digest=${receipt.project_root_digest ?? 'none'}`;
+      process.stdout.write([
+        head,
+        `Consumed: takeover_kind=${receipt.takeover_kind} superseded_owner=${receipt.superseded_owner_run_id} transition=${receipt.from_generation}->${receipt.to_generation} at=${receipt.at}`,
+        `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
+        'Status: consumed — 새 진입 시도는 proceed:false (already-owned)',
+        '',
+      ].join('\n'));
+      return 0;
+    }
     if (!childRunId || !['reserved', 'emitted', 'spawned'].includes(lease.handoff_phase)) {
       process.stdout.write('no pending handoff\n');
       return 0;
@@ -741,11 +767,22 @@ const handlers = {
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+      // spec §3.6.1: optional additive 플래그. 형식 위반은 **invalid value → exit 1** 이며 strArg 의
+      // fence 채널(exit 3)을 타지 않는다. 미지정은 위반이 아니다(현행 동작 완전 보존).
+      let attemptId = null;
+      if (f['attempt-id'] !== undefined) {
+        attemptId = f['attempt-id'];
+        if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+          error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
+          return 1;
+        }
+      }
       let r;
       try { r = acquireLease(root, runId, {
         owner,
         expectGeneration,
         runtime,
+        attemptId,
         now: parseExplicitNow(f),
       }); }
       catch (e) {
@@ -1030,7 +1067,12 @@ const handlers = {
     const generation = intArg(f, 'generation');   // exits 3 on invalid/missing (consistent with other handlers)
     const mode = (f.mode === 'rollback') ? 'rollback' : 'preserve';
     try {
-      pauseRun(root, runId, { reason, mode, expect: { owner, generation }, now: Date.now() });
+      // ARC-3: 다른 verb 와 같은 optional `--now` — §8 fixture 의 timed step 이 결정론적으로 재생되려면
+      // pause 도 주입된 시간을 써야 한다. 미지정은 현행대로 Date.now(); 무효 값은 INVALID_NOW → exit 1.
+      const explicitNow = parseExplicitNow(f);
+      pauseRun(root, runId, {
+        reason, mode, expect: { owner, generation }, now: explicitNow ?? Date.now(),
+      });
       json({ ok: true, status: 'paused' }); return 0;
     } catch (e) {
       const msg = String(e?.message || e);

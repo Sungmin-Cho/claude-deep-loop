@@ -21,6 +21,7 @@
     "session_chain.lease.resume_policy": { "type": "string" },
     "session_chain.lease.handoff_trigger": { "type": ["string", "null"] },
     "session_chain.lease.takeover_kind": { "type": ["string", "null"] },
+    "session_chain.lease.acquisition_receipt": { "type": "object" },
     "session_chain.consumed_milestones": { "type": "array" },
     "autonomy.session_model": { "type": "string" },
     "autonomy.session_runtime": { "type": "string" },

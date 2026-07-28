@@ -557,6 +557,10 @@ test('expired boundary reservations remain exclusive to the exact child and reje
     ok: false,
     generation: 1,
     reason: 'child-not-reserved',
+    // 의도된 shape 변경 — spec §3.1 의 응답 계약 3필드는 모든 반환 객체에 존재한다.
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(
     ['loop.json', '.loop.hash', 'event-log.jsonl'].map(name => readFileSync(join(dir, name))),
