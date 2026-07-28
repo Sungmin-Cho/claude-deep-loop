@@ -505,6 +505,9 @@ function anchoredShape(root, runId) {
     types: lines.map(event => event.type).join(','),
     transactionsDir: existsSync(join(runDir(root, runId), 'transactions')),
     goal: readState(root, runId).data.goal,
+    // N1(리뷰 라운드 2): §7-T8-② 는 **세** 파일을 말한다. 대조 arm 이 loop.json 과 event-log 만 보고
+    // .loop.hash 를 빠뜨리고 있었다 — 앵커가 함께 갱신됐는지도 대조 대상이다.
+    hash: readFileSync(join(runDir(root, runId), '.loop.hash'), 'utf8'),
   };
 }
 
@@ -583,7 +586,7 @@ test('T8 with a pending publication the three anchored files change from reconci
 
   // (B) 같은 상태에서 replay 대신 **read-only** 호출을 한다 — 동일한 변화가 일어난다.
   const viaRead = build('PENDING-VIA-READ');
-  assert.deepEqual(viaRead.before, { ...viaRead.before, transactionsDir: true });
+  assert.equal(viaRead.before.transactionsDir, true);
   captureReconciledRunSnapshot(viaRead.root, viaRead.runId);
   const afterRead = anchoredShape(viaRead.root, viaRead.runId);
 
@@ -595,6 +598,8 @@ test('T8 with a pending publication the three anchored files change from reconci
   assert.equal(afterReplay.goal, 'PENDING-VIA-REPLAY');
   assert.equal(afterRead.goal, 'PENDING-VIA-READ');
   assert.equal(afterReplay.transactionsDir, afterRead.transactionsDir);
+  assert.notEqual(afterReplay.hash, viaReplay.before.hash);
+  assert.notEqual(afterRead.hash, viaRead.before.hash);
   // replay 는 lease-acquired 를 추가하지 않는다 — 소비는 여전히 정확히 1회다.
   assert.equal(leaseAcquiredEvents(viaReplay.root, viaReplay.runId).length, 1);
 
@@ -1177,7 +1182,8 @@ test('T4 the conformance fixture replays deterministically through the public CL
 function closeSiblingForSecondBoundary(f, owner, generation) {
   const fenceForOwner = { owner, generation, intent: 'business' };
   // boundary handoff 는 승계할 열린 workstream 이 있어야 성립한다 — 없으면 커널이 FINISH_REQUIRED 를 낸다.
-  mkdirSync(join(f.root, '.claude/worktrees/successor'), { recursive: true });
+  // 디렉터리를 미리 만들지 않는다: newWorkstream 의 containment 해석은 존재하지 않는 경로에 대해 가장
+  // 가까운 기존 조상까지 올라간다(workspace.mjs:33-52) — seedEmittedBoundary 의 sibling 도 그래서 없다.
   newWorkstream(f.root, f.runId, {
     title: 'successor', branch: 'feature/successor',
     worktree: '.claude/worktrees/successor', fence: fenceForOwner,
@@ -1261,6 +1267,22 @@ test('T6 two consecutive boundary rotations bind lineage to the current owner, n
   const meta = JSON.parse(readFileSync(join(dir, 'terminal', 'launch-command.meta.json'), 'utf8'));
   assert.equal(meta.envelope.parent_run_id, c1);
   assert.equal(meta.payload.parent_run_id, c1);
+
+  // F1(리뷰 라운드 3): reader 수정(R-r1)은 T6 의 writer 회전만으로는 고정되지 않는다 — 두 반쪽 중
+  // 어느 쪽을 되돌려도 T6 는 green 이고, 저장소의 모든 resume-command boundary-metadata 테스트는
+  // generation 1(변경이 no-op)이다. 2세대에서 journaled launch-command.txt 를 신뢰하는지는 상태로는
+  // 관측되지 않고 **어느 문자열을 출력하는지**로만 드러나므로 여기서 직접 assert 한다. reader 가
+  // 논리 runId 로 되돌아가면 meta/child 대조가 어긋나 재구성된 launcher 줄로 조용히 강등된다.
+  const journaledLaunch = readFileSync(
+    join(runDir(f.root, f.runId), 'terminal', 'launch-command.txt'),
+    'utf8',
+  ).trimEnd();
+  const shown = runReadCli(f.root, f.runId, ['resume-command']);
+  assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+  assert.ok(shown.stdout.includes('Launcher guidance (from launch-command.txt):'),
+    `gen-2 resume-command must trust the journaled launch text:\n${shown.stdout}`);
+  assert.ok(shown.stdout.includes(journaledLaunch));
+  assert.ok(shown.stdout.includes(`child_run_id=${c2}`));
 
   // 멱등 재-emit — 2세대에서 처음으로 성립한다. durable 바이트 불변.
   const before = anchoredBytes(f.root, f.runId);

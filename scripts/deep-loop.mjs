@@ -606,7 +606,7 @@ const handlers = {
     // `state: 'released'` 만 바꾸고 `handoff_phase`/`generation` 을 그대로 두므로, 그것 없이는 release 된
     // lease 에서도 이 분기가 발화해 `Status: consumed — 새 진입 시도는 proceed:false` 를 출력한다. 그런데
     // released lease 는 takeable 이라 다음 acquire 가 `proceed:true` 를 낸다 — 마커가 커널과 정면으로
-    //어긋나고, §3.4 가 `Status: consumed` 에서 승격을 금지하므로 **정당한 인수가 교착된다.**
+    // 어긋나고, §3.4 가 `Status: consumed` 에서 승격을 금지하므로 **정당한 인수가 교착된다.**
     const receipt = lease.acquisition_receipt;
     if (lease.handoff_phase === 'acquired'
       && lease.state === 'active'
