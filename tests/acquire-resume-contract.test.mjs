@@ -18,7 +18,7 @@ import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import {
   captureReconciledRunSnapshot, pauseRun, readState, readStateForRootRecovery, runDir, writeState,
 } from '../scripts/lib/state.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { acquireRecovery, recoverBoundary, supersedeAffinity } from '../scripts/lib/recover.mjs';
@@ -203,6 +203,38 @@ test('T1 negative: a reservation-less released takeover and a stale-generation r
   assert.equal(reacquired.consumed, null);
   const afterReacquire = runReadCli(f.root, f.runId, ['resume-command']);
   assert.doesNotMatch(afterReacquire.stdout, /consumed/);
+});
+
+test('T1 negative: a released lease never shows the consumed marker, because the next acquire would proceed', () => {
+  // checker W1: releaseLease 는 spread 로 state 만 바꾸고 handoff_phase/generation 을 남기므로,
+  // 가드에 `state === 'active'` 가 없으면 이 창에서 `Status: consumed — 새 진입 시도는 proceed:false` 가
+  // 출력된다. 그런데 released lease 는 takeable 이라 다음 acquire 는 proceed:true 를 낸다 — §3.4 가
+  // consumed 마커에서 승격을 금지하므로 정당한 인수가 교착된다.
+  const f = seedEmittedBoundary();
+  assert.equal(acquireLease(f.root, f.runId, {
+    owner: f.child, expectGeneration: 1, runtime: 'claude', now: Date.parse(T2),
+  }).proceed, true);
+  assert.match(runReadCli(f.root, f.runId, ['resume-command']).stdout, /Status: consumed/);
+
+  assert.deepEqual(releaseLease(f.root, f.runId, { owner: f.child, generation: 2 }), {
+    ok: true, reason: 'released',
+  });
+  const released = lease(f.root, f.runId);
+  assert.equal(released.state, 'released');
+  assert.equal(released.handoff_phase, 'acquired');       // 소비 흔적은 남아 있다
+  assert.equal(released.acquisition_receipt.to_generation, released.generation);
+
+  const shown = runReadCli(f.root, f.runId, ['resume-command']);
+  assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+  assert.doesNotMatch(shown.stdout, /Status: consumed/);
+  assert.doesNotMatch(shown.stdout, /Consumed:/);
+
+  // 그리고 실제로 진행 가능함을 같은 테스트에서 고정한다 — 마커의 예측과 커널이 어긋나지 않는다.
+  const next = acquireLease(f.root, f.runId, {
+    owner: 'FRESHTAKEOVERPRINCIPAL', expectGeneration: 2, runtime: 'claude', now: Date.parse(T2),
+  });
+  assert.equal(next.proceed, true);
+  assert.equal(next.generation, 3);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -444,6 +476,38 @@ test('T7 run-terminal and RUNTIME_FENCED stay exit 3 on the normal path', () => 
   assert.equal(JSON.parse(rejected.stdout).proceed, false);
 });
 
+
+// spec §7-T8-② 의 필수 대조 케이스용 — reconciliation 이 정리할 **pending publication** 을 남긴다.
+// 선례: tests/handoff.test.mjs:1672 (publication + faultAt('prepared:digest-verified') → TRANSACTION_PENDING).
+function leavePendingPublication(root, runId, goal) {
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'contract-pending-probe', data: { goal }, now: T2 },
+    loop => { loop.goal = goal; },
+    undefined,
+    {
+      publication: {
+        kind: 'contract-pending-probe',
+        operationId: 'c'.repeat(64),
+        artifacts: [],
+        topology: { goal },
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+}
+
+function anchoredShape(root, runId) {
+  const lines = readLines(root, runId);
+  return {
+    events: lines.length,
+    types: lines.map(event => event.type).join(','),
+    transactionsDir: existsSync(join(runDir(root, runId), 'transactions')),
+    goal: readState(root, runId).data.goal,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // T8 — (b) M1: attempt nonce replay
 // ─────────────────────────────────────────────────────────────────────────────
@@ -489,6 +553,60 @@ test('T8 the same attempt id replays the proceeding response without any replay-
   assert.equal(noNonce.proceed, false);
 });
 
+test('T8 with a pending publication the three anchored files change from reconciliation, not from replay', () => {
+  // spec §7-T8-② 가 **필수**로 표시한 두 번째 케이스(checker W3). §3.6.2 의 r5 재정의
+  // ("reconciliation 완료 후 replay-originated write 없음")가 동어반복이 아니게 만드는 케이스다:
+  // pending publication 이 있으면 appendAnchored 는 caller preCheck **이전에** 그것을 정리하며
+  // (integrity.mjs:791) 그 정리가 세 파일을 정당하게 쓴다. 그 변화를 "replay 가 상태를 바꿨다"고
+  // 읽으면 오진이므로, **read-only 호출도 같은 변화를 만든다**는 대조로 인과를 고정한다.
+  const build = (goal) => {
+    const f = seedEmittedBoundary();
+    const first = acquireLease(f.root, f.runId, {
+      owner: f.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+    });
+    assert.equal(first.proceed, true);
+    leavePendingPublication(f.root, f.runId, goal);
+    return { ...f, first, before: anchoredShape(f.root, f.runId) };
+  };
+
+  // (A) replay 를 호출한다 — 세 파일이 바뀌지만 그 변화는 reconciliation 이 만든 것이다.
+  const viaReplay = build('PENDING-VIA-REPLAY');
+  assert.equal(viaReplay.before.transactionsDir, true);
+  assert.notEqual(viaReplay.before.goal, 'PENDING-VIA-REPLAY');
+  const replay = acquireLease(viaReplay.root, viaReplay.runId, {
+    owner: viaReplay.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.proceed, true);
+  assert.deepEqual(replay.consumed, viaReplay.first.consumed);
+  const afterReplay = anchoredShape(viaReplay.root, viaReplay.runId);
+
+  // (B) 같은 상태에서 replay 대신 **read-only** 호출을 한다 — 동일한 변화가 일어난다.
+  const viaRead = build('PENDING-VIA-READ');
+  assert.deepEqual(viaRead.before, { ...viaRead.before, transactionsDir: true });
+  captureReconciledRunSnapshot(viaRead.root, viaRead.runId);
+  const afterRead = anchoredShape(viaRead.root, viaRead.runId);
+
+  // 인과 고정: 두 경로의 변화가 구조적으로 동일하다(staged 이벤트 1건 append + 상태 반영 + 트랜잭션 retire).
+  assert.equal(afterReplay.events, viaReplay.before.events + 1);
+  assert.equal(afterRead.events, viaRead.before.events + 1);
+  assert.equal(afterReplay.types, `${viaReplay.before.types},contract-pending-probe`);
+  assert.equal(afterRead.types, `${viaRead.before.types},contract-pending-probe`);
+  assert.equal(afterReplay.goal, 'PENDING-VIA-REPLAY');
+  assert.equal(afterRead.goal, 'PENDING-VIA-READ');
+  assert.equal(afterReplay.transactionsDir, afterRead.transactionsDir);
+  // replay 는 lease-acquired 를 추가하지 않는다 — 소비는 여전히 정확히 1회다.
+  assert.equal(leaseAcquiredEvents(viaReplay.root, viaReplay.runId).length, 1);
+
+  // reconciliation 이 끝난 기준선 이후로는 replay 가 **바이트 단위로** 아무것도 쓰지 않는다.
+  const settled = anchoredBytes(viaReplay.root, viaReplay.runId);
+  const again = acquireLease(viaReplay.root, viaReplay.runId, {
+    owner: viaReplay.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+  });
+  assert.equal(again.replayed, true);
+  assert.deepEqual(anchoredBytes(viaReplay.root, viaReplay.runId), settled);
+});
+
 test('T8 replay does not cross a generation boundary', () => {
   const f = seedEmittedBoundary();
   acquireLease(f.root, f.runId, {
@@ -504,6 +622,36 @@ test('T8 replay does not cross a generation boundary', () => {
   });
   assert.equal(stale.proceed, false);
   assert.notEqual(stale.reason, 'acquired');
+});
+
+test('T8 replay refuses a generation the receipt did not start from (condition 7)', () => {
+  // checker W5: 조건 1~6 이 모두 참인데 7 만 거짓인 경우 — 조건 7 을 지우면 이 테스트만 깨진다.
+  // spec §3.6.2 는 조건 7 이 §4-(c)("모든 public 경로가 같은 generation fence 를 통과한다")를 지키기
+  // 위해 존재한다고 명시한다. 없으면 replay 가 generation fence 를 우회하는 유일한 경로가 된다.
+  const f = seedEmittedBoundary();
+  const first = acquireLease(f.root, f.runId, {
+    owner: f.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+  });
+  assert.equal(first.proceed, true);
+  const receipt = lease(f.root, f.runId).acquisition_receipt;
+  assert.equal(receipt.from_generation, 1);
+  assert.equal(receipt.to_generation, 2);
+
+  // 조건 1(같은 owner active) · 2(running) · 3(nonce 제시) · 4(영수증 존재) · 5(nonce 일치) ·
+  // 6(to_generation === lease.generation) 은 모두 참이고, expectGeneration 만 인수 **후** 세대다.
+  const wrongStart = acquireLease(f.root, f.runId, {
+    owner: f.child, expectGeneration: 2, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+  });
+  assert.equal(wrongStart.ok, true);
+  assert.equal(wrongStart.reason, 'already-owned');
+  assert.equal(wrongStart.proceed, false);
+  assert.equal(wrongStart.replayed, false);
+  // 대조: 올바른 출발 세대면 같은 nonce 로 replay 가 성립한다.
+  const correctStart = acquireLease(f.root, f.runId, {
+    owner: f.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+  });
+  assert.equal(correctStart.replayed, true);
+  assert.equal(correctStart.proceed, true);
 });
 
 test('T8 a released takeover replays with consumed:null, including for an owner without a session entry', () => {
@@ -795,9 +943,12 @@ test('T9 root recovery path: reason acquired, proceed true, receipt without an e
     runtime: 'claude',
     now: Date.parse(T2),
     clock: () => Date.parse(T2),
-    // 실측: 소비로 예약이 지워지면 `exactReceipt`(project-root-recovery.mjs:907)가 reservation fence
-    // (:917)보다 **먼저** 발화한다. 어느 쪽이든 fail-closed 이며 두 번째 소비는 없다.
-  }), /ROOT_OPERATION_PROOF_INVALID|LEASE_FENCED: root-recovery-reservation-mismatch/);
+    // 실측(checker I1 확증): 소비로 예약이 지워지면 `exactReceipt`(project-root-recovery.mjs:907)가
+    // reservation fence(:917)보다 **먼저** 발화하므로 신원은 항상 이것이다. spec §3.5 의 duplicate 셀은
+    // `LEASE_FENCED: …` 와 **exit 3** 을 적었지만 실제는 이 신원이고 CLI 매핑(deep-loop.mjs:328)에 걸리지
+    // 않아 **exit 1** 이다 — Phase 6 이 §3.5 매트릭스를 README 에 옮길 때 이 두 칸을 정정해야 한다.
+    // 일어날 수 없는 대안을 허용하지 않도록 관측된 신원 하나로 조인다.
+  }), /ROOT_OPERATION_PROOF_INVALID/);
   assert.equal(lease(f.root, f.runId).acquisition_receipt.to_generation, before.session_chain.lease.generation + 1);
 });
 
@@ -853,29 +1004,63 @@ test('T11 the affinity capsule is validated inside the lock through the preCheck
   assert.equal(lease(f.root, f.runId).generation, 1);
 });
 
-test('T11 preCheck reads the state inside the lock, not the pre-lock snapshot', () => {
+test('T11 the affinity in-lock read detects a capsule tampered after reconciliation', () => {
+  // checker W2: 위 테스트는 lock **밖** 변조라 reconciliation 이 먼저 발화하고
+  // `recoveryArtifactBytesLocked` 에 도달하지 못한다 — fail-closed 만 증명한다. §3.2 노트 6 과 §7-T11-③ 은
+  // 두 recovery 경로 **각각**에 tamper 테스트를 요구하므로, boundary-recovery 와 같은 방식으로
+  // lock 안·reconciliation 뒤·preCheck 앞 seam 에 변조를 주입해 lock-안 읽기 자체를 고정한다.
+  const f = seedAffinityReservation();
+  const capsule = join(runDir(f.root, f.runId), f.recovery.recovery_rel);
+  assert.throws(() => acquireRecovery(f.root, f.runId, {
+    capsuleRel: f.recovery.recovery_rel,
+    owner: f.recovery.child_run_id,
+    expectGeneration: 1,
+    runtime: 'claude',
+    now: Date.parse(T2),
+    __testPreCheckSeam: () => {
+      writeFileSync(capsule, `${readFileSync(capsule, 'utf8')}\n`);
+    },
+  }), /RECOVERY_CAPSULE_INVALID/);
+  assert.equal(lease(f.root, f.runId).generation, 1);
+  assert.equal(lease(f.root, f.runId).takeover_kind, 'affinity-supersession');
+});
+
+test('T11 preCheck consumes the in-lock loop the seam mutated, not the pre-lock snapshot', () => {
+  // checker W4: 이전 판은 seam 안에서 durable `writeState` 를 했는데 그것은 preCheck 에 보이지 않는다 —
+  // appendAnchored 는 `structuredClone(before.data)` 를 seam 과 preCheck 에 **같은 객체로** 넘기고
+  // (integrity.mjs:811/827/830) 자기 writeState 로 덮어쓴다. 따라서 오라클은 durable write 가 아니라
+  // **그 in-lock 객체의 변형이 preCheck 에 관측되는가**다. seam 이 예약된 child 를 바꿔치면 preCheck 의
+  // 예약 검증이 발화해야 한다 — pre-lock 스냅샷을 봤다면 그대로 acquire 에 성공한다. 실측 배리어는
+  // exact-child fence(검증 7)가 아니라 **boundary topology 전량 검증(검증 6)** 이다: bogus child id 는
+  // 부모/자식 계보 대조에서 먼저 걸린다(§2.1 의 6 → 7 순서).
   const f = seedEmittedBoundary();
   let seamRuns = 0;
-  const seen = [];
-  const result = acquireLease(f.root, f.runId, {
+  const swapped = acquireLease(f.root, f.runId, {
     owner: f.child,
     expectGeneration: 1,
     runtime: 'claude',
     now: Date.parse(T2),
-    // lock 획득 이후·preCheck 직전의 결정론적 seam — 상태 A를 B로 바꾼다.
     __testPreCheckSeam: (loop) => {
       seamRuns += 1;
-      const durable = readState(f.root, f.runId).data;
-      durable.session_chain.lease.handoff_trigger = 'seam-state-B';
-      writeState(f.root, f.runId, durable);
-      seen.push(loop.session_chain.lease.handoff_trigger);
+      loop.session_chain.lease.handoff_child_run_id = 'SEAMSWAPPEDCHILD00000';
     },
   });
   assert.equal(seamRuns, 1);
-  assert.equal(result.proceed, true);
-  // seam이 소비한 loop은 lock 안 fresh read이며, preCheck는 seam이 쓴 B를 본다.
-  assert.equal(result.consumed.takeover_kind, 'boundary-handoff');
-  assert.equal(seen.length, 1);
+  assert.equal(swapped.ok, false);
+  assert.equal(swapped.reason, 'boundary-topology-invalid');   // preCheck 가 seam 이 쓴 값을 봤다는 증거
+  assert.equal(swapped.proceed, false);
+  assert.equal(swapped.consumed, null);
+  // 무변이: 거부이므로 예약은 그대로다.
+  assert.equal(lease(f.root, f.runId).generation, 1);
+  assert.equal(lease(f.root, f.runId).handoff_child_run_id, f.child);
+  assert.equal(leaseAcquiredEvents(f.root, f.runId).length, 0);
+
+  // seam 을 넘기지 않으면 호출 자체가 없고 같은 acquire 는 성공한다 (opt-in 확인).
+  const clean = acquireLease(f.root, f.runId, {
+    owner: f.child, expectGeneration: 1, runtime: 'claude', now: Date.parse(T2),
+  });
+  assert.equal(clean.proceed, true);
+  assert.equal(clean.consumed.takeover_kind, 'boundary-handoff');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

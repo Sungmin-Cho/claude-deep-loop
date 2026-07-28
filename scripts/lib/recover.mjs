@@ -25,8 +25,6 @@ import { checkBreaker } from './breaker.mjs';
 import {
   captureReconciledRunSnapshot,
   runDir,
-  withReconciledMutationLock,
-  writeState,
 } from './state.mjs';
 import {
   isOpenScope,

@@ -602,8 +602,14 @@ const handlers = {
     // 판별: 현재 세대의 영수증이고(`to_generation === lease.generation`) 실제로 예약을 소비했을 때만
     // (`takeover_kind !== 'released-takeover'`) 진입한다 → 일반 재획득·stale 영수증은 절대 consumed 를
     // 내지 않는다(B-2(ii) 해소, T1 부정 케이스).
+    // `lease.state === 'active'` 는 §3.3 조건에 없지만 필수다 (checker W1): releaseLease 는 spread 로
+    // `state: 'released'` 만 바꾸고 `handoff_phase`/`generation` 을 그대로 두므로, 그것 없이는 release 된
+    // lease 에서도 이 분기가 발화해 `Status: consumed — 새 진입 시도는 proceed:false` 를 출력한다. 그런데
+    // released lease 는 takeable 이라 다음 acquire 가 `proceed:true` 를 낸다 — 마커가 커널과 정면으로
+    //어긋나고, §3.4 가 `Status: consumed` 에서 승격을 금지하므로 **정당한 인수가 교착된다.**
     const receipt = lease.acquisition_receipt;
     if (lease.handoff_phase === 'acquired'
+      && lease.state === 'active'
       && receipt && typeof receipt === 'object'
       && receipt.to_generation === lease.generation
       && receipt.takeover_kind !== 'released-takeover') {

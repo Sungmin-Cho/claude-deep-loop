@@ -189,6 +189,9 @@ export function acquireLease(root, runId, {
   attemptId = null,
   // 라이브러리 테스트 전용 ingress (spec §3.2 노트 7·8, §11-12). CLI 는 어느 쪽도 노출하지 않는다.
   __testPreCheckSeam,
+  // §3.2 노트 8 의 ingress 조항은 `__testPreCheckSeam` 만 명명한다. `__testFaultAt` 는 노트 7 의
+  // 비-publication `faultAt` 을 실제 acquire 경로로 태우는 유일한 수단이므로(T3-③) 같은 `__test*` 규약으로
+  // 추가한 **두 번째** ingress다 — Phase 6 의 spec drift 정정에서 문서화한다(checker I3).
   __testFaultAt,
 }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
