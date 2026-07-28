@@ -1,12 +1,12 @@
 // acquire↔resume public 계약 (spec docs/superpowers/specs/2026-07-27-acquire-resume-contract.md r10).
 // boundary 수준 계약 테스트 — T1 · T2b · T3 · T4 · T7 · T8 · T9 · T11.
-// (T2a는 lib 수준이라 tests/lease.test.mjs에, T6은 Phase 3의 R1 수정에 속한다.)
+// (T2a는 lib 수준이라 tests/lease.test.mjs에 있다. T6은 Phase 3의 R1 수정 — 아래 마지막 절.)
 // 모든 시간은 고정 NOW 주입 — CLAUDE.md Determinism.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -1167,4 +1167,123 @@ test('T4 the conformance fixture replays deterministically through the public CL
       assert.equal(counters.proceed, 1, 'duplicate ordering grants proceed exactly once');
     }
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T6 — R1: 연속 2회 boundary rotation (spec §6.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// C1 fence 로 sibling workstream 을 닫아 **두 번째** boundary event 를 만든다.
+function closeSiblingForSecondBoundary(f, owner, generation) {
+  const fenceForOwner = { owner, generation, intent: 'business' };
+  // boundary handoff 는 승계할 열린 workstream 이 있어야 성립한다 — 없으면 커널이 FINISH_REQUIRED 를 낸다.
+  mkdirSync(join(f.root, '.claude/worktrees/successor'), { recursive: true });
+  newWorkstream(f.root, f.runId, {
+    title: 'successor', branch: 'feature/successor',
+    worktree: '.claude/worktrees/successor', fence: fenceForOwner,
+  });
+  const worktree = '.claude/worktrees/sibling';
+  const sibling = readState(f.root, f.runId).data.workstreams.find(ws => ws.title === 'sibling').id;
+  const artifact = `${worktree}/impl2.txt`;
+  mkdirSync(join(f.root, worktree), { recursive: true });
+  writeFileSync(join(f.root, artifact), 'impl2\n');
+  const maker = newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: sibling, expectedArtifacts: [artifact], fence: fenceForOwner,
+  }).id;
+  recordEpisode(f.root, f.runId, maker, { status: 'in_progress', fence: fenceForOwner });
+  recordEpisode(f.root, f.runId, maker, {
+    status: 'done', artifacts: [artifact], proof: {}, fence: fenceForOwner,
+  });
+  const checker = dispatchReview(f.root, f.runId, {
+    point: 'implementation', workstreamId: sibling, detected: {}, fence: fenceForOwner,
+  }).checkerEpisodeId;
+  const report = `${worktree}/impl2-review.md`;
+  writeFileSync(join(f.root, report), '# review\nAPPROVE\n');
+  recordReviewOutcome(f.root, f.runId, {
+    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence: fenceForOwner,
+  });
+  const closed = runCli(f.root, f.runId, [
+    'workstream', 'terminal', '--id', sibling, '--status', 'ready', '--proof', '{}', '--now', T2,
+  ], owner, generation);
+  assert.equal(closed.status, 0, closed.stdout + closed.stderr);
+  return readState(f.root, f.runId).data.session_chain.sessions
+    .find(session => session.run_id === owner).scope.terminal_event;
+}
+
+test('T6 two consecutive boundary rotations bind lineage to the current owner, not the logical run id', () => {
+  const f = seedEmittedBoundary();                       // emit#1 (expect.owner === runId)
+  const c1 = f.child;
+  const first = acquireLease(f.root, f.runId, {
+    owner: c1, expectGeneration: 1, runtime: 'claude', now: Date.parse(T2),
+  });
+  assert.equal(first.proceed, true);
+  assert.equal(first.generation, 2);
+
+  const secondBoundary = closeSiblingForSecondBoundary(f, c1, 2);
+  assert.notDeepEqual(secondBoundary, f.boundary);
+
+  // emit#2 — 현행 writer 는 논리 runId 를 lineage 에 쓰고 검증자는 expect.owner 를 요구하므로
+  // `TRANSACTION_RECONCILIATION_REQUIRED: boundary publication topology` 로 거부된다(RED).
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: secondBoundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(T2) + 1_000,
+    expect: { owner: c1, generation: 2 },
+    env: {},
+  });
+  assert.equal(emitted.ok, true);
+  const c2 = emitted.childRunId;
+
+  // reconcile 이 정상이고 prepared 저널이 남지 않는다.
+  captureReconciledRunSnapshot(f.root, f.runId);
+  const transactions = join(runDir(f.root, f.runId), 'transactions');
+  // 잔존 = **prepared 인데 commit 되지 않은** 저널이다. commit 은 prepared.json 을 지우지 않고
+  // committed.json 을 함께 남기므로(transaction-journal.mjs:1228,1248) prepared.json 존재만으로는
+  // 판정할 수 없다 — 그렇게 세면 정상 커밋된 publication 도 잔존으로 오탐한다.
+  const stranded = existsSync(transactions)
+    ? readdirSync(transactions).filter(entry => existsSync(join(transactions, entry, 'prepared.json'))
+      && !existsSync(join(transactions, entry, 'committed.json')))
+    : [];
+  assert.deepEqual(stranded, []);
+
+  const afterEmit = readState(f.root, f.runId).data;
+  const childEntry = afterEmit.session_chain.sessions.find(session => session.run_id === c2);
+  const parentEntry = afterEmit.session_chain.sessions.find(session => session.run_id === c1);
+  assert.equal(childEntry.parent_run_id, c1, 'lineage binds to the superseded owner');
+  assert.equal(parentEntry.superseded_by, c2);
+
+  // compaction-state / launch-command-meta 도 같은 owner 를 기록한다.
+  const dir = runDir(f.root, f.runId);
+  const compaction = JSON.parse(readFileSync(join(dir, 'handoffs', `${c2}-compaction-state.json`), 'utf8'));
+  assert.equal(compaction.envelope.parent_run_id, c1);
+  const meta = JSON.parse(readFileSync(join(dir, 'terminal', 'launch-command.meta.json'), 'utf8'));
+  assert.equal(meta.envelope.parent_run_id, c1);
+  assert.equal(meta.payload.parent_run_id, c1);
+
+  // 멱등 재-emit — 2세대에서 처음으로 성립한다. durable 바이트 불변.
+  const before = anchoredBytes(f.root, f.runId);
+  const again = emitHandoff(f.root, f.runId, {
+    boundaryEvent: secondBoundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(T2) + 2_000,
+    expect: { owner: c1, generation: 2 },
+    env: {},
+  });
+  assert.equal(again.ok, true);
+  assert.equal(again.idempotent, true);
+  assert.equal(again.childRunId, c2);
+  assert.deepEqual(anchoredBytes(f.root, f.runId), before);
+
+  // 회전 2회 완주 — C2 가 인수하고 consumed 가 직전 owner 를 가리킨다.
+  const second = acquireLease(f.root, f.runId, {
+    owner: c2, expectGeneration: 2, runtime: 'claude', now: Date.parse(T2) + 3_000,
+  });
+  assert.equal(second.proceed, true);
+  assert.equal(second.generation, 3);
+  assert.equal(second.consumed.takeover_kind, 'boundary-handoff');
+  assert.equal(second.consumed.superseded_owner_run_id, c1);
+  assert.deepEqual(second.consumed.boundary_event, secondBoundary);
 });

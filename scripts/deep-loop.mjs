@@ -722,7 +722,10 @@ const handlers = {
           .find(session => session.run_id === child.parent_run_id);
         const validated = validateLaunchCommandMetadata(parsed, {
           launchBytes: launchText.bytes,
-          parentRunId: runId,
+          // §6.3 R-r1: lineage 는 논리 runId 가 아니라 **현재 owner** 기준이다. emit 은 owner 를 바꾸지
+          // 않으므로 emitted/spawned 동안 `lease.owner_run_id` 가 곧 superseded 대상 부모다. 1세대에서는
+          // 두 값이 같아 동작이 바이트 동일하다.
+          parentRunId: lease.owner_run_id,
           childRunId,
           handoffRel: child?.handoff_rel,
           projectRootDigest: projectRootDigest(data.project.root),
@@ -737,7 +740,7 @@ const handlers = {
           && lease.handoff_project_binding_generation === meta.project_binding_generation
           && sameBoundaryEvent(meta.boundary_event, lease.handoff_boundary_event)
           && sameBoundaryEvent(child?.parent_boundary_event, meta.boundary_event)
-          && child?.parent_run_id === runId
+          && child?.parent_run_id === lease.owner_run_id
           && child?.project_root_digest === meta.project_root_digest
           && child?.project_binding_generation === meta.project_binding_generation
           && parent?.superseded_by === childRunId
