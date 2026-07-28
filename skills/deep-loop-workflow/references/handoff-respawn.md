@@ -113,11 +113,17 @@ exact descriptor로만 소비한다. Codex App 새 task는 수동이다.
 ## Resume acquisition
 
 normal boundary handoff의 새 conversation은 descriptor가 준 root/run/runtime과
-exact child identity만 사용한다:
+exact child identity만 사용한다. `<attempt_id>`는 **호출 전에** 자기 쪽에 durable하게
+남긴다 — 순서는 **① 생성 → ② 영속화 → ③ acquire**이고, 재시도는 **같은 값을 재사용**한다.
+호출 후 영속화는 amnesiac 창을 남기므로 금지하며, 새 값을 만들면 replay가 성립하지 않는다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+**`proceed:true` 뒤에만** 승격한다 — 모든 public 획득 경로가 같은 fence를 통과한다.
+`ok:true`인데 `proceed:false`(`already-owned`)면 승격하지 않고 멈춘다. `resume-command`가
+`Status: consumed`를 내면 그 예약은 이미 소비된 것이므로 진입하지 않는다.
 
 recovery reservation이면 generic acquisition을 시도하지 않는다.
 `resume-command`가 출력한 `recovery acquire --capsule ...` 또는

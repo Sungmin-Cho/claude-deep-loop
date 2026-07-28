@@ -34,6 +34,12 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<cano
 출력의 첫 줄과 `Recovery:`, `Lease:` metadata를 바꾸거나 재구성하지 않는다.
 커널 오류, malformed topology, root digest/epoch mismatch이면 인수를 중단한다.
 
+**`Status: consumed`면 어떤 branch에도 진입하지 않는다.** 그 예약은 이미 정확히 한 번
+소비됐다는 durable 사실이며(영수증 파생), 첫 줄은 실행 가능한 invocation이 아니라
+비실행 마커다. 승격하지 말고 `Consumed:` 줄의 `takeover_kind`/`superseded_owner`/
+`transition`을 그대로 인용해 비진행으로 보고하고 `/deep-loop-status`를 안내한 뒤 멈춘다.
+같은 예약으로 새로 진입을 시도하면 커널은 `proceed:false`(`already-owned`)를 낸다.
+
 ## Boundary handoff
 
 첫 줄이 현재 runtime의 `/deep-loop-resume` 또는
@@ -51,13 +57,32 @@ generation, child `parent_boundary_event`, `project_root_digest`, and
 exact reserved child, `<current_generation>`은 fresh lease generation,
 `<new_generation>`은 아래 CAS 성공 응답이 반환한 generation이어야 한다.
 
+**attempt id 규약 — 호출 **전에** durable하게 남긴다.** 이 세션이 인수를 처음 시도할 때
+`<attempt_id>`를 한 번 만들고(형식 `^[A-Za-z0-9_-]{8,128}$`, ULID 권장), 순서는 정확히
+**① 생성 → ② 자기 쪽에 durable 영속화 → ③ 아래 acquire 호출**이다. 호출 후에 기록하면
+"호출은 성공했는데 기록 전에 죽는" amnesiac 창이 남아 재시도 때 값을 잃는다 — 그 순서를
+지키지 않은 호출자에게는 응답 유실 복구 보증이 적용되지 않는다. **재시도는 같은 값을
+재사용한다**; 새로 만들면 커널이 같은 시도로 식별하지 못해 replay가 성립하지 않고
+`proceed:false`(`already-owned`)로 떨어진다.
+
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`ok:true` 뒤에만 `<owner_run_id> = <child_run_id>`,
-`<generation> = <new_generation>`으로 승격한다. arbitrary owner나 plain
-timeout takeover를 시도하지 않는다.
+**`proceed:true` 뒤에만** `<owner_run_id> = <child_run_id>`,
+`<generation> = <new_generation>`으로 승격한다. `ok:true`인데 `proceed:false`면
+(`already-owned`) 승격하지 않고 "이 run은 이미 owner `<id>` generation `<n>`이 인수함 —
+이 대화는 진행 권한이 없음"을 보고하고 멈춘다. `replayed:true`는 같은 시도의 재확인이며
+진행 판단은 `proceed`만 본다. arbitrary owner나 plain timeout takeover를 시도하지 않는다.
+
+**오용 복구.** 자신이 위임된 실행 세션이 아닌데 `proceed:true`를 받았다면(위임 전 사전
+acquire 금지 위반) 즉시 preserve-pause하고 사람에게 보고한다. `<owner_run_id>`/`<generation>`은
+다른 mutating CLI와 같이 **fresh `session_chain.lease`에서 다시 읽는다** — 방금 인수했으므로
+그 값이 곧 새 owner와 새 generation이다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --reason "acquire-misuse" --mode preserve --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+```
 
 ## Affinity recovery capsule
 

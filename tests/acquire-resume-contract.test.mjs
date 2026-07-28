@@ -476,7 +476,6 @@ test('T7 run-terminal and RUNTIME_FENCED stay exit 3 on the normal path', () => 
   assert.equal(JSON.parse(rejected.stdout).proceed, false);
 });
 
-
 // spec §7-T8-② 의 필수 대조 케이스용 — reconciliation 이 정리할 **pending publication** 을 남긴다.
 // 선례: tests/handoff.test.mjs:1672 (publication + faultAt('prepared:digest-verified') → TRANSACTION_PENDING).
 function leavePendingPublication(root, runId, goal) {

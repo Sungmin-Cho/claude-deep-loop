@@ -416,6 +416,40 @@ test('finish/init 스킬: insights CLI 경유만 (직접 파싱·쓰기 금지)'
   assert.ok(readFileSync(skillPath('deep-loop'), 'utf8').includes('insights latest'));
 });
 
+// G5 (plan Phase 5): 이 파일은 세 문서를 하나도 바꾸지 않아도 GREEN 이므로, 그것만으로는 Phase 5 의
+// 산출을 검출하지 못한다. 아래는 **행 번호가 아니라 내용**으로 고정한다(줄 이동에 견디도록).
+test('resume/respawn prose: promote only on proceed:true and persist the attempt id before acquiring', () => {
+  const resume = _rf(skillPath('deep-loop-resume'), 'utf8');
+  const respawn = _rf(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8');
+  const workflow = _rf(skillPath('deep-loop-workflow'), 'utf8');
+
+  // ① 승격 규범이 proceed:true 이고, `ok:true` 만으로 승격하라는 문장이 남아 있지 않다.
+  for (const [name, src] of [['deep-loop-resume', resume], ['handoff-respawn', respawn], ['deep-loop-workflow', workflow]]) {
+    assert.match(src, /`?proceed:true`?/, `${name}: promotion norm must be proceed:true`);
+    const staleOkTrue = src.split('\n').filter(line => /승격/.test(line) && /`ok:true`/.test(line)
+      && !/proceed/.test(line));
+    assert.deepEqual(staleOkTrue, [], `${name}: no promotion sentence may key on ok:true alone`);
+  }
+  // already-owned 가 ok:true 인데도 승격 대상이 아님을 명시한다.
+  assert.match(resume, /already-owned/);
+  assert.match(respawn, /already-owned/);
+
+  // ② attempt_id 사전 영속화 순서 — 생성 → 영속화 → acquire, 재시도는 같은 값.
+  for (const [name, src] of [['deep-loop-resume', resume], ['handoff-respawn', respawn]]) {
+    assert.match(src, /--attempt-id/, `${name}: must show the --attempt-id flag`);
+    assert.match(src, /생성[\s\S]{0,80}영속화[\s\S]{0,80}acquire/, `${name}: must state generate → persist → acquire order`);
+    assert.match(src, /같은 값[\s\S]{0,40}재사용/, `${name}: retries must reuse the same attempt id`);
+    assert.match(src, /amnesiac/, `${name}: must warn that persisting after the call leaves an amnesiac window`);
+  }
+
+  // ③ resume 단계 1 이 `Status: consumed` 를 비진행으로 처리한다(승격 금지 + status 안내).
+  assert.match(resume, /Status: consumed[\s\S]{0,400}\/deep-loop-status/,
+    'resume step 1 must treat `Status: consumed` as non-proceeding and point at /deep-loop-status');
+  // ④ 오용 복구 — 위임 전 사전 acquire 위반 시 fenced preserve-pause.
+  assert.match(resume, /acquire-misuse[\s\S]{0,200}--mode preserve/,
+    'resume must document the fenced preserve-pause misuse recovery');
+});
+
 test('worktree-aware skills: action-keyed entry in continue; resume defers; handoff no entry; verify unchanged', () => {
   const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
   // continue §1.5 must key entry on action.workstream_id (not blind active workstream pick)
@@ -824,7 +858,9 @@ test('portable command contract: free-form reason placeholders remain one argv v
   for (const file of EXECUTION_DOCS) {
     for (const line of kernelCommandLines(readFileSync(file, 'utf8')).filter((candidate) => /--reason\b/.test(candidate))) {
       if (/--reason\s+"host-session-lost"(?:\s|$)/.test(line)) continue;
-      if (/--reason\s+"(?:workstream-terminal|needs-human:workstream-terminal|per_session_turn_cap)"(?:\s|$)/.test(line)) continue;
+      // spec §3.4 가 정한 고정 리터럴 reason — placeholder 가 없고 공백도 없어 본래 argv 하나이므로
+      // 이 규칙(자유 서식 placeholder 를 한 값으로 유지)의 대상이 아니다. acquire-misuse 가 그 부류다.
+      if (/--reason\s+"(?:workstream-terminal|needs-human:workstream-terminal|per_session_turn_cap|acquire-misuse)"(?:\s|$)/.test(line)) continue;
       assert.match(line, /--reason\s+"[^"]*<[^>]+>[^"]*"(?:\s|$)/,
         `${file}: free-form reason placeholder must be double-quoted: ${line}`);
     }
