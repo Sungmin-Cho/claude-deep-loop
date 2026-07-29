@@ -9,7 +9,11 @@ const SKILL_CMDS = ['/deep-loop', '/deep-loop-discover', '/deep-loop-triage', '/
   '/deep-loop-ack', '/deep-loop-finish'];
 const CODEX_SKILL_CMDS = SKILL_CMDS.map(command => `$deep-loop:${command.slice(1)}`);
 const USER_DOCS = ['README.md', 'README.ko.md'];
-const LIVE_SURFACE_DOCS = ['README.md', 'AGENTS.md', 'CLAUDE.md', 'hooks/hooks.json'];
+// `AGENTS.md` is the single guide surface; `CLAUDE.md` imports it and carries only
+// Claude-Code-specific notes, so it is not expected to restate implementation paths.
+// `the Claude guide is a thin wrapper over the single source` pins that structure, so
+// dropping CLAUDE.md here cannot quietly become "nothing checks it".
+const LIVE_SURFACE_DOCS = ['README.md', 'AGENTS.md', 'hooks/hooks.json'];
 
 test('README lists all commands + architecture + safety', () => {
   const s = readFileSync(join(R, 'README.md'), 'utf8');
@@ -216,8 +220,23 @@ test('proposal-only scope includes repository, release, deletion, and registry s
   }
 });
 
+test('the Claude guide is a thin wrapper over the single source', () => {
+  // AGENTS.md is self-contained because Codex has no `@` import; CLAUDE.md is the
+  // line-1 import plus Claude-only remainder. Before the split both files carried the
+  // same architecture, invariants and release procedure in two phrasings, which is two
+  // definitions of one contract. These assertions are what stops it drifting back.
+  const claude = readFileSync(join(R, 'CLAUDE.md'), 'utf8');
+  assert.match(claude.split(/\r?\n/u)[0], /^@AGENTS\.md$/,
+    'CLAUDE.md must open by importing the single source');
+  assert.ok(claude.length < 4096, `CLAUDE.md is ${claude.length}B — remainder only, not a second guide`);
+  assert.doesNotMatch(claude, /^## Hard invariants/mu,
+    'the invariants live in AGENTS.md, once');
+  assert.doesNotMatch(readFileSync(join(R, 'AGENTS.md'), 'utf8'), /^@/mu,
+    'AGENTS.md must not import anything — Codex does not support it');
+});
+
 test('maintainer guides use portable test discovery and the tracked README compatibility contract without fixed module counts', () => {
-  for (const path of ['CLAUDE.md', 'AGENTS.md']) {
+  for (const path of ['AGENTS.md']) {
     const source = readFileSync(join(R, path), 'utf8');
     assert.match(source, /node --test/);
     assert.doesNotMatch(source, /node --test tests\/\*\.test\.mjs/,

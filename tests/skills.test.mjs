@@ -121,8 +121,11 @@ test('boundary: worktree-write guard flags root-escape/bare-relative/git-options
   assert.ok(!worktreeWriteOutsideRoot('이미 worktree 안이면 재사용 (산문)'), 'prose without git-worktree-add ignored');
 });
 
-test('CLAUDE.md: invariant #7 carries explicit worktree-write carve-out', () => {
-  const md = _rf(join(ROOT, 'CLAUDE.md'), 'utf8');
+test('AGENTS.md: invariant #7 carries explicit worktree-write carve-out', () => {
+  // Moved with the invariants when AGENTS.md became the single source. The rule is
+  // cross-runtime, so pinning it to the Claude-only file asserted it in the one place
+  // a Codex agent does not read.
+  const md = _rf(join(ROOT, 'AGENTS.md'), 'utf8');
   assert.match(md, /\.claude\/worktrees\//, 'names .claude/worktrees/ carve-out');
   assert.match(md, /worktree[\s\S]{0,400}(proposal-only|사람 승인|human|containment)/i, 'carve-out rules present');
 });
