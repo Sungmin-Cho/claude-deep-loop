@@ -71,7 +71,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" insights latest --json --project-roo
 
 ### 2-3. 리뷰 전략 확인
 
-리뷰 전략을 결정한다(§7). 자세한 흐름은 `Read("../deep-loop-workflow/references/review-strategy.md")`를 참조:
+리뷰 전략을 결정한다(§7). 자세한 흐름은 `Read("DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/review-strategy.md")`를 참조:
 
 - **deep-review 감지 시**: durable reviewer enum `deep-review-loop`, flags `--contract --codex`, mode `cross-model`을 추천한다. 이 선택의 complete durable JSON은 다음과 같다:
 

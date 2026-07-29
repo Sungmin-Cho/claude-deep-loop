@@ -4,7 +4,7 @@
 
 로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
 
-deep-loop이 축적한 트레이스(event-log·review verdict·sibling artifact)를 커널이 결정론으로 마이닝하고(`lib/insights.mjs`), 그 신호로 하네스 개선안을 자율 생성 → 적대 검증(checker) → PR 준비까지 무인 수행하는 환류 고리. 사람 게이트는 기존 것(PR 머지, init 확인, comprehension ack)만 유지하고 새 게이트를 추가하지 않으며, **실행 중 run의 자기 게이트 수정(runtime self-modification)과 게이트-크리티컬 파일의 자율 편집은 금지**한다. 이 문서는 harness-hill-climb run의 maker/checker가 지켜야 할 계약을 정의한다 — 문서 자신도 Tier 2(자율 편집 금지, human-proposal만)다(§8.1).
+deep-loop이 축적한 트레이스(event-log·review verdict·sibling artifact)를 커널이 결정론으로 마이닝하고(`DEEP_LOOP_ROOT/scripts/lib/insights.mjs`), 그 신호로 하네스 개선안을 자율 생성 → 적대 검증(checker) → PR 준비까지 무인 수행하는 환류 고리. 사람 게이트는 기존 것(PR 머지, init 확인, comprehension ack)만 유지하고 새 게이트를 추가하지 않으며, **실행 중 run의 자기 게이트 수정(runtime self-modification)과 게이트-크리티컬 파일의 자율 편집은 금지**한다. 이 문서는 harness-hill-climb run의 maker/checker가 지켜야 할 계약을 정의한다 — 문서 자신도 Tier 2(자율 편집 금지, human-proposal만)다(§8.1).
 
 ## Lease identity
 
@@ -24,7 +24,7 @@ candidates는 **개선 후보 신호**다. 어떤 파일을 어떻게 고칠지�
 
 | id | 조건 | min_runs | target_hints (tier) |
 |---|---|---|---|
-| `fix_cycles_high:<point>` | 해당 point의 (ws,point)당 평균 fix_cycles ≥ 1.0 | 1 | recipe 힌트(T1) / point 지침·review-strategy.md(T2 — human-proposal) + init 환류(max_review_rounds) |
+| `fix_cycles_high:<point>` | 해당 point의 (ws,point)당 평균 fix_cycles ≥ 1.0 | 1 | recipe 힌트(T1) / point 지침·`DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/review-strategy.md`(T2 — human-proposal) + init 환류(max_review_rounds) |
 | `breaker_trip` | tripped ≥ 1 | 1 | trip 사유 연관 recipe(T1)/제어 스킬(T2) |
 | `respawn_failure` | respawn-failed + respawn-timeout ≥ 1 | 1 | respawn/handoff 지침(T2) |
 | `bootstrap_ack_friction` | ack_before_first_dispatch == true | 1 | init·continue 부트스트랩 안내(T2), init 환류(debt_threshold) |
@@ -55,7 +55,7 @@ recipe `harness-hill-climb`:
   "triggers": ["hill-climb","hill climbing","하네스 개선","루프 개선","환류"],
   "protocol_hint": "standalone",
   "flow": ["insights","standalone:maker","deep-review:checker","ship-proposal","archive"],
-  "expected_artifacts": [".deep-loop/insights/*.json", "harness diff (Tier 1)", "recipes/hillclimb-ledger.json", ".deep-review/reports/*.md"]
+  "expected_artifacts": [".deep-loop/insights/*.json", "harness diff (Tier 1)", "DEEP_LOOP_ROOT/recipes/hillclimb-ledger.json", ".deep-review/reports/*.md"]
 }
 ```
 
@@ -78,15 +78,15 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --ro
 ### 3.1 2계층 화이트리스트 (게이트 준수 prose는 자율 편집 대상이 아니다)
 
 - **Tier 1 — 자율 편집 허용:** `recipes/*.json`(ledger 포함), `recipes/automation/*.yml`. **이상 전부 — SKILL.md는 하나도 포함되지 않는다.** status/triage 스킬도 human-only escape hatch 안내·proposal-only 선언 등 하드 불변식을 지탱하는 prose를 담으므로 Tier 2다. 커널의 `--confirm`/lease 검사는 플래그 확인일 뿐 "사람인지"는 prose 경계라는 점을 존중한다. Tier 1 = 선언적 recipe/automation 자산만.
-- **Tier 2 — 자율 편집 금지 (human-proposal만):** 그 외 전부 = **`skills/**` 전체**(게이트 보유 제어 스킬 `deep-loop`·`continue`·`handoff`·`resume`·`ack`·`discover`·`finish`·`workflow`는 물론, human-only escape hatch 안내를 담는 `status`·`triage`까지) + **references 전부**: `review-strategy.md`, `handoff-respawn.md`, `adapters.md`(`--tier` 전달·`guard.ok===false` 중단 지시를 담는 게이트 준수 prose), **`hill-climbing.md`(이 문서 자신 — hill-climb 자신의 checker 계약 문서; 자기 심사 기준의 자율 편집 차단)** — 및 기존 제외(scripts/, hooks/, schemas/, tests/의 게이트 단언). Tier 2 개선 아이디어는 hill-climb run의 **human-proposal 섹션**(최종 리포트 내 제안 텍스트)으로만 산출되고, 적용은 사람이 일반 개발로 수행한다.
+- **Tier 2 — 자율 편집 금지 (human-proposal만):** 그 외 전부 = **`skills/**` 전체**(게이트 보유 제어 스킬 `deep-loop`·`continue`·`handoff`·`resume`·`ack`·`discover`·`finish`·`workflow`는 물론, human-only escape hatch 안내를 담는 `status`·`triage`까지) + **references 전부**: `DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/review-strategy.md`, `DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/handoff-respawn.md`, `DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/adapters.md`(`--tier` 전달·`guard.ok===false` 중단 지시를 담는 게이트 준수 prose), **`hill-climbing.md`(이 문서 자신 — hill-climb 자신의 checker 계약 문서; 자기 심사 기준의 자율 편집 차단)** — 및 기존 제외(scripts/, hooks/, schemas/, tests/의 게이트 단언). Tier 2 개선 아이디어는 hill-climb run의 **human-proposal 섹션**(최종 리포트 내 제안 텍스트)으로만 산출되고, 적용은 사람이 일반 개발로 수행한다.
 
 이 구분으로 마커 테스트가 의미 반전을 못 잡는 급소가 원천 제거된다 — 게이트 준수 prose는 애초에 자율 편집 범위 밖이다.
 
 ### 3.2 게이트-크리티컬 마커 테스트의 정직한 위상
 
-`tests/skills.test.mjs`는 게이트 보유 제어 스킬에 필수 마커(continue의 dispatch 전 budget·breaker·comprehension 검사 지시, `breaker reset`의 human-only `confirm` 플래그 문구, proposal-only 선언 등)가 위치-독립으로 존재함을 단언한다. **이 테스트가 결정론적으로 잡는 것은 마커 삭제뿐이다** — 마커를 보존한 의미 약화는 checker 계약 (e)(LLM 판단)와 사람 머지가 담당한다. 이 테스트의 역할은 (a) 모든 PR(사람 실수 포함)의 삭제-회귀 방어, (b) 향후 Tier 완화 시의 선행 방벽이다.
+`DEEP_LOOP_ROOT/tests/skills.test.mjs`는 게이트 보유 제어 스킬에 필수 마커(continue의 dispatch 전 budget·breaker·comprehension 검사 지시, `breaker reset`의 human-only `confirm` 플래그 문구, proposal-only 선언 등)가 위치-독립으로 존재함을 단언한다. **이 테스트가 결정론적으로 잡는 것은 마커 삭제뿐이다** — 마커를 보존한 의미 약화는 checker 계약 (e)(LLM 판단)와 사람 머지가 담당한다. 이 테스트의 역할은 (a) 모든 PR(사람 실수 포함)의 삭제-회귀 방어, (b) 향후 Tier 완화 시의 선행 방벽이다.
 
-### 3.3 ledger — `recipes/hillclimb-ledger.json` (Tier 1, append-only 배열)
+### 3.3 ledger — `DEEP_LOOP_ROOT/recipes/hillclimb-ledger.json` (Tier 1, append-only 배열)
 
 `recordEpisode`는 proof의 `result_*` 키만 durable하게 남기므로, 증거 계약의 durable 사본은 **git으로 머지되는 ledger 파일**에 둔다. implementation maker가 항목을 append한다:
 
@@ -96,7 +96,8 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --ro
   "insights_ref": ".deep-loop/insights/<ulid>-insights.json",
   "insights_sha256": "<sha>",
   "candidates_addressed": ["bootstrap_ack_friction", "fix_cycles_high:implementation"],
-  "changes": ["recipes/robust-implementation.json", "recipes/automation/cron-morning-triage.yml"],
+  "changes": ["DEEP_LOOP_ROOT/recipes/robust-implementation.json",
+              "DEEP_LOOP_ROOT/recipes/automation/cron-morning-triage.yml"],
   "human_proposals": ["deep-loop-continue 부트스트랩 안내 개선(T2 — 사람 적용)", "deep-loop-status 표시 개선(T2 — 사람 적용)"],
   "falsification": "이 변경 적용 후 3개 run 내 bootstrap_ack_friction이 계속 true면 실패로 판정하고 revert를 제안한다"
 }
@@ -112,7 +113,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --ro
 
 ### 3.4 checker 계약 (deep-review `--contract` + 본 문서) — 하나라도 실패 시 REQUEST_CHANGES
 
-**계약 소스는 tracked 파일이다:** `skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml` (deep-review contract-schema 파리티 — `slice`/`title`/`status`/`criteria`). `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch 전에 tracked 소스를 **workstream worktree의** `<worktree>/.deep-review/contracts/HILLCLIMB-001.yaml`로 **그대로 복사(materialize)** 한다(checker는 worktree를 cwd로 deep-review를 실행하고 deep-review는 cwd의 `.deep-review/`를 읽는다 — 게이트 위치 = 소비처). 커널 `dispatchReview`는 hill-climb recipe run에서 다음을 전부 fail-closed로 강제한다(모두 checker episode 생성 전 throw):
+**계약 소스는 tracked 파일이다:** `DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml` (deep-review contract-schema 파리티 — `slice`/`title`/`status`/`criteria`). `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch 전에 tracked 소스를 **workstream worktree의** `<worktree>/.deep-review/contracts/HILLCLIMB-001.yaml`로 **그대로 복사(materialize)** 한다(checker는 worktree를 cwd로 deep-review를 실행하고 deep-review는 cwd의 `.deep-review/`를 읽는다 — 게이트 위치 = 소비처). 커널 `dispatchReview`는 hill-climb recipe run에서 다음을 전부 fail-closed로 강제한다(모두 checker episode 생성 전 throw):
 
 - reviewer가 `deep-review-loop`이고 flags에 **정확히 1회의 bare `--contract`**(selector 금지 — deep-review 파서는 `SLICE-NNN`만 selector로 소비하므로 HILLCLIMB-001을 명시 지정할 수 없고, `=` 형태·중복·타-slice는 전부 우회 경로)가 있어야 한다 — 아니면 `REVIEW_CONTRACT_UNENFORCEABLE`(subagent/codex-cross/standalone은 계약 파일을 읽지 않으므로 계약 미강제 APPROVE가 된다). bare `--contract`는 모든 active 계약을 로드하므로 worktree contracts 디렉터리에는 HILLCLIMB-001.yaml **외 다른 계약 yaml이 없어야** 한다(커널이 dispatch·record 양쪽에서 유일성 검증).
 - worktree-local 계약 사본이 존재하고 tracked 소스와 **byte-identical**이어야 한다 — 아니면 `REVIEW_CONTRACT_MISSING`(`status: active` 문자열만으론 stale/변조 사본 — 예: criteria 비움 — 이 통과한다; 계약은 run-불변이므로 "그대로 복사"가 곧 판정 기준). 검증된 계약 identity(slice·path·sha256)는 checker episode에 durable 기록되고, `review record`의 passing verdict는 **같은 파일을 record 시점에 재검증**한다 — dispatch~record 사이 삭제/변조(deep-review는 무-contract를 조용히 skip)로 나온 APPROVE는 `REVIEW_CONTRACT_MISSING`으로 거부된다.

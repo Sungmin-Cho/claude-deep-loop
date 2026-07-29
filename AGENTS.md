@@ -14,7 +14,13 @@ repo, `git log` and those docs are the source of truth — do not assume prior
 conversation context.
 
 Read the current version, never hardcode it:
-`node -e "console.log(require('./.claude-plugin/plugin.json').version)"`.
+```bash
+node -p "JSON.parse(require('node:fs').readFileSync('DEEP_LOOP_ROOT/.claude-plugin/plugin.json','utf8')).version"
+```
+
+Anchored, and a file read rather than a module load: unanchored it reports the
+*analysed* project's version, and a plugin path inside a JS module specifier has no
+safe spelling — nothing substitutes a documentation placeholder inside JS.
 Node ≥ 20, `type: module`, **zero external dependencies**.
 
 ## Architecture — 2-plane, strict
@@ -24,7 +30,8 @@ EXECUTION PLANE (LLM)   skills/*/SKILL.md
         │  judgment: discover · triage · decompose · decide · dispatch
         │  reads state (state get / next-action / validate) — mutates ONLY via the kernel CLI
         ▼
-CONTROL PLANE (Node, deterministic)   scripts/deep-loop.mjs + scripts/lib/*.mjs
+CONTROL PLANE (Node, deterministic)   DEEP_LOOP_ROOT/scripts/deep-loop.mjs
+                                      DEEP_LOOP_ROOT/scripts/lib/*.mjs
         │  state(lock) · budget · breaker · comprehension · schema · lease
         │  handoff · respawn · review · finish
         ▼  atomic temp+rename, M3 envelope
@@ -46,24 +53,24 @@ migrated compatibility policies only.
 
 ## Repo map
 
-- `scripts/deep-loop.mjs` — CLI dispatcher and the **only** state-change boundary:
+- `DEEP_LOOP_ROOT/scripts/deep-loop.mjs` — CLI dispatcher and the **only** state-change boundary:
   validation, run lifecycle, fenced recovery, executable approval, review, accounting.
-- `scripts/lib/*.mjs` — deterministic kernel, portable path/write helpers, runtime
+- `DEEP_LOOP_ROOT/scripts/lib/*.mjs` — deterministic kernel, portable path/write helpers, runtime
   descriptors, executable trust, isolated Codex transport, review import, durable
-  receipts. `scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention
+  receipts. `DEEP_LOOP_ROOT/scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention
   and freshness selection.
 - Hook and headless glue, spelled out rather than brace-expanded so each path stays
-  greppable — `tests/docs.test.mjs` checks these by literal, which is how a stale
+  greppable — `DEEP_LOOP_ROOT/tests/docs.test.mjs` checks these by literal, which is how a stale
   `.sh` wrapper reference was caught once:
-  - `scripts/hooks-impl/precompact-handoff.mjs` — PreCompact, emit-only.
-  - `scripts/hooks-impl/sessionstart-restore.mjs` — SessionStart (`compact` source), read-only.
-  - `scripts/hooks-impl/drive-headless.mjs` — measured headless driver.
-  - `hooks/hooks.json` holds their static shell-free Node bootstraps.
+  - `DEEP_LOOP_ROOT/scripts/hooks-impl/precompact-handoff.mjs` — PreCompact, emit-only.
+  - `DEEP_LOOP_ROOT/scripts/hooks-impl/sessionstart-restore.mjs` — SessionStart (`compact` source), read-only.
+  - `DEEP_LOOP_ROOT/scripts/hooks-impl/drive-headless.mjs` — measured headless driver.
+  - `DEEP_LOOP_ROOT/hooks/hooks.json` holds their static shell-free Node bootstraps.
 - `skills/deep-loop*/SKILL.md` + `skills/deep-loop-workflow/references/*.md` — Execution plane.
 - `protocols/*.json` · `recipes/*.json` (+ `recipes/automation/*.yml`) · `schemas/*.json` —
   declarative adapters, policies, durable/input schemas.
-- Manifests: `.claude-plugin/plugin.json` · `.codex-plugin/plugin.json`.
-- `tests/*.test.mjs` (`node --test`) · `docs/` · `integration/deep-suite.patch.md`.
+- Manifests: `DEEP_LOOP_ROOT/.claude-plugin/plugin.json` · `DEEP_LOOP_ROOT/.codex-plugin/plugin.json`.
+- `DEEP_LOOP_ROOT/tests/*.test.mjs` (`node --test`) · `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`.
 - Durable state is runtime and git-ignored: `<project-root>/.deep-loop/runs/<run-id>/`.
 
 ## Hard invariants — DO NOT break
@@ -73,7 +80,7 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
 1. **2-plane boundary.** Skills only **read** state; every mutation goes through a
    kernel CLI subcommand. A `SKILL.md` must never instruct a direct write to
    `loop.json` / `event-log.jsonl` / `.loop.hash` — writing
-   `.deep-loop/runs/<id>/final-report.md` is allowed. `tests/skills.test.mjs`
+   `.deep-loop/runs/<id>/final-report.md` is allowed. `DEEP_LOOP_ROOT/tests/skills.test.mjs`
    enforces this.
 2. **Every mutating CLI is lease-fenced** (`--owner <run_id> --generation <n>`) and
    the fence is checked **inside the same lock/`preCheck` that mutates state**, not
@@ -174,6 +181,6 @@ set the `deep-loop` entry `sha` to the merged `main` commit in the deep-suite re
 deep-suite `npm run preflight`, which regenerates the README tables — never edit inside
 the auto-generated markers.
 
-The patch is pre-written at `integration/deep-suite.patch.md`. It is a proposal, not
+The patch is pre-written at `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`. It is a proposal, not
 evidence that distribution has already been synchronized or released. Registration adds
 discoverability only; deep-loop runs standalone with no sibling installed.
