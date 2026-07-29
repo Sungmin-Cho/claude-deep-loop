@@ -157,11 +157,11 @@ The payload (`insights_schema_version` stays `1` — these are additive fields) 
 
 ## Installation and Discovery
 
-The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.13.0 has already been published.
+The marketplace entries may be synchronized only after merge and separate approval. That sync has happened for v1.13.0 — the deep-suite registry pins the merged `main` commit. For anything newer than the pinned commit, use the local-repository paths below and do not infer that it has already been published.
 
 | Surface | Local installation and discovery | After a local plugin change |
 |---|---|---|
-| Claude Code | Use `claude --plugin-dir /absolute/path/to/deep-loop`. Only after the separately approved post-merge registry sync, use `/plugin marketplace add Sungmin-Cho/claude-deep-suite` and `/plugin install deep-loop@claude-deep-suite`. | Start a new session. |
+| Claude Code | Use `claude --plugin-dir /absolute/path/to/deep-loop` for unreleased local changes. For the pinned release, use `/plugin marketplace add Sungmin-Cho/claude-deep-suite` and `/plugin install deep-loop@claude-deep-suite`. | Start a new session. |
 | Codex CLI | Complete both coupled local-install steps below, then open `/plugins`. | Start a new task/session and verify it in `/plugins`. |
 | Codex App | Complete the same coupled install. In the ChatGPT desktop app, select **Work or Codex**, open **Plugins**, and select deep-loop; continuation uses `workstream-session`. | **Restart the App**, then start a new task. |
 

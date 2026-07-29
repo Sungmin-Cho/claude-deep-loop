@@ -140,11 +140,11 @@ payload(`insights_schema_version`은 `1` 유지 — 아래는 additive 필드)�
 
 ## 설치와 발견
 
-마켓플레이스 엔트리는 merge와 별도 승인 뒤에만 동기화할 수 있습니다. 그 전에는 아래 로컬 저장소 경로를 사용하고 v1.13.0이 이미 배포되었다고 간주하지 마세요.
+마켓플레이스 엔트리는 merge와 별도 승인 뒤에만 동기화할 수 있습니다. v1.13.0에 대해서는 그 동기화가 이뤄졌습니다 — deep-suite 레지스트리가 머지된 `main` 커밋을 pin 합니다. pin 된 커밋보다 새로운 변경은 아래 로컬 저장소 경로를 사용하고 이미 배포되었다고 간주하지 마세요.
 
 | Surface | 로컬 설치·발견 | 로컬 플러그인 변경 후 |
 |---|---|---|
-| Claude Code | `claude --plugin-dir /absolute/path/to/deep-loop`를 사용합니다. 별도 승인된 post-merge registry sync 이후에만 `/plugin marketplace add Sungmin-Cho/claude-deep-suite`와 `/plugin install deep-loop@claude-deep-suite`를 사용합니다. | **new session**을 시작합니다. |
+| Claude Code | 배포되지 않은 로컬 변경에는 `claude --plugin-dir /absolute/path/to/deep-loop`를 사용합니다. pin 된 릴리스에는 `/plugin marketplace add Sungmin-Cho/claude-deep-suite`와 `/plugin install deep-loop@claude-deep-suite`를 사용합니다. | **new session**을 시작합니다. |
 | Codex CLI | 아래 결합 설치 단계 둘 다 완료한 뒤 `/plugins`를 엽니다. | **new task/session**을 시작하고 `/plugins`에서 확인합니다. |
 | Codex App | 같은 결합 설치를 완료합니다. ChatGPT desktop app에서 **Work or Codex**를 선택하고 **Plugins**를 연 뒤 deep-loop를 선택합니다. 연속성은 `workstream-session`을 사용합니다. | **restart the App** 후 **new task**를 시작합니다. |
 
