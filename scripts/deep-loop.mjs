@@ -625,7 +625,9 @@ const handlers = {
         head,
         `Consumed: takeover_kind=${receipt.takeover_kind} superseded_owner=${receipt.superseded_owner_run_id} transition=${receipt.from_generation}->${receipt.to_generation} at=${receipt.at}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
-        'Status: consumed — 새 진입 시도는 proceed:false (already-owned)',
+        // 무조건 단정이면 거짓이다(리뷰 라운드 5 F5-2): 같은 durable 상태에서 같은 attempt_id 재호출은
+        // replay 로 `proceed:true` 를 재발급받는다 — §3.3 출력 문안과 함께 한정했다.
+        'Status: consumed — attempt_id 없이/다른 값의 새 진입 시도는 proceed:false (already-owned); 같은 attempt_id는 replay',
         '',
       ].join('\n'));
       return 0;

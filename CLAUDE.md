@@ -55,7 +55,7 @@ node --test tests/<x>.test.mjs   # single file
 
 - **Determinism:** time-sensitive code takes an injectable `now` (ms or ISO). Tests pass a fixed `now` — never rely on `Date.now()` in a test that also seeds a fixed `created_at` (that was the original `orch-cli` date-flake).
 - **No external deps.** Durable state is JSON (no YAML parser). The PreCompact and SessionStart hook bootstraps are static, shell-free Node.
-- Add a failing test first; keep `npm test` green; one focused commit per change. Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- Add a failing test first; keep `npm test` green; one focused commit per change. Commit trailer: `Co-Authored-By: Claude Opus <noreply@anthropic.com>` — model name only, **no version or variant**, so the line does not drift as sessions change model.
 
 ## Conventions
 
