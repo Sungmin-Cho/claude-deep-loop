@@ -502,7 +502,8 @@ test('an in-place mutation of a replaced target fails even as the first target',
 });
 
 // 무변경 재발행 target 에는 replace-intent 가 있을 수 없다 — publisher 는 그런 target 을 candidate fast
-// path 로 지나가며 unlink 도 marker 도 하지 않는다. 앞 target 의 frontier 없이 **단독으로** 걸러야 한다.
+// path 로 지나가고, 거기서 쓰는 marker 는 target-done 뿐이며 unlink 는 하지 않는다. 앞 target 의 frontier
+// 없이 **단독으로** 걸러야 한다.
 test('a replace-intent marker on an unchanged target fails even as the first target', () => {
   const { root, runId, dir } = seed();
   mkdirSync(join(dir, 'artifacts'), { recursive: true });

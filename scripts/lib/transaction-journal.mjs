@@ -1143,11 +1143,13 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
       throw reconciliationError('replace-intent for absent predecessor');
     }
     // 무변경 재발행에는 replace-intent 가 있을 수 없다 — publisher 는 그런 target 을 candidate fast path 로
-    // 지나가며 marker 도 unlink 도 하지 않는다(:1190-1196). 있다면 모순이므로 fail-stop 한다.
+    // 지나가고, 거기서는 target-done 만 쓰며 replace-intent 도 unlink 도 하지 않는다
+    // (publishArtifactTargetsLocked 의 candidate 분기). 있다면 모순이므로 fail-stop 한다.
     if (replaceIntent && unchangedBytes) {
       throw reconciliationError('replace-intent for unchanged target');
     }
-    // contiguous-prefix 판정은 "디스크 내용 == candidate" 를 발행 완료의 증거로 쓴다. candidate 바이트가
+    // contiguous-prefix 판정은 "디스크 내용 == candidate" 를 발행이 이 target 을 지나갔다는 증거로 쓴다
+    // (완료 증명은 아니다 — 그것은 아래처럼 target-done 까지 있어야 한다). candidate 바이트가
     // 기록된 predecessor 바이트와 **동일한** target(내용 무변경 재발행)에서는 그 추론이 성립하지 않는다 —
     // 발행 전에도 후에도 참이므로 순서 정보를 담지 않는다. 그런 target 을 발행됨으로 오독하면 앞선 미발행
     // target 뒤에 놓였을 때 규칙이 헛발화한다(win32 는 launcher surface 가 전부 상수로 강등돼
