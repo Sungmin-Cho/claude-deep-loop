@@ -1092,7 +1092,9 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     throw reconciliationError('prepared manifest mismatch');
   }
   const classifications = [];
-  let sawPredecessor = false;
+  // 순차 publisher 의 완료 frontier — 완료 증명이 없는 첫 target 에서 서고, 그 뒤의 진행 증거는 순차
+  // 발행으로 설명되지 않는다(rollback 또는 marker 유실).
+  let frontierReached = false;
   for (const target of manifest.targets) {
     const record = prepared.stages[target.stage_index];
     if (!record || record.role !== 'artifact' || record.target_rel !== target.rel) {
@@ -1143,10 +1145,15 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     // 순차 publisher 는 앞 target 을 끝내기 전에 뒤 target 의 marker 를 쓸 수 없으므로, 앞이 미발행인데
     // 뒤에 marker 가 있는 vector 는 모순이고 fail-stop 해야 한다 — marker 가 있으면 제외하지 않는다.
     const uninformative = unchangedInPlace && !targetDone && !replaceIntent;
-    if (sawPredecessor && state === 'candidate' && !uninformative) {
+    // 진행 증거 = publisher 가 이 target 을 지나갔음을 보이는 것. marker 는 그 자체로 증거이며,
+    // candidate 바이트도 증거지만 무변경 재발행은 예외다 — 발행 전에도 참이라 아무것도 말해 주지 않는다.
+    const progressEvidence = targetDone || replaceIntent || (state === 'candidate' && !uninformative);
+    if (frontierReached && progressEvidence) {
       throw reconciliationError('artifact publication order');
     }
-    if (state !== 'candidate') sawPredecessor = true;
+    // 완료 증명 = candidate 바이트가 자리에 있고 target-done marker 까지 있는 것. publisher 는 앞 target 의
+    // marker 를 쓴 뒤에야 다음 target 으로 가므로, 증명되지 않은 target 이 frontier 를 세운다.
+    if (!(state === 'candidate' && targetDone)) frontierReached = true;
     classifications.push(Object.freeze({
       target,
       finalPath,

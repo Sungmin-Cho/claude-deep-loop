@@ -1398,7 +1398,9 @@ test('T6 a second boundary emit publishes an emit-invariant launcher text (Windo
   assert.deepEqual(readFileSync(launchPath), launchBefore,
     'win32 launcher text must stay emit-invariant for this regression to cover anything');
 
-  // 앞선 신규 target 들은 실제로 발행됐고 저널은 잔존하지 않는다.
+  // 앞선 신규 target 들이 실제로 발행됐는지, 그리고 **커밋되지 않은** prepared 저널이 남지 않았는지.
+  // 성공한 emit 의 committed 디렉터리는 다음 appendAnchored 가 retire 할 때까지 남으므로(:1266) 잔존
+  // 판정에서 제외한다 — prepared.json 존재만으로 세면 정상 커밋도 오탐한다.
   const dir = runDir(f.root, f.runId);
   assert.equal(existsSync(join(dir, 'handoffs', `${c2}-next-session.md`)), true);
   const compaction = JSON.parse(readFileSync(join(dir, 'handoffs', `${c2}-compaction-state.json`), 'utf8'));

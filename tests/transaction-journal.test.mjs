@@ -291,7 +291,8 @@ test('an unchanged republication is order-neutral, not an out-of-order publicati
 // identity 무시)는 아래 중 정확히 하나에서 깨진다.
 const ORDER_ERROR = /TRANSACTION_RECONCILIATION_REQUIRED: artifact publication order/;
 
-// prepared operation 디렉터리는 operationId 가 아닌 파생 이름을 쓴다 — 유일한 항목을 찾는다.
+// prepared operation 디렉터리는 `transactions/<operationId>` 다(transaction-journal.mjs:787). 여기서는
+// 어차피 한 번에 하나만 prepared 일 수 있으므로(:1023) 유일한 항목을 찾아 id 를 되풀이하지 않는다.
 function preparedOperationDir(dir) {
   const transactions = join(dir, 'transactions');
   const entries = readdirSync(transactions);
@@ -375,11 +376,69 @@ for (const kind of ['target-done', 'replace-intent']) {
   });
 }
 
+// 순차 publisher 는 앞 target 의 target-done 을 쓰기 전에 뒤 target 을 건드리지 않는다. 따라서 "앞 target
+// 은 완료 증명이 없는데 뒤 target 에 진행 증거가 있다" 는 vector 는 publisher 가 만들 수 없다 — rollback
+// 이나 marker 유실의 흔적이므로 fail-stop 해야 한다. 아래 두 vector 는 내용 기반 판정만으로는 보이지
+// 않는다(둘 다 뒤 target 의 진행 증거가 candidate 상태 하나로 환원되지 않기 때문이다).
+test('a published successor behind an unproven unchanged target fails the contiguous prefix', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const unchanged = join(dir, 'artifacts', 'a.txt');
+  const successor = join(dir, 'artifacts', 'b.txt');
+  writeFileSync(unchanged, 'artifact-a');
+  writeFileSync(successor, 'artifact-b');
+  const { manifest, stages } = fixture('order-frontier-unchanged-first');
+  // target 0: 무변경 재발행이며 marker 가 없다 → 완료 증명 없음.
+  manifest.targets[0].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('artifact-a')),
+    identity: captureStableFileIdentity(unchanged),
+    size: String(Buffer.byteLength('artifact-a')),
+  };
+  // target 1: predecessor 와 다른 candidate 바이트가 자리에 있다 → 실제로 발행된 흔적.
+  manifest.targets[1].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('older-b')),
+    identity: captureStableFileIdentity(successor),
+    size: String(Buffer.byteLength('older-b')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    assert.throws(() => journal.publishArtifactTargetsLocked(dir, guard, manifest), ORDER_ERROR);
+  });
+});
+
+test('a replace-intent marker behind an unpublished target fails the contiguous prefix', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const successor = join(dir, 'artifacts', 'b.txt');
+  writeFileSync(successor, 'older-b');
+  const { manifest, stages } = fixture('order-frontier-replace-intent');
+  // target 0 은 디스크에 없고 predecessor 도 absent → 미발행.
+  // target 1 은 아직 predecessor 상태인데 replace-intent 가 있다 → publisher 가 여기까지 왔다는 증거.
+  manifest.targets[1].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('older-b')),
+    identity: captureStableFileIdentity(successor),
+    size: String(Buffer.byteLength('older-b')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    plantMarker(dir, manifest.targets[1], 'replace-intent');
+    assert.throws(() => journal.publishArtifactTargetsLocked(dir, guard, manifest), ORDER_ERROR);
+  });
+  assert.equal(existsSync(join(dir, 'artifacts', 'a.txt')), false);
+});
+
 // 같은 바이트를 담은 **다른 파일**로 바꿔치기 — 내용만 보면 무변경이지만 기록된 identity 와 어긋난다.
 test('an identical-byte substitution of an unchanged successor fails the contiguous prefix', () => {
   const f = successorFixture('order-identity-substitution');
-  rmSync(f.successor);
-  writeFileSync(f.successor, 'artifact-b');
+  // 지우고 다시 쓰면 ext4 는 같은 inode 를 재할당해 identity 가 그대로다(ubuntu CI 에서 아래 전제 assert
+  // 가 실제로 걸렸다). 원본이 살아 있는 동안 만든 다른 파일을 rename 으로 덮으면 그 파일은 이미 다른
+  // inode 를 갖고 있으므로 어느 파일시스템에서도 재사용이 불가능하다.
+  const replacement = join(dirname(f.successor), 'b.replacement');
+  writeFileSync(replacement, 'artifact-b');
+  renameSync(replacement, f.successor);
   assert.equal(
     matchingStableFileIdentity(captureStableFileIdentity(f.successor), f.manifest.targets[1].predecessor.identity),
     false,
