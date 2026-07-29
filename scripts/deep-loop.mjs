@@ -627,10 +627,14 @@ const handlers = {
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
         // 이 줄은 `Handoff:`/`Recovery:` 헤드와 **공유**되므로(§3.3) 어느 방향으로도 무조건 단정할 수
         // 없다. 무조건 `proceed:false` 는 같은-attempt replay 에 대해 거짓이고(라운드 5 F5-2), 무조건
-        // "같은 attempt_id는 replay" 는 영수증에 attempt_id 가 없는 상태 — recovery 소비 전부와
-        // nonce 없는 lease acquire 소비 — 에 대해 거짓이다(라운드 7 C2). 그래서 **영수증에서 파생**한다.
+        // "같은 attempt_id는 replay" 는 영수증에 attempt_id 가 없는 소비 — `recovery acquire` /
+        // `root recovery acquire` 로 한 소비와 nonce 없이 한 `lease acquire` 소비 — 에 대해 거짓이다
+        // (라운드 7 C2). 그래서 **replay 가 실제로 도달 가능할 때만** 붙인다: 영수증이 attempt_id 를
+        // 담고 있고(조건 5) run 이 `running` 일 때다 — 사람이 개시한 preserve-pause 와 terminal 은
+        // 조건 2·terminal 가드로 replay 를 막지만 이 분기 자체는 계속 발화한다(라운드 8 W2).
         `Status: consumed — 새 진입 시도는 proceed:false (already-owned)${
           typeof receipt.attempt_id === 'string' && receipt.attempt_id.length > 0
+            && data.status === 'running'
             ? '; 같은 attempt_id 재호출은 replay'
             : ''}`,
         '',

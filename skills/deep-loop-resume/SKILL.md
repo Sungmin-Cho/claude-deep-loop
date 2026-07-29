@@ -50,9 +50,14 @@ handoff의 acquire를 **정확히 한 번** 재시도하고, 그 응답의 `proc
 `proceed:false`면 그때 멈춘다. 보유한 값이 없다면 새로 만들지 않는다 — 새 값은 다른 시도이므로
 replay가 성립하지 않고, 그 경우는 §4-(b)③의 사람 런북 대상이다.
 
-> 커널의 `Status:` 줄은 **영수증에 `attempt_id`가 있을 때만** `같은 attempt_id 재호출은 replay`를
-> 덧붙인다. 그 절이 없으면 이 예외는 적용되지 않는다 — recovery 소비와 nonce 없이 한 소비는
-> 영수증에 `attempt_id`가 없어 replay가 원리적으로 성립하지 않는다.
+> 커널의 `Status:` 줄은 replay가 **실제로 도달 가능할 때만** `같은 attempt_id 재호출은 replay`를
+> 덧붙인다(영수증이 `attempt_id`를 담고 run이 `running`일 때). 그 절이 있으면 위 예외를 그대로
+> 적용한다. **절이 없다는 것만으로 replay 불가를 결론내지 말 것** — 판단 기준은 "이 소비가
+> `lease acquire`로 이뤄졌고 그때 `--attempt-id`를 주었는가"다. `normal`·`boundary-handoff`·
+> **`boundary-recovery`** 세 경로는 모두 `lease acquire`로 소비되므로 nonce와 replay의 대상이며
+> (boundary-recovery의 resume invocation도 `lease acquire`다), `recovery acquire`와
+> `root recovery acquire`로 한 소비만 nonce를 받지 않아 replay가 원리적으로 없다. 절이 없는데
+> 보유한 값이 있다면 그 값으로 한 번 재시도해 응답의 `proceed`로 판단한다.
 
 ## Boundary handoff
 

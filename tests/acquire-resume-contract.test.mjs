@@ -208,6 +208,23 @@ test('T1 the Status line advertises replay only when the receipt actually carrie
   assert.match(shownRecovery.stdout, /Recovery: consumed/);
   assert.match(shownRecovery.stdout, /Status: consumed/);
   assert.doesNotMatch(shownRecovery.stdout, /같은 attempt_id 재호출은 replay/);
+
+  // 라운드 8 W2: 절은 replay 가 **실제로 도달 가능**할 때만 붙어야 한다. 사람이 개시한 preserve-pause 는
+  // lease 를 건드리지 않아 acquired 분기가 계속 발화하지만 replay 조건 2(`status === 'running'`)가
+  // 막는다 — 그 상태에서 절이 남으면 커널 stdout 과 README 가 서로 모순된다.
+  pauseRun(withNonce.root, withNonce.runId, {
+    reason: 'human-hold', mode: 'preserve',
+    expect: { owner: withNonce.child, generation: 2 }, now: Date.parse(T2) + 1_000,
+  });
+  const shownPaused = runReadCli(withNonce.root, withNonce.runId, ['resume-command']);
+  assert.match(shownPaused.stdout, /Status: consumed/);
+  assert.doesNotMatch(shownPaused.stdout, /같은 attempt_id 재호출은 replay/);
+  // 그리고 실제로 replay 가 막혀 있음을 같은 테스트에서 확인한다.
+  const afterPause = acquireLease(withNonce.root, withNonce.runId, {
+    owner: withNonce.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2) + 2_000,
+  });
+  assert.equal(afterPause.proceed, false);
+  assert.equal(afterPause.reason, 'already-owned');
 });
 
 test('T1 negative: a reservation-less released takeover and a stale-generation receipt never echo consumed', () => {
