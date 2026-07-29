@@ -447,10 +447,16 @@ test('resume/respawn prose: promote only on proceed:true and persist the attempt
     // `proceed` 존재만 보면 같은 문장의 부정절(`proceed:false` 언급)이 토큰을 공급해 반쪽 되돌림이
     // 통과한다(직접 확인). **긍정형 승격 지시**는 반드시 proceed:true 를 명명해야 한다 — 부정형
     // ("승격하지 않고"/"승격하지 말고")은 이 규칙의 대상이 아니다.
-    for (const sentence of sentences.filter(s2 => /승격한다|승격하고|\bpromote\b/i.test(s2))) {
+    for (const sentence of sentences.filter(s2 => /승격한다|승격하고|승격하라|승격하며|승격 대상|\bpromote(?:d|s)?\b/i.test(s2))) {
       assert.match(sentence, /proceed:true/,
         `${name}: an affirmative promotion instruction must name proceed:true: ${sentence.trim()}`);
     }
+    // 라운드 6 F6-1: 문장 검사와 옛 **줄 단위** 잔존 검사의 실패 집합은 서로 교차한다 — 어느 하나가
+    // 상위집합이 아니므로 둘을 함께 둔 합집합이 곧 개선이다. 한계는 명시한다: 이 계열은 키워드
+    // 게이트이므로 "ok:true 로 승격한다고 명시적으로 반전한 문장"은 잡지 못한다(라운드 5 A9 처분과 동일 근거).
+    const staleOkTrueLines = src.split('\n').filter(line => /승격/.test(line) && /`ok:true`/.test(line)
+      && !/proceed/.test(line));
+    assert.deepEqual(staleOkTrueLines, [], `${name}: no single line may key promotion on ok:true alone`);
   }
   // already-owned 가 ok:true 인데도 승격 대상이 아님을 명시한다.
   assert.match(resume, /already-owned/);
@@ -471,7 +477,14 @@ test('resume/respawn prose: promote only on proceed:true and persist the attempt
   // ③ resume 단계 1 이 `Status: consumed` 를 비진행으로 처리한다(승격 금지 + status 안내).
   assert.match(resume, /Status: consumed[\s\S]{0,400}\/deep-loop-status/,
     'resume step 1 must treat `Status: consumed` as non-proceeding and point at /deep-loop-status');
-  // ④ 오용 복구 — 위임 전 사전 acquire 위반 시 fenced preserve-pause.
+  // ④ F5-2 remedy 고정(라운드 6 F6-2): durable 하게 attempt_id 를 보유한 세션은 정지가 아니라
+  // 같은 값으로 **정확히 한 번** 재시도하고 `proceed` 로 판단한다. 이것이 없으면 wrapper 재주입
+  // 세션이 M1 에서 진행 권한을 재발급받을 재호출을 끝내 하지 않는다 — 커널이 닫은 구멍이 산문 층에서
+  // 다시 열린다. 삭제·부분 삭제·반전이 전부 전수 GREEN 이었으므로 여기서 고정한다.
+  assert.match(resume.replace(/\s+/g, ' '),
+    /보유[^.]{0,80}attempt_id[\s\S]{0,300}정확히 한 번[\s\S]{0,200}proceed/,
+    'resume step 1 must keep the same-attempt retry exception (hold an attempt id → retry exactly once → decide on proceed)');
+  // ⑤ 오용 복구 — 위임 전 사전 acquire 위반 시 fenced preserve-pause.
   assert.match(resume, /acquire-misuse[\s\S]{0,200}--mode preserve/,
     'resume must document the fenced preserve-pause misuse recovery');
 });
