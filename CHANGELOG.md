@@ -5,6 +5,20 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.13.1] — 2026-07-29
+
+### Fixed
+
+- **부모 디렉터리가 사라진 `replace-unlinked` 를 fail-stop 한다** (`replace-unlinked parent missing`).
+  `replace-intent` marker 는 대상 파일이 디스크에 있을 때만 기록되므로 그 시점에 부모 디렉터리도
+  존재했고, publisher 는 leaf 파일만 unlink 하며 디렉터리는 지우지 않는다. 따라서 부모가 사라진
+  `replace-unlinked` 는 publisher 가 만들 수 없는 상태다. 그것을 분류가 그대로 통과시키면 발행이
+  `ensureStrictDirectory` 로 디렉터리를 되만들어 이번 manifest 의 target 만 복원하고, 같은 디렉터리에
+  있던 **매니페스트 밖 파일들은 조용히 유실**된 채 publication 이 성공을 보고한다. 1.13.0 의 완료-frontier
+  규칙은 이 vector 가 미완 target **뒤에** 올 때는 이미 거부했다(`replace-intent` 가 진행 증거이므로);
+  남아 있던 공백은 그것이 **첫 target** 일 때였다. 외부 간섭이나 파일시스템 유실 없이는 도달하지 않는
+  탐지 공백이며, 발행되는 artifact 자체는 이전에도 바이트 검증됐다.
+
 ## [1.13.0] — 2026-07-29
 
 ### Added

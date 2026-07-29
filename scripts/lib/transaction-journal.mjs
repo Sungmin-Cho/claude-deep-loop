@@ -1134,6 +1134,11 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     } else if (target.predecessor.kind === 'absent') {
       state = 'predecessor';
     } else if (replaceIntent) {
+      // replace-intent 는 대상 파일이 디스크에 있을 때만 기록되므로 그 시점에 부모 디렉터리도 존재했고,
+      // publisher 는 leaf 만 unlink 하며 디렉터리는 지우지 않는다. 따라서 부모가 사라진 replace-unlinked 는
+      // publisher 가 만들 수 없는 상태다. 그대로 통과시키면 아래 발행이 디렉터리를 되만들어 이번 manifest
+      // 의 target 만 복원하고, 같은 디렉터리에 있던 **매니페스트 밖 파일들은 조용히 유실**된다.
+      if (parentAbsent) throw reconciliationError('replace-unlinked parent missing');
       state = 'replace-unlinked';
     } else {
       throw reconciliationError('missing artifact predecessor');

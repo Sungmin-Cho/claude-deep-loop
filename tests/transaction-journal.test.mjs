@@ -526,6 +526,40 @@ test('a replace-intent marker on an unchanged target fails even as the first tar
   });
 });
 
+// `replace-intent` 는 대상 파일이 디스크에 있을 때만 기록되므로(그 시점에 부모 디렉터리도 존재했다),
+// 그리고 publisher 는 leaf 만 unlink 하고 디렉터리는 지우지 않으므로, **부모가 사라진 replace-unlinked 는
+// publisher 가 만들 수 없다**. 그것을 되만들고 재발행하면 같은 디렉터리에 있던 매니페스트 밖 파일들이
+// 조용히 유실된 채 publication 이 성공을 보고한다 — detect-and-fail-stop 이어야 한다.
+//
+// **첫 target** 이어야 이 공백이 드러난다: 후행 위치라면 `replace-intent` 가 frontier 이후의 진행 증거로
+// 이미 걸린다. 앞에 미완 target 이 없을 때만 분류가 그대로 통과해 재발행까지 간다.
+test('a replace-unlinked first target whose parent directory vanished fails instead of being recreated', () => {
+  const { root, runId, dir } = seed();
+  const parent = join(dir, 'artifacts');
+  mkdirSync(parent, { recursive: true });
+  const replaced = join(parent, 'a.txt');
+  writeFileSync(replaced, 'older-a');
+  const { manifest, stages } = fixture('replace-unlinked-parent-missing');
+  manifest.targets[0].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('older-a')),
+    identity: captureStableFileIdentity(replaced),
+    size: String(Buffer.byteLength('older-a')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    plantMarker(dir, manifest.targets[0], 'replace-intent');
+    // publisher 가 leaf 를 unlink 한 뒤, 외부에서 디렉터리째 사라진 상태를 만든다.
+    rmSync(parent, { recursive: true, force: true });
+    assert.throws(
+      () => journal.publishArtifactTargetsLocked(dir, guard, manifest),
+      /TRANSACTION_RECONCILIATION_REQUIRED: replace-unlinked parent missing/,
+    );
+  });
+  // 되만들지 않았다는 증거 — 되만들면 매니페스트 밖 유실이 관측 불가능해진다.
+  assert.equal(existsSync(parent), false);
+});
+
 test('artifact publication rejects even an internal target symlink', (t) => {
   const { root, runId, dir } = seed();
   mkdirSync(join(dir, 'artifacts'));
