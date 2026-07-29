@@ -625,9 +625,14 @@ const handlers = {
         head,
         `Consumed: takeover_kind=${receipt.takeover_kind} superseded_owner=${receipt.superseded_owner_run_id} transition=${receipt.from_generation}->${receipt.to_generation} at=${receipt.at}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
-        // 무조건 단정이면 거짓이다(리뷰 라운드 5 F5-2): 같은 durable 상태에서 같은 attempt_id 재호출은
-        // replay 로 `proceed:true` 를 재발급받는다 — §3.3 출력 문안과 함께 한정했다.
-        'Status: consumed — attempt_id 없이/다른 값의 새 진입 시도는 proceed:false (already-owned); 같은 attempt_id는 replay',
+        // 이 줄은 `Handoff:`/`Recovery:` 헤드와 **공유**되므로(§3.3) 어느 방향으로도 무조건 단정할 수
+        // 없다. 무조건 `proceed:false` 는 같은-attempt replay 에 대해 거짓이고(라운드 5 F5-2), 무조건
+        // "같은 attempt_id는 replay" 는 영수증에 attempt_id 가 없는 상태 — recovery 소비 전부와
+        // nonce 없는 lease acquire 소비 — 에 대해 거짓이다(라운드 7 C2). 그래서 **영수증에서 파생**한다.
+        `Status: consumed — 새 진입 시도는 proceed:false (already-owned)${
+          typeof receipt.attempt_id === 'string' && receipt.attempt_id.length > 0
+            ? '; 같은 attempt_id 재호출은 replay'
+            : ''}`,
         '',
       ].join('\n'));
       return 0;

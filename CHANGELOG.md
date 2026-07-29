@@ -57,7 +57,9 @@ All notable changes to deep-loop are documented in this file.
   lock)를 요구하기 때문이다. 이 저장소의 run 중 boundary handoff를 수행한 것은 0개이므로 현재 그런 run은
   없고, 수정 이후에는 새로 발생하지 않는다. 발생 시 해당 run을 폐기하거나 사례별로 사람이 판단한다.
 - **affinity recovery / root recovery 경로는 `--attempt-id`를 받지 않는다.** 두 경로의 duplicate는
-  멱등이 아니라 fence-throw이므로 replay 분기가 없다. 그 두 경로에서 응답이 유실되면
+  멱등이 아니어서 replay 분기가 없다. 다만 duplicate 응답은 서로 다르다 — `recovery acquire`는
+  `LEASE_FENCED: generation-mismatch`(exit 3), `root recovery acquire`는 영수증 증명이 먼저 실패해
+  `ROOT_OPERATION_PROOF_INVALID`(**exit 1**, fence가 아니므로 exit-3 경로가 아니다)다. 그 두 경로에서 응답이 유실되면
   `resume-command`의 `Recovery: consumed` **사후 관측**만 가능하고 이는 진행 권한의 재발급이 아니다 —
   사람 개입이 필요하다.
 

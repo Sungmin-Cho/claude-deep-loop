@@ -50,9 +50,9 @@ handoff의 acquire를 **정확히 한 번** 재시도하고, 그 응답의 `proc
 `proceed:false`면 그때 멈춘다. 보유한 값이 없다면 새로 만들지 않는다 — 새 값은 다른 시도이므로
 replay가 성립하지 않고, 그 경우는 §4-(b)③의 사람 런북 대상이다.
 
-> 커널이 출력하는 `Status: consumed — 새 진입 시도는 proceed:false (already-owned)` 문장은
-> 같은-attempt replay를 한정하지 않아 위 예외에 대해 정확하지 않다. 릴리스 단계의
-> spec-drift 정정 대상으로 기록돼 있다.
+> 커널의 `Status:` 줄은 **영수증에 `attempt_id`가 있을 때만** `같은 attempt_id 재호출은 replay`를
+> 덧붙인다. 그 절이 없으면 이 예외는 적용되지 않는다 — recovery 소비와 nonce 없이 한 소비는
+> 영수증에 `attempt_id`가 없어 replay가 원리적으로 성립하지 않는다.
 
 ## Boundary handoff
 

@@ -107,9 +107,13 @@ never surface as consumed.
 `boundary-handoff` and `boundary-recovery` share `lease acquire`; `affinity recovery` and
 `root recovery` have their own verbs. All five report `proceed`/`consumed` and write a
 receipt. Only the three `lease acquire` paths accept `--attempt-id` and therefore have
-replay; the two recovery verbs answer a duplicate with a fence throw (exit 3) by design, so
-**a lost response there is recoverable only by human intervention** — `resume-command`'s
-`Recovery: consumed` is an observation, not a re-issued right to proceed.
+replay; neither recovery verb has a replay branch, so **a lost response there is recoverable
+only by human intervention** — `resume-command`'s `Recovery: consumed` is an observation, not
+a re-issued right to proceed. Their duplicate answers differ and are not interchangeable:
+`recovery acquire` throws `LEASE_FENCED: generation-mismatch` (**exit 3**), while
+`root recovery acquire` fails its receipt proof first and throws
+`ROOT_OPERATION_PROOF_INVALID` (**exit 1**) — that identity is not a fence, so it does not
+take the exit-3 path.
 
 **Known limitation.** A run whose second-generation boundary emit was attempted with a
 pre-1.13.0 binary can hold a stranded prepared journal; every later reconciled read or
@@ -153,7 +157,7 @@ The payload (`insights_schema_version` stays `1` — these are additive fields) 
 
 ## Installation and Discovery
 
-The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.12.0 has already been published.
+The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.13.0 has already been published.
 
 | Surface | Local installation and discovery | After a local plugin change |
 |---|---|---|

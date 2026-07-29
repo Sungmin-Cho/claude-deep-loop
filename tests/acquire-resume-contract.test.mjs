@@ -174,6 +174,40 @@ test('T1 resume-command echoes the consumed reservation after acquire without re
   assert.match(shown.stdout, new RegExp(`Lease: owner=${f.child}[^\\n]*handoff_phase=acquired`));
   // 비실행 마커 — DOC-8: 실행 가능한 resume invocation을 재출력하지 않는다.
   assert.doesNotMatch(shown.stdout, /deep-loop-resume/);
+  // 라운드 7 C2: `Status:` 줄은 Handoff/Recovery 헤드와 **공유**되므로 replay 절을 무조건 달 수 없다.
+  // nonce 없이 소비한 이 케이스는 영수증에 attempt_id 가 없어 replay 가 원리적으로 불가능하다.
+  assert.equal(lease(f.root, f.runId).acquisition_receipt.attempt_id, null);
+  assert.doesNotMatch(shown.stdout, /같은 attempt_id 재호출은 replay/);
+});
+
+test('T1 the Status line advertises replay only when the receipt actually carries an attempt id', () => {
+  // 라운드 7 C2: 이전 판은 모든 소비에 "같은 attempt_id는 replay" 를 달았는데, 영수증에 attempt_id 가
+  // 없는 상태 — recovery 소비 전부와 nonce 없는 lease acquire 소비 — 에 대해 거짓이었다. replay 조건 5
+  // (`R.attempt_id === 요청값`)가 성립할 수 없기 때문이다. 절을 영수증에서 파생시켰고 여기서 고정한다.
+  const withNonce = seedEmittedBoundary();
+  assert.equal(acquireLease(withNonce.root, withNonce.runId, {
+    owner: withNonce.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
+  }).proceed, true);
+  assert.equal(lease(withNonce.root, withNonce.runId).acquisition_receipt.attempt_id, A1);
+  const shownWithNonce = runReadCli(withNonce.root, withNonce.runId, ['resume-command']);
+  assert.match(shownWithNonce.stdout, /Status: consumed/);
+  assert.match(shownWithNonce.stdout, /같은 attempt_id 재호출은 replay/);
+
+  // recovery 소비는 `--attempt-id` 를 받을 수 없으므로(§3.6.4) 그 절이 붙으면 거짓이 된다.
+  const recovery = seedAffinityReservation();
+  assert.equal(acquireRecovery(recovery.root, recovery.runId, {
+    capsuleRel: recovery.recovery.recovery_rel,
+    owner: recovery.recovery.child_run_id,
+    expectGeneration: 1,
+    runtime: 'claude',
+    now: Date.parse(T2),
+    clock: () => Date.parse(T2),
+  }).proceed, true);
+  assert.equal(lease(recovery.root, recovery.runId).acquisition_receipt.attempt_id, null);
+  const shownRecovery = runReadCli(recovery.root, recovery.runId, ['resume-command']);
+  assert.match(shownRecovery.stdout, /Recovery: consumed/);
+  assert.match(shownRecovery.stdout, /Status: consumed/);
+  assert.doesNotMatch(shownRecovery.stdout, /같은 attempt_id 재호출은 replay/);
 });
 
 test('T1 negative: a reservation-less released takeover and a stale-generation receipt never echo consumed', () => {

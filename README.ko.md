@@ -94,9 +94,12 @@ replay 자신은 아무것도 쓰지 않는다. 사람이 개시한 `pause --mod
 `boundary-recovery`가 `lease acquire`를 공유하고, `affinity recovery`와 `root recovery`는 각자
 verb를 갖는다. 다섯 경로 모두 `proceed`/`consumed`를 보고하고 영수증을 남긴다. 다만
 `--attempt-id`를 받는 것은 `lease acquire` 계열 3경로뿐이라 replay도 그 셋에만 있다. recovery
-두 verb의 duplicate는 설계상 fence throw(exit 3)이므로 **그 경로에서 응답이 유실되면 사람
-개입으로만 회복된다** — `resume-command`의 `Recovery: consumed`는 관측이지 진행 권한의
-재발급이 아니다.
+두 verb에는 replay 분기가 없으므로 **그 경로에서 응답이 유실되면 사람 개입으로만 회복된다** —
+`resume-command`의 `Recovery: consumed`는 관측이지 진행 권한의 재발급이 아니다. 다만 두 verb의
+duplicate 응답은 서로 다르고 호환되지 않는다: `recovery acquire`는
+`LEASE_FENCED: generation-mismatch`(**exit 3**)를 throw하지만, `root recovery acquire`는 영수증
+증명이 먼저 실패해 `ROOT_OPERATION_PROOF_INVALID`(**exit 1**)를 throw한다 — 그 신원은 fence가
+아니어서 exit-3 경로를 타지 않는다.
 
 **알려진 제약.** 1.13.0 이전 binary로 2세대 boundary emit을 시도한 run은 stranded prepared
 journal을 들고 있을 수 있고, 그 run의 이후 모든 reconciled read/mutation이 fail-stop한다. 이
@@ -137,7 +140,7 @@ payload(`insights_schema_version`은 `1` 유지 — 아래는 additive 필드)�
 
 ## 설치와 발견
 
-마켓플레이스 엔트리는 merge와 별도 승인 뒤에만 동기화할 수 있습니다. 그 전에는 아래 로컬 저장소 경로를 사용하고 v1.12.0이 이미 배포되었다고 간주하지 마세요.
+마켓플레이스 엔트리는 merge와 별도 승인 뒤에만 동기화할 수 있습니다. 그 전에는 아래 로컬 저장소 경로를 사용하고 v1.13.0이 이미 배포되었다고 간주하지 마세요.
 
 | Surface | 로컬 설치·발견 | 로컬 플러그인 변경 후 |
 |---|---|---|
