@@ -164,6 +164,60 @@ function validateSessionScope(scope, session, errors) {
   fail('kind must be workstream or legacy');
 }
 
+// spec §3.2: `session_chain.lease.acquisition_receipt` — exact-key object(전 필드 동시 존재), optional.
+// 1세대/기존 run 의 lease 에는 필드가 없으므로 undefined 는 통과한다.
+const RECEIPT_KEYS = [
+  'takeover_kind', 'child_run_id', 'superseded_owner_run_id', 'boundary_event',
+  'project_root_digest', 'project_binding_generation', 'handoff_rel', 'reservation_key',
+  'from_generation', 'to_generation', 'at', 'attempt_id',
+];
+const RECEIPT_TAKEOVER_KINDS = [
+  'boundary-handoff', 'legacy-handoff', 'boundary-recovery',
+  'affinity-supersession', 'project-root', 'released-takeover',
+];
+
+function validateAcquisitionReceipt(receipt, errors) {
+  if (receipt === undefined) return;
+  const fail = detail => errors.push(`session_chain.lease.acquisition_receipt ${detail}`);
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    fail('must be an object');
+    return;
+  }
+  const actual = Object.keys(receipt).sort();
+  if (actual.join(',') !== [...RECEIPT_KEYS].sort().join(',')) {
+    fail(`must carry exactly ${RECEIPT_KEYS.join(', ')}`);
+    return;
+  }
+  if (!RECEIPT_TAKEOVER_KINDS.includes(receipt.takeover_kind)) fail('takeover_kind is invalid');
+  for (const key of ['child_run_id', 'superseded_owner_run_id', 'at']) {
+    if (typeof receipt[key] !== 'string' || receipt[key].length === 0) fail(`${key} must be a non-empty string`);
+  }
+  if (receipt.boundary_event !== null && !validBoundaryIdentity(receipt.boundary_event)) {
+    fail('boundary_event must be null or an exact boundary identity');
+  }
+  if (receipt.project_root_digest !== null && !/^[0-9a-f]{64}$/.test(receipt.project_root_digest || '')) {
+    fail('project_root_digest must be null or lowercase 64-hex');
+  }
+  for (const key of ['project_binding_generation']) {
+    if (receipt[key] !== null && !(Number.isSafeInteger(receipt[key]) && receipt[key] >= 1)) {
+      fail(`${key} must be null or a positive integer`);
+    }
+  }
+  if (receipt.handoff_rel !== null && !portableRel(receipt.handoff_rel, 'handoffs/')) {
+    fail('handoff_rel must be null or a safe handoffs/ relative path');
+  }
+  if (receipt.reservation_key !== null
+    && (typeof receipt.reservation_key !== 'string' || receipt.reservation_key.length === 0)) {
+    fail('reservation_key must be null or a non-empty string');
+  }
+  for (const key of ['from_generation', 'to_generation']) {
+    if (!Number.isSafeInteger(receipt[key]) || receipt[key] < 1) fail(`${key} must be a positive integer`);
+  }
+  if (receipt.attempt_id !== null && !/^[A-Za-z0-9_-]{8,128}$/.test(receipt.attempt_id || '')) {
+    fail('attempt_id must be null or match ^[A-Za-z0-9_-]{8,128}$');
+  }
+}
+
 function validateSessions(sc, errors) {
   if (!Array.isArray(sc?.sessions)) {
     errors.push('session_chain.sessions must be array');
@@ -498,6 +552,7 @@ export function validate(loopJson, schema = loadSchema()) {
     if (takeover === 'boundary-handoff' && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
       errors.push('boundary-handoff takeover requires exact boundary handoff fields');
     }
+    validateAcquisitionReceipt(sc.lease?.acquisition_receipt, errors);
     validateSessions(sc, errors);
   }
   if (!Number.isSafeInteger(loopJson.project?.binding_generation) || loopJson.project.binding_generation < 1) {

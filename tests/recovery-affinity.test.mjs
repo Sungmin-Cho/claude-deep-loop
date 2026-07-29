@@ -48,6 +48,20 @@ const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
 const STATE_MODULE_URL = new URL('../scripts/lib/state.mjs', import.meta.url).href;
 const NOW = Date.parse('2026-07-23T00:00:00.000Z');
 
+// spec §3.1 의 계약 3필드(proceed/consumed/replayed)는 모든 acquire 반환 객체에 존재한다. 성공 응답의
+// `consumed` 는 실행마다 달라지는 식별자를 담으므로, 기존 형태 assertion 은 관심 필드 부분 비교로 바꾸고
+// 계약 필드는 별도로 고정한다 — spec §3.2 노트 3 의 갱신 방침.
+function withoutContractFields(result) {
+  const { proceed: _proceed, consumed: _consumed, replayed: _replayed, ...rest } = result;
+  return rest;
+}
+
+function assertProceeded(result, { takeoverKind }) {
+  assert.equal(result.proceed, true);
+  assert.equal(result.replayed, false);
+  assert.equal(result.consumed?.takeover_kind, takeoverKind);
+}
+
 function openAffinityFixture(runtime = 'claude', episodePhase = 'maker-in-progress') {
   const root = mkdtempSync(join(tmpdir(), 'dl-recovery-affinity-'));
   const { runId } = initRun(root, {
@@ -687,6 +701,9 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
     generation: 1,
     reason: 'BUDGET_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableBytes(budgetFixture.root, budgetFixture.runId), budgetBefore);
   assert.deepEqual(extendBudget(budgetFixture.root, budgetFixture.runId, {
@@ -696,18 +713,20 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
     fence: { owner: budgetFixture.runId, generation: 1 },
     now: NOW + (2 * 86_400_000),
   }), { ok: true, status: 'paused' });
-  assert.deepEqual(acquireRecovery(budgetFixture.root, budgetFixture.runId, {
+  const budgetAcquired = acquireRecovery(budgetFixture.root, budgetFixture.runId, {
     capsuleRel: budgetRecovery.recovery_rel,
     owner: budgetRecovery.child_run_id,
     expectGeneration: 1,
     runtime: 'claude',
     now: NOW + (2 * 86_400_000),
     clock: () => NOW + (2 * 86_400_000),
-  }), {
+  });
+  assert.deepEqual(withoutContractFields(budgetAcquired), {
     ok: true,
     generation: 2,
     reason: 'acquired',
   });
+  assertProceeded(budgetAcquired, { takeoverKind: 'affinity-supersession' });
 
   const tamperFixture = openAffinityFixture();
   const tamperRecovery = supersedeAffinity(tamperFixture.root, tamperFixture.runId, {
@@ -753,22 +772,27 @@ test('affinity acquire breaker failure preserves the reservation through reset a
     generation: 1,
     reason: 'BREAKER_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
   assert.deepEqual(resetBreaker(fixture.root, fixture.runId, {
     fence: { owner: fixture.runId, generation: 1, intent: 'breaker-reset' },
   }), { ok: true, status: 'paused' });
-  assert.deepEqual(acquireRecovery(fixture.root, fixture.runId, {
+  const breakerAcquired = acquireRecovery(fixture.root, fixture.runId, {
     capsuleRel: recovery.recovery_rel,
     owner: recovery.child_run_id,
     expectGeneration: 1,
     runtime: 'claude',
     now: NOW + 3_000,
-  }), {
+  });
+  assert.deepEqual(withoutContractFields(breakerAcquired), {
     ok: true,
     generation: 2,
     reason: 'acquired',
   });
+  assertProceeded(breakerAcquired, { takeoverKind: 'affinity-supersession' });
 });
 
 test('recovery-in-flight rejects pause, generic recover/release/reservation, rollback, and double supersession', () => {
@@ -987,6 +1011,9 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
       generation: fixture.expect.generation,
       reason: 'BUDGET_BLOCKED',
       preserved: true,
+      proceed: false,
+      consumed: null,
+      replayed: false,
     });
     assert.deepEqual(durableBytes(fixture.root, fixture.runId), reservedBefore);
 
@@ -1018,11 +1045,12 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
       now: NOW + (2 * 86_400_000),
       clock: () => NOW + (2 * 86_400_000),
     });
-    assert.deepEqual(acquired, {
+    assert.deepEqual(withoutContractFields(acquired), {
       ok: true,
       generation: fixture.expect.generation + 1,
       reason: 'acquired',
     });
+    assertProceeded(acquired, { takeoverKind: 'boundary-recovery' });
     const final = readState(fixture.root, fixture.runId).data;
     assert.equal(final.status, 'running');
     assert.equal(final.session_chain.lease.owner_run_id, result.child_run_id);
@@ -1114,21 +1142,26 @@ test('boundary acquire breaker failure preserves exact topology through reset an
     generation: fixture.expect.generation,
     reason: 'BREAKER_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
   assert.deepEqual(resetBreaker(fixture.root, fixture.runId, {
     fence: { ...fixture.expect, intent: 'breaker-reset' },
   }), { ok: true, status: 'paused' });
-  assert.deepEqual(acquireLease(fixture.root, fixture.runId, {
+  const boundaryAcquired = acquireLease(fixture.root, fixture.runId, {
     owner: recovery.child_run_id,
     expectGeneration: fixture.expect.generation,
     runtime: 'claude',
     now: NOW + 5_000,
-  }), {
+  });
+  assert.deepEqual(withoutContractFields(boundaryAcquired), {
     ok: true,
     generation: fixture.expect.generation + 1,
     reason: 'acquired',
   });
+  assertProceeded(boundaryAcquired, { takeoverKind: 'boundary-recovery' });
 });
 
 test('affinity publication rejects stale public --now after real wallclock expiry', async () => {
@@ -1191,6 +1224,9 @@ test('affinity recovery acquire rejects stale public --now after real wallclock 
     generation: 1,
     reason: 'BUDGET_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
 });
@@ -1221,6 +1257,9 @@ test('boundary lease acquire rejects stale public --now after real wallclock exp
     generation: fixture.expect.generation,
     reason: 'BUDGET_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
 });
@@ -1250,6 +1289,9 @@ test('affinity recovery acquire samples production time after lock contention cr
     generation: 1,
     reason: 'BUDGET_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
 });
@@ -1278,6 +1320,9 @@ test('boundary recovery acquire samples production time after lock contention cr
     generation: 1,
     reason: 'BUDGET_BLOCKED',
     preserved: true,
+    proceed: false,
+    consumed: null,
+    replayed: false,
   });
   assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
 });

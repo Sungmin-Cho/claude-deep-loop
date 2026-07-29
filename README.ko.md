@@ -61,6 +61,60 @@ host 상실 복구도 human-only입니다. 먼저 preserve-pause하고, 확인�
 
 WAL은 일반 read/mutation 전에 reconcile됩니다. incomplete, invalid, identity-mismatched prepared/committed publication은 **fail-stop**하며 partially published state를 건너뛰어 계속할 수 없습니다.
 
+### acquire↔resume 계약
+
+획득 계열 — `lease acquire`, `recovery acquire`, `root recovery acquire` — 의 **모든** 반환
+객체가 세 필드를 항상 싣는다:
+
+| 필드 | 의미 |
+|---|---|
+| `proceed` | boolean. `proceed === (ok === true && reason === 'acquired')` — 단일 파생 규칙이며 경로별 분기가 없다. **소비자는 `proceed`만 보고 진행을 판단한다.** 멱등 `already-owned`는 `ok:true`이면서 `proceed:false`다. |
+| `consumed` | object 또는 `null`. 진행한 acquire가 **실제로 예약을 소비**했을 때만 non-null이며, 예약 없는 released lease 인수는 `null`이다. takeover 종류, 두 run id, boundary event, root digest/binding generation, handoff rel, 세대 전이를 에코한다. |
+| `replayed` | boolean. `true`는 nonce replay — 같은 응답의 재발급이지 두 번째 소비가 아니다. `proceed`와 독립이며 관측용이다. |
+
+성공 acquire는 durable **소비 영수증**을 `session_chain.lease.acquisition_receipt`에 남긴다
+(세대당 하나, 매 성공 시 덮어씀). 응답 `consumed`의 상위집합이라 replay 응답 구성이 파생이
+아니라 필드 복사이고, 세션 엔트리가 없는 owner에게도 존재한다.
+
+**attempt nonce — `lease acquire --attempt-id <token>`** (optional,
+`^[A-Za-z0-9_-]{8,128}$`; 비정형은 exit 1, 미지정은 위반이 아니다). 응답을 잃었으나 살아 있는
+호출자가 **같은** 값을 재전송하면 커널이 `{proceed:true, replayed:true}`를 재발급해 사람 개입
+없이 진행 권한을 회복한다. 규약은 **생성 → 호출자 쪽 durable 영속화 → acquire** 순서이며,
+호출 후 기록은 "호출은 성공했는데 기록 전에 죽는" 창을 남기므로 **금지**한다 — 지키지 않은
+호출자에게는 이 보증이 적용되지 않는다. 재시도는 같은 값을 재사용한다(새 값은 다른 시도다).
+replay 자신은 아무것도 쓰지 않는다. 사람이 개시한 `pause --mode preserve`는 이미 부여된 시도의
+진행 권한을 **취소**한다 — replay는 run이 `running`일 때만 성립한다.
+
+`resume-command`에 **acquired 브랜치**가 생겼다. 소비 이후에도 영수증만으로(read-only) "이 예약이
+정확히 한 번, 어느 세대 전이에서, 누구에게 소비됐는가"를 검증할 수 있다. 첫 줄은 **비실행
+마커**여서 레거시 소비자가 `already-owned`를 성공으로 오인할 표면을 만들지 않는다. 일반
+재획득과 stale 영수증은 절대 consumed로 표출되지 않는다.
+
+**경로 × 시나리오.** 획득 경로는 5개, CLI 표면은 3개다 — `normal`·`boundary-handoff`·
+`boundary-recovery`가 `lease acquire`를 공유하고, `affinity recovery`와 `root recovery`는 각자
+verb를 갖는다. 다섯 경로 모두 `proceed`/`consumed`를 보고하고 영수증을 남긴다. 다만
+`--attempt-id`를 받는 것은 `lease acquire` 계열 3경로뿐이라 replay도 그 셋에만 있다. recovery
+두 verb에는 replay 분기가 없으므로 **그 경로에서 응답이 유실되면 사람 개입으로만 회복된다** —
+`resume-command`의 `Recovery: consumed`는 관측이지 진행 권한의 재발급이 아니다. 다만 두 verb의
+duplicate 응답은 서로 다르고 호환되지 않는다: `recovery acquire`는
+`LEASE_FENCED: generation-mismatch`(**exit 3**)를 throw하지만, `root recovery acquire`는 영수증
+증명이 먼저 실패해 `ROOT_OPERATION_PROOF_INVALID`(**exit 1**)를 throw한다 — 그 신원은 fence가
+아니어서 exit-3 경로를 타지 않는다.
+
+**알려진 제약.** 1.13.0 이전 binary로 2세대 boundary emit을 시도한 run은 stranded prepared
+journal을 들고 있을 수 있고, 그 run의 이후 모든 reconciled read/mutation이 fail-stop한다. 이
+릴리스는 그 상태에 대한 **커널 복구 경로도 승인된 수동 절차도 제공하지 않는다** — 안전한 절차가
+커널이 제공하지 않는 프리미티브(유지 가능한 maintenance lock)를 요구하기 때문이다. 해당 run은
+폐기하거나 사례별로 사람이 판단한다. 새 run은 이 상태에 들어갈 수 없다.
+
+**conformance fixture.** `tests/fixtures/acquire-resume-conformance.json`이 6개 ordering
+(`raw-first`·`wrapper-first`·`duplicate`·`stale-invocation`·`lost-ack`·`principal-death`)을
+zero-dep JSON으로 선언한다. public CLI와 원시 파일 op만 쓰고 저장소 테스트 헬퍼를 참조하지
+않는다. 외부 소비자는 같은 seed·steps를 자기 transport에서 재생해 `{exit, ok, reason, proceed}`와
+`final` lease 부분집합을 대조한다. `$T0`/`$T1`/`$T2`는 fixture의 `now_binding` 규칙대로
+**재생 시점 기준 상대 오프셋**으로 바인딩한다 — recovery safety 판정이 lock 안에서 실제 clock을
+샘플하며 주입할 수 없어, 절대 시각에 고정하면 재생 시점에 따라 결과가 갈린다.
+
 ## 커널 CLI: `insights` (Hill-Climbing)
 
 deep-loop은 자신이 쌓은 run 이력을 3-verb 커널 서브커맨드(`scripts/lib/insights.mjs`, 스펙 §6)로 결정론 마이닝합니다.
@@ -86,7 +140,7 @@ payload(`insights_schema_version`은 `1` 유지 — 아래는 additive 필드)�
 
 ## 설치와 발견
 
-마켓플레이스 엔트리는 merge와 별도 승인 뒤에만 동기화할 수 있습니다. 그 전에는 아래 로컬 저장소 경로를 사용하고 v1.12.0이 이미 배포되었다고 간주하지 마세요.
+마켓플레이스 엔트리는 merge와 별도 승인 뒤에만 동기화할 수 있습니다. 그 전에는 아래 로컬 저장소 경로를 사용하고 v1.13.0이 이미 배포되었다고 간주하지 마세요.
 
 | Surface | 로컬 설치·발견 | 로컬 플러그인 변경 후 |
 |---|---|---|

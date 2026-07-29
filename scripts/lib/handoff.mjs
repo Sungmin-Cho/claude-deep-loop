@@ -212,8 +212,12 @@ function boundaryIdempotentResult(root, runId, loop, boundaryEvent, expect) {
   return idempotentResult(root, runId, childRunId, lease.handoff_idempotency_key);
 }
 
+// spec §6.2: 두 정체성을 분리한다. **라우팅 정체성**은 논리 `runId`(runDir / `--run-id` / descriptor 의
+// `parentRunId`)로 불변이고, **lineage/topology 정체성**은 이번 boundary 에서 superseded 되는 현재 owner
+// (`parentOwner` = `expect.owner`)다. 검증자들은 이미 전부 후자를 요구하며, 1세대에서만 두 값이 우연히
+// 같아 동작했다(§6.1). legacy 경로(:563)는 topology 검증자가 없으므로 변경 대상이 아니다(§6.3).
 function buildBoundaryArtifacts(loop, {
-  root, runId, childRunId, handoffRel, reason, now, headless, env,
+  root, runId, parentOwner, childRunId, handoffRel, reason, now, headless, env,
   resumePolicy, platform, desktopProbe, deepLoopRoot, exists, descriptorBuilder,
   boundaryEvent,
 }) {
@@ -245,7 +249,7 @@ function buildBoundaryArtifacts(loop, {
   const markdown = handoffMarkdown(loop, childRunId, reason, descriptor);
   const compaction = JSON.stringify(wrap({
     producer: 'deep-loop', artifact_kind: 'compaction-state',
-    schema: { name: 'compaction-state', version: '1.0' }, run_id: childRunId, parent_run_id: runId,
+    schema: { name: 'compaction-state', version: '1.0' }, run_id: childRunId, parent_run_id: parentOwner,
     git: loop.project ? { head: loop.project.head, branch: loop.project.branch, dirty: loop.project.dirty } : {},
     provenance: { source_artifacts: [handoffRel], tool_versions: {} },
     payload: {
@@ -278,11 +282,11 @@ function buildBoundaryArtifacts(loop, {
   const metadata = JSON.stringify(wrap({
     producer: 'deep-loop', artifact_kind: 'launch-command-meta',
     schema: { name: 'launch-command-meta', version: '1.0' },
-    run_id: childRunId, parent_run_id: runId,
+    run_id: childRunId, parent_run_id: parentOwner,
     provenance: { source_artifacts: [handoffRel], tool_versions: {} },
     payload: {
       launch_command_sha256: contentHash(launchBytes),
-      parent_run_id: runId,
+      parent_run_id: parentOwner,
       child_run_id: childRunId,
       handoff_phase: 'emitted',
       boundary_event: { ...boundaryEvent },
@@ -333,6 +337,7 @@ function emitBoundaryHandoff(root, runId, {
   let artifacts;
   try {
     artifacts = buildBoundaryArtifacts(loop, {
+      parentOwner: expect.owner,
       root, runId, childRunId, handoffRel, reason, now, headless, env,
       resumePolicy, platform, desktopProbe, deepLoopRoot, exists, descriptorBuilder,
       boundaryEvent,
@@ -344,7 +349,7 @@ function emitBoundaryHandoff(root, runId, {
   }
   const rootDigest = projectRootDigest(loop.project.root);
   const topology = {
-    parent_run_id: runId,
+    parent_run_id: expect.owner,
     child_run_id: childRunId,
     boundary_event: { ...boundaryEvent },
     project_binding_generation: loop.project.binding_generation,
@@ -372,7 +377,7 @@ function emitBoundaryHandoff(root, runId, {
         turns: 0,
         outcome: null,
         superseded_by: null,
-        parent_run_id: runId,
+        parent_run_id: expect.owner,
         parent_boundary_event: { ...boundaryEvent },
         project_binding_generation: l.project.binding_generation,
         project_root_digest: rootDigest,

@@ -985,7 +985,16 @@ test('Codex preflight receipts settle read/write exactly once and survive a late
   assert.equal(readFileSync(statePath, 'utf8'), afterLeaseState, 'exact retries must not rewrite state');
   assert.equal(readFileSync(logPath, 'utf8'), afterLeaseLog, 'exact retries must not append events');
   assert.notEqual(afterLeaseState, beforeState, 'the fixture must really advance the lease');
-  assert.equal(afterLeaseLog, beforeLog, 'lease-only transitions do not append cost receipts');
+  // 의도된 shape 변경 (spec §3.2 노트 3-(나)): 성공 acquire 는 이제 `lease-acquired` 를 append 하므로
+  // 로그 전체 동등성은 성립하지 않는다. 이 assertion 의 의도는 **cost receipt 부재**였으므로 범위를
+  // cost 계열 이벤트로 좁힌다 — acquire 는 `opts.floor` 를 넘기지 않아 여전히 turn 을 쓰지 않는다(노트 5).
+  const costLines = log => log.split('\n').filter(line => line.includes('"type":"cost"'));
+  assert.deepEqual(costLines(afterLeaseLog), costLines(beforeLog), 'lease-only transitions do not append cost receipts');
+  assert.equal(
+    afterLeaseLog.split('\n').filter(line => line.includes('"type":"lease-acquired"')).length,
+    1,
+    'the successful takeover anchors exactly one lease-acquired event',
+  );
 
   const costs = readLines(fixture.root, fixture.runId).filter(
     event => event.type === 'cost' && event.data?.source === 'codex-preflight-measured',

@@ -5,6 +5,64 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.13.0] — 2026-07-29
+
+### Added
+
+- **acquire↔resume public 계약.** `lease acquire` 계열의 **모든** 반환 객체가 `proceed` / `consumed` /
+  `replayed` 세 필드를 항상 싣는다. `proceed`는 단일 파생 규칙(`ok === true && reason === 'acquired'`)이라
+  경로별 분기가 없고, 멱등 `already-owned`는 `ok:true`이면서 `proceed:false`다 — 이전에는 소비자가
+  "인수에 성공했는가"와 "진행해도 되는가"를 구분할 방법이 없었다. 소비자는 **`proceed`만** 보고 진행을
+  판단하고, `replayed`는 관측·감사용이다.
+- **소비 영수증 `session_chain.lease.acquisition_receipt`.** 모든 성공 acquire가 남긴다(예약 없는 인수도
+  `takeover_kind: 'released-takeover'`로 기록하며, 그 경우 응답의 `consumed`는 `null`이다). 영수증은
+  응답 `consumed`의 상위집합이므로 replay 응답 구성이 필드 복사이고 파생 규칙이 없다. lease에 두므로
+  세션 엔트리가 없는 fresh owner도 대상이다.
+- **`lease acquire --attempt-id <token>`** (optional, `^[A-Za-z0-9_-]{8,128}$`, 위반 시 exit 1).
+  응답을 잃고 살아 있는 호출자가 **같은 값으로 재호출**하면 커널이 `{proceed:true, replayed:true}`를
+  재발급한다 — 사람 개입 없이 진행 권한을 회복한다. **호출 전에 durable하게 남기는 것이 규약**이며
+  (생성 → 영속화 → acquire), 호출 후 기록은 amnesiac 창을 남기므로 금지한다. replay는 무변이다.
+- **`resume-command`의 acquired 브랜치.** 소비 이후에도 예약이 정확히 한 번 소비됐음을 검증할 수 있다
+  (영수증 파생, read-only). 첫 줄은 **비실행 마커**라 레거시 소비자가 `already-owned`를 성공으로
+  오인할 표면을 만들지 않는다. 일반 재획득·stale 영수증은 절대 consumed로 표출되지 않는다.
+- **`pause --now`** (optional) — 다른 verb와 같은 결정론적 시간 주입.
+- **conformance fixture `tests/fixtures/acquire-resume-conformance.json`** — 6개 ordering
+  (raw-first / wrapper-first / duplicate / stale-invocation / lost-ack / principal-death)을
+  public CLI + 원시 파일 op만으로 재생하는 zero-dep 선언. 외부 소비자가 자기 transport 아래에서
+  같은 seed·steps를 재생해 `{exit, ok, reason, proceed}`와 `final`을 대조할 수 있다.
+  **재생 규칙:** `now_binding`대로 `$T0`/`$T1`/`$T2`를 **재생 시점 기준 상대 오프셋**으로 바인딩한다 —
+  recovery safety 판정이 lock 안에서 실제 clock을 샘플하며 주입할 수 없어, 절대 시각에 고정하면 재생
+  시점에 따라 결과가 갈린다.
+
+### Fixed
+
+- **2세대 이상 boundary handoff가 동작한다.** boundary emit의 writer들이 lineage/topology에 논리
+  `run_id`를 기록하는데 검증자들은 전부 **현재 owner**(이번 boundary에서 superseded되는 세션)를
+  요구했다. 1세대에서만 두 값이 우연히 같아 동작했고, 2세대 emit은 publication topology 검증에서
+  반드시 거부되며 prepared 저널이 남았다. 이제 lineage는 `expect.owner`에 바인딩되고 **라우팅
+  정체성(논리 `run_id`)은 불변**이다 — run 디렉터리, `--run-id`, descriptor의 `parentRunId`,
+  M3 envelope 체계는 그대로다. 1세대 기록·검증은 바이트 동일하다.
+
+### Changed
+
+- `deep-loop-resume` / `handoff-respawn` / `deep-loop-workflow` 문언이 **`proceed:true` 뒤에만
+  승격**하도록 바뀌었고, attempt id 사전 영속화 규약과 `Status: consumed` 처리(같은-attempt replay
+  예외 포함), 위임-전 사전 acquire 오용 시 fenced preserve-pause 복구를 명시한다.
+
+### Known limitations
+
+- **§6 수정 이전 binary로 2세대 boundary emit을 시도해 stranded prepared journal이 남은 run**은 이후
+  모든 reconciled read/mutation이 fail-stop한다. 이 릴리스는 그런 run에 대한 **커널 복구 경로도 승인된
+  수동 절차도 제공하지 않는다** — 안전한 절차가 커널이 제공하지 않는 프리미티브(유지 가능한 maintenance
+  lock)를 요구하기 때문이다. 이 저장소의 run 중 boundary handoff를 수행한 것은 0개이므로 현재 그런 run은
+  없고, 수정 이후에는 새로 발생하지 않는다. 발생 시 해당 run을 폐기하거나 사례별로 사람이 판단한다.
+- **affinity recovery / root recovery 경로는 `--attempt-id`를 받지 않는다.** 두 경로의 duplicate는
+  멱등이 아니어서 replay 분기가 없다. 다만 duplicate 응답은 서로 다르다 — `recovery acquire`는
+  `LEASE_FENCED: generation-mismatch`(exit 3), `root recovery acquire`는 영수증 증명이 먼저 실패해
+  `ROOT_OPERATION_PROOF_INVALID`(**exit 1**, fence가 아니므로 exit-3 경로가 아니다)다. 그 두 경로에서 응답이 유실되면
+  `resume-command`의 `Recovery: consumed` **사후 관측**만 가능하고 이는 진행 권한의 재발급이 아니다 —
+  사람 개입이 필요하다.
+
 ## [1.12.0] — 2026-07-26
 
 ### Fixed

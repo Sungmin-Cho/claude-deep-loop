@@ -598,6 +598,49 @@ const handlers = {
     const childRunId = typeof lease.handoff_child_run_id === 'string'
       ? lease.handoff_child_run_id
       : null;
+    // spec §3.3 acquired 브랜치 — 전부 durable 영수증 기준이며 read-only 다(이벤트 로그를 읽지 않는다).
+    // 판별: 현재 세대의 영수증이고(`to_generation === lease.generation`) 실제로 예약을 소비했을 때만
+    // (`takeover_kind !== 'released-takeover'`) 진입한다 → 일반 재획득·stale 영수증은 절대 consumed 를
+    // 내지 않는다(B-2(ii) 해소, T1 부정 케이스).
+    // `lease.state === 'active'` 는 §3.3 조건에 없지만 필수다 (checker W1): releaseLease 는 spread 로
+    // `state: 'released'` 만 바꾸고 `handoff_phase`/`generation` 을 그대로 두므로, 그것 없이는 release 된
+    // lease 에서도 이 분기가 발화해 `Status: consumed — 새 진입 시도는 proceed:false` 를 출력한다. 그런데
+    // released lease 는 takeable 이라 다음 acquire 가 `proceed:true` 를 낸다 — 마커가 커널과 정면으로
+    // 어긋나고, §3.4 가 `Status: consumed` 에서 승격을 금지하므로 **정당한 인수가 교착된다.**
+    const receipt = lease.acquisition_receipt;
+    if (lease.handoff_phase === 'acquired'
+      && lease.state === 'active'
+      && receipt && typeof receipt === 'object'
+      && receipt.to_generation === lease.generation
+      && receipt.takeover_kind !== 'released-takeover') {
+      const consumedChild = (data.session_chain?.sessions || [])
+        .find(session => session.run_id === receipt.child_run_id);
+      const boundary = receipt.boundary_event
+        ? `${receipt.boundary_event.seq}:${receipt.boundary_event.checksum}`
+        : 'none';
+      const head = ['boundary-recovery', 'affinity-supersession', 'project-root'].includes(receipt.takeover_kind)
+        ? `Recovery: consumed kind=${receipt.takeover_kind} capsule=${consumedChild?.recovery_rel || 'none'}`
+        : `Handoff: consumed child_run_id=${receipt.child_run_id} boundary_event=${boundary} binding_generation=${receipt.project_binding_generation ?? 'none'} root_digest=${receipt.project_root_digest ?? 'none'}`;
+      process.stdout.write([
+        head,
+        `Consumed: takeover_kind=${receipt.takeover_kind} superseded_owner=${receipt.superseded_owner_run_id} transition=${receipt.from_generation}->${receipt.to_generation} at=${receipt.at}`,
+        `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
+        // 이 줄은 `Handoff:`/`Recovery:` 헤드와 **공유**되므로(§3.3) 어느 방향으로도 무조건 단정할 수
+        // 없다. 무조건 `proceed:false` 는 같은-attempt replay 에 대해 거짓이고(라운드 5 F5-2), 무조건
+        // "같은 attempt_id는 replay" 는 영수증에 attempt_id 가 없는 소비 — `recovery acquire` /
+        // `root recovery acquire` 로 한 소비와 nonce 없이 한 `lease acquire` 소비 — 에 대해 거짓이다
+        // (라운드 7 C2). 그래서 **replay 가 실제로 도달 가능할 때만** 붙인다: 영수증이 attempt_id 를
+        // 담고 있고(조건 5) run 이 `running` 일 때다 — 사람이 개시한 preserve-pause 와 terminal 은
+        // 조건 2·terminal 가드로 replay 를 막지만 이 분기 자체는 계속 발화한다(라운드 8 W2).
+        `Status: consumed — 새 진입 시도는 proceed:false (already-owned)${
+          typeof receipt.attempt_id === 'string' && receipt.attempt_id.length > 0
+            && data.status === 'running'
+            ? '; 같은 attempt_id 재호출은 replay'
+            : ''}`,
+        '',
+      ].join('\n'));
+      return 0;
+    }
     if (!childRunId || !['reserved', 'emitted', 'spawned'].includes(lease.handoff_phase)) {
       process.stdout.write('no pending handoff\n');
       return 0;
@@ -690,7 +733,10 @@ const handlers = {
           .find(session => session.run_id === child.parent_run_id);
         const validated = validateLaunchCommandMetadata(parsed, {
           launchBytes: launchText.bytes,
-          parentRunId: runId,
+          // §6.3 R-r1: lineage 는 논리 runId 가 아니라 **현재 owner** 기준이다. emit 은 owner 를 바꾸지
+          // 않으므로 emitted/spawned 동안 `lease.owner_run_id` 가 곧 superseded 대상 부모다. 1세대에서는
+          // 두 값이 같아 동작이 바이트 동일하다.
+          parentRunId: lease.owner_run_id,
           childRunId,
           handoffRel: child?.handoff_rel,
           projectRootDigest: projectRootDigest(data.project.root),
@@ -705,7 +751,7 @@ const handlers = {
           && lease.handoff_project_binding_generation === meta.project_binding_generation
           && sameBoundaryEvent(meta.boundary_event, lease.handoff_boundary_event)
           && sameBoundaryEvent(child?.parent_boundary_event, meta.boundary_event)
-          && child?.parent_run_id === runId
+          && child?.parent_run_id === lease.owner_run_id
           && child?.project_root_digest === meta.project_root_digest
           && child?.project_binding_generation === meta.project_binding_generation
           && parent?.superseded_by === childRunId
@@ -741,11 +787,22 @@ const handlers = {
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+      // spec §3.6.1: optional additive 플래그. 형식 위반은 **invalid value → exit 1** 이며 strArg 의
+      // fence 채널(exit 3)을 타지 않는다. 미지정은 위반이 아니다(현행 동작 완전 보존).
+      let attemptId = null;
+      if (f['attempt-id'] !== undefined) {
+        attemptId = f['attempt-id'];
+        if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+          error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
+          return 1;
+        }
+      }
       let r;
       try { r = acquireLease(root, runId, {
         owner,
         expectGeneration,
         runtime,
+        attemptId,
         now: parseExplicitNow(f),
       }); }
       catch (e) {
@@ -1030,7 +1087,12 @@ const handlers = {
     const generation = intArg(f, 'generation');   // exits 3 on invalid/missing (consistent with other handlers)
     const mode = (f.mode === 'rollback') ? 'rollback' : 'preserve';
     try {
-      pauseRun(root, runId, { reason, mode, expect: { owner, generation }, now: Date.now() });
+      // ARC-3: 다른 verb 와 같은 optional `--now` — §8 fixture 의 timed step 이 결정론적으로 재생되려면
+      // pause 도 주입된 시간을 써야 한다. 미지정은 현행대로 Date.now(); 무효 값은 INVALID_NOW → exit 1.
+      const explicitNow = parseExplicitNow(f);
+      pauseRun(root, runId, {
+        reason, mode, expect: { owner, generation }, now: explicitNow ?? Date.now(),
+      });
       json({ ok: true, status: 'paused' }); return 0;
     } catch (e) {
       const msg = String(e?.message || e);

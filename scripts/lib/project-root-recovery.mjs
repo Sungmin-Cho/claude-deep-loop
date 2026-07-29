@@ -27,6 +27,7 @@ import {
   recoveryReservationKind,
 } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
+import { buildAcquisitionReceipt, consumedFromReceipt, contractFields } from './recover.mjs';
 
 const ROOT_DIGEST = /^[0-9a-f]{64}$/;
 const RECEIPT_LIMIT = 16;
@@ -939,6 +940,24 @@ export function acquireRootRecovery(candidateRoot, runId, {
     }
     const iso = canonicalIso(now ?? lockedNow);
     child.started_at = iso;
+    // spec §3.2 예외: 전용 lock 안이므로 appendAnchored 를 중첩 호출할 수 없다(불변식 #7). 이 경로는
+    // **영수증 필드만** 같은 트랜잭션에 기록하고 이벤트는 남기지 않는다 — 예약 자체가 project-root-rebound
+    // publication + receipt artifact 로 이미 앵커되어 있어 reservation_key 대조로 감사 사슬이 닫힌다.
+    const acquisitionReceipt = buildAcquisitionReceipt({
+      takeoverKind: 'project-root',
+      childRunId: owner,
+      supersededOwnerRunId: lease.owner_run_id,
+      boundaryEvent: null,
+      projectRootDigest: child.recovery_project_root_digest ?? null,
+      projectBindingGeneration: bindingGeneration,
+      handoffRel: null,
+      reservationKey: child.root_recovery_operation_id ?? null,
+      fromGeneration: expectGeneration,
+      toGeneration: lease.generation + 1,
+      at: iso,
+      // §3.6.4: root recovery 는 attempt id 를 받지도 기록하지도 않는다.
+      attemptId: null,
+    });
     loop.session_chain.lease = {
       ...lease,
       owner_run_id: owner,
@@ -952,6 +971,7 @@ export function acquireRootRecovery(candidateRoot, runId, {
       handoff_trigger: null,
       takeover_kind: null,
       resume_policy: null,
+      acquisition_receipt: acquisitionReceipt,
     };
     for (const key of ['recovery_rel', 'recovery_sha256', 'recovery_discriminator']) {
       delete loop.session_chain.lease[key];
@@ -959,11 +979,13 @@ export function acquireRootRecovery(candidateRoot, runId, {
     loop.status = 'running';
     delete loop.pause_reason;
     writeState(root, runId, loop);
-    return {
+    // R2-C2: `reason: 'acquired'` 가 없으면 §3.1 의 단일 파생 규칙이 이 경로에 대해 proceed:false 를 낸다.
+    return contractFields({
       ok: true,
       owner,
       generation: loop.session_chain.lease.generation,
       project_binding_generation: bindingGeneration,
-    };
+      reason: 'acquired',
+    }, { consumed: consumedFromReceipt(acquisitionReceipt) });
   });
 }

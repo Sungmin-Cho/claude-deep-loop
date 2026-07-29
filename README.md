@@ -70,6 +70,67 @@ The durable artifact inventory under `.deep-loop/runs/<run-id>/` includes:
 
 The WAL reconciles before ordinary reads or mutations. An incomplete, invalid, or identity-mismatched prepared/committed publication is **fail-stop**: it cannot be skipped to continue from a partially published state.
 
+### acquire↔resume contract
+
+Every return object from the acquisition family — `lease acquire`, `recovery acquire`, and
+`root recovery acquire` — always carries three fields:
+
+| Field | Meaning |
+|---|---|
+| `proceed` | boolean. `proceed === (ok === true && reason === 'acquired')` — one derivation rule, no per-path branching. **Consumers decide whether to continue on `proceed` alone.** The idempotent `already-owned` response is `ok:true` with `proceed:false`. |
+| `consumed` | object or `null`. Non-null only when a proceeding acquire actually consumed a reservation; a reservation-less takeover of a released lease is `null`. Echoes the takeover kind, both run ids, the boundary event, the root digest/binding generation, the handoff rel, and the generation transition. |
+| `replayed` | boolean. `true` marks a nonce replay — the same response re-issued, not a second consumption. Independent of `proceed`; observational. |
+
+Every successful acquire also writes a durable **acquisition receipt** to
+`session_chain.lease.acquisition_receipt` (one per generation, overwritten on each success).
+It is a superset of the `consumed` payload, so a replay response is a field copy rather than
+a derivation, and it exists even for an owner that has no session entry.
+
+**Attempt nonce — `lease acquire --attempt-id <token>`** (optional,
+`^[A-Za-z0-9_-]{8,128}$`; a malformed value is exit 1, an omitted one is not a violation).
+A caller whose response was lost but which is still alive re-sends the **same** value and
+the kernel re-issues `{proceed:true, replayed:true}`, recovering the right to proceed with
+no human step. The protocol is **generate → persist durably on the caller's side → acquire**;
+persisting after the call leaves a window where the call succeeded but the identifier is
+lost, so it is forbidden, and a caller that skips it gets no such guarantee. Retries reuse
+the value — a fresh one is a different attempt. Replay writes nothing of its own. A
+human-initiated `pause --mode preserve` revokes an already-granted attempt: replay requires
+the run to be `running`.
+
+`resume-command` grows an **acquired branch**: after consumption it still proves, read-only
+and from the receipt, that this exact reservation was consumed once, in which generation
+transition, and by whom. Its first line is a **non-executable marker**, so a legacy consumer
+cannot mistake `already-owned` for success. An ordinary re-acquisition and a stale receipt
+never surface as consumed.
+
+**Path × scenario.** Five acquisition paths across three CLI surfaces: `normal`,
+`boundary-handoff` and `boundary-recovery` share `lease acquire`; `affinity recovery` and
+`root recovery` have their own verbs. All five report `proceed`/`consumed` and write a
+receipt. Only the three `lease acquire` paths accept `--attempt-id` and therefore have
+replay; neither recovery verb has a replay branch, so **a lost response there is recoverable
+only by human intervention** — `resume-command`'s `Recovery: consumed` is an observation, not
+a re-issued right to proceed. Their duplicate answers differ and are not interchangeable:
+`recovery acquire` throws `LEASE_FENCED: generation-mismatch` (**exit 3**), while
+`root recovery acquire` fails its receipt proof first and throws
+`ROOT_OPERATION_PROOF_INVALID` (**exit 1**) — that identity is not a fence, so it does not
+take the exit-3 path.
+
+**Known limitation.** A run whose second-generation boundary emit was attempted with a
+pre-1.13.0 binary can hold a stranded prepared journal; every later reconciled read or
+mutation on it fail-stops. This release provides **no kernel recovery path and no approved
+manual procedure** for that state — a safe procedure would need a maintainable maintenance
+lock the kernel does not offer. Such a run is discarded or judged case by case. New runs
+cannot enter the state.
+
+**Conformance fixture.** `tests/fixtures/acquire-resume-conformance.json` declares six
+orderings (`raw-first`, `wrapper-first`, `duplicate`, `stale-invocation`, `lost-ack`,
+`principal-death`) as zero-dependency JSON, using only the public CLI and raw file
+operations — no repository test helper. An external consumer replays the same seed and
+steps under its own transport and compares `{exit, ok, reason, proceed}` plus the `final`
+lease subset. Bind `$T0`/`$T1`/`$T2` per the fixture's `now_binding` rule — **offsets
+relative to replay start**, because recovery safety samples the real clock inside the lock
+and cannot be injected, so absolute timestamps make the replay drift.
+
 ## Kernel CLI: `insights` (Hill-Climbing)
 
 deep-loop mines its own run history into deterministic insights via a 3-verb kernel subcommand
@@ -96,7 +157,7 @@ The payload (`insights_schema_version` stays `1` — these are additive fields) 
 
 ## Installation and Discovery
 
-The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.12.0 has already been published.
+The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.13.0 has already been published.
 
 | Surface | Local installation and discovery | After a local plugin change |
 |---|---|---|

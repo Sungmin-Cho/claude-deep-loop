@@ -25,8 +25,6 @@ import { checkBreaker } from './breaker.mjs';
 import {
   captureReconciledRunSnapshot,
   runDir,
-  withReconciledMutationLock,
-  writeState,
 } from './state.mjs';
 import {
   isOpenScope,
@@ -87,6 +85,70 @@ function lockedSafetyTime(clock, context) {
 
 function operationTime(now, safetyNow, context) {
   return normalizedTime(now === undefined ? safetyNow : now, context);
+}
+
+// ── acquire↔resume 응답 계약 (spec §3.1/§3.2) ────────────────────────────────
+// 세 acquire 경로가 공유한다. lease.mjs 는 이미 이 모듈을 import 하므로 여기 두면 순환이 없다.
+
+// 비진행 판정을 preCheck 밖으로 나르는 sentinel. 메시지는 **bare 토큰**이어야 한다 — 판별이 정확일치이므로
+// 사유를 덧붙이면 catch 가 이를 sentinel 로 알아보지 못한다(§3.2 노트 1). 사유는 payload 에 싣는다.
+export const ACQUIRE_HALT = 'ACQUIRE_HALT';
+
+export function acquireHalt(payload) {
+  const halt = new Error(ACQUIRE_HALT);
+  halt.payload = payload;
+  return halt;
+}
+
+// 응답 계약 3필드 — **in-place 할당만** 한다(§3.2 노트 2). `{...result}` 재구성은 금지: spread 는
+// classifiedAcquireFailure 가 붙인 non-enumerable `kernel_exit_code` 를 복사하지 않으므로 exit 3/1 이
+// 조용히 0 으로 회귀한다. proceed 는 단일 파생 규칙이다 — ok && reason === 'acquired'.
+export function contractFields(result, { consumed = null, replayed = false } = {}) {
+  result.proceed = result.ok === true && result.reason === 'acquired';
+  result.consumed = result.proceed ? consumed : null;
+  result.replayed = replayed;
+  return result;
+}
+
+// 영수증 필드 순서 = §3.2 스키마 순서. `consumed` 는 여기서 세 필드를 뺀 나머지이므로(§3.1) 이 순서가
+// 곧 응답 `consumed` 의 키 순서다.
+export function buildAcquisitionReceipt({
+  takeoverKind,
+  childRunId,
+  supersededOwnerRunId,
+  boundaryEvent = null,
+  projectRootDigest: rootDigest = null,
+  projectBindingGeneration = null,
+  handoffRel = null,
+  reservationKey = null,
+  fromGeneration,
+  toGeneration,
+  at,
+  attemptId = null,
+}) {
+  return {
+    takeover_kind: takeoverKind,
+    child_run_id: childRunId,
+    superseded_owner_run_id: supersededOwnerRunId,
+    boundary_event: boundaryEvent === null ? null : { ...boundaryEvent },
+    project_root_digest: rootDigest,
+    project_binding_generation: projectBindingGeneration,
+    handoff_rel: handoffRel,
+    reservation_key: reservationKey,
+    from_generation: fromGeneration,
+    to_generation: toGeneration,
+    at,
+    attempt_id: attemptId,
+  };
+}
+
+// 예약 없는 인수(`released-takeover`)는 영수증은 남기지만 응답 `consumed` 는 null 이다 — B-2(ii) 해소.
+export function consumedFromReceipt(receipt) {
+  if (!receipt || receipt.takeover_kind === 'released-takeover') return null;
+  const {
+    reservation_key: _reservationKey, at: _at, attempt_id: _attemptId, ...consumed
+  } = receipt;
+  return consumed;
 }
 
 function assertFence(loop, expect) {
@@ -979,6 +1041,10 @@ function clearRecoveryLease(lease, owner, generation, iso) {
   return cleared;
 }
 
+// spec §3.2: acquireLease 와 동일 구조 — `appendAnchored` 단일 anchored 트랜잭션(중첩 아님, 불변식 #7),
+// §2.1 검증은 preCheck, 상태 변경은 mutate, 비진행은 sentinel. 이 함수의 거부는 **이미 전부 throw** 이므로
+// sentinel 로 바꿀 비진행 return 은 preserved-safety 한 곳뿐이고, 진짜 위험은 아래 catch 가 그 8개 거부
+// 경로(에러 신원 10종)를 삼키는 것이다 — 판별식이 그것을 막는다.
 export function acquireRecovery(root, runId, {
   capsuleRel,
   owner,
@@ -986,6 +1052,7 @@ export function acquireRecovery(root, runId, {
   runtime,
   now,
   clock = Date.now,
+  __testPreCheckSeam,
 } = {}) {
   if (typeof capsuleRel !== 'string' || capsuleRel.length === 0
     || typeof owner !== 'string' || owner.length === 0
@@ -993,7 +1060,12 @@ export function acquireRecovery(root, runId, {
     || typeof runtime !== 'string' || runtime.length === 0) {
     throw new Error('RECOVERY_ACQUIRE_INPUT_INVALID');
   }
-  return withReconciledMutationLock(root, runId, (guard, { data: loop }) => {
+  let plan = null;
+  let outcome = null;
+  const appendOptions = {};
+  if (__testPreCheckSeam) appendOptions.preCheckSeam = __testPreCheckSeam;
+
+  const preCheck = (loop, ctx) => {
     const runtimeResult = runtimeFence(loop, runtime);
     if (!runtimeResult.ok) throw new Error('RUNTIME_FENCED: recovery runtime mismatch');
     const lease = loop.session_chain?.lease || {};
@@ -1017,7 +1089,8 @@ export function acquireRecovery(root, runId, {
       || child.recovery_project_binding_generation !== loop.project.binding_generation) {
       throw new Error('LEASE_FENCED: recovery-reservation-mismatch');
     }
-    const bytes = recoveryArtifactBytesLocked(root, runId, capsuleRel, guard);
+    // ctx.guard — preCheck 은 이미 lock 을 보유한다(§3.2 노트 6). lock 밖 읽기는 `…Locked` 계약 파기다.
+    const bytes = recoveryArtifactBytesLocked(root, runId, capsuleRel, ctx?.guard);
     const payload = exactAffinityCapsule(loop, child, bytes);
     if (!payload) throw new Error('RECOVERY_CAPSULE_INVALID');
     validateAffinityEvent(root, runId, loop, child, payload);
@@ -1025,32 +1098,65 @@ export function acquireRecovery(root, runId, {
     const lockedNow = operationTime(now, safetyNow, 'recovery acquire');
     const safety = recoverySafetyReason(loop, safetyNow);
     if (safety) {
-      return {
+      throw acquireHalt(contractFields({
         ok: false,
         generation: lease.generation,
         reason: safety,
         preserved: true,
-      };
+      }));
     }
-    const iso = canonicalNow(lockedNow, 'recovery acquire');
-    loop.session_chain.lease = clearRecoveryLease(
-      lease,
-      owner,
-      expectGeneration + 1,
-      iso,
-    );
+    plan = { iso: canonicalNow(lockedNow, 'recovery acquire') };
+  };
+
+  const mutate = (loop) => {
+    const lease = loop.session_chain.lease;
+    const child = loop.session_chain.sessions.find(session => session.run_id === owner);
+    const receipt = buildAcquisitionReceipt({
+      takeoverKind: 'affinity-supersession',
+      childRunId: owner,
+      supersededOwnerRunId: lease.owner_run_id,
+      boundaryEvent: null,
+      projectRootDigest: child?.recovery_project_root_digest ?? null,
+      projectBindingGeneration: child?.recovery_project_binding_generation ?? null,
+      handoffRel: null,
+      reservationKey: lease.recovery_discriminator ?? lease.handoff_idempotency_key ?? null,
+      fromGeneration: expectGeneration,
+      toGeneration: expectGeneration + 1,
+      at: plan.iso,
+      // §3.6.4: 이 경로는 `--attempt-id` 를 받지도 기록하지도 않는다.
+      attemptId: null,
+    });
+    loop.session_chain.lease = clearRecoveryLease(lease, owner, expectGeneration + 1, plan.iso);
+    loop.session_chain.lease.acquisition_receipt = receipt;
     loop.status = 'running';
     loop.pause_reason = null;
-    child.started_at = iso;
+    child.started_at = plan.iso;
     const parent = loop.session_chain.sessions.find(session => session.run_id === child.recovered_from);
     if (parent) parent.outcome = 'took_over';
-    writeState(root, runId, loop);
-    return {
-      ok: true,
-      generation: expectGeneration + 1,
-      reason: 'acquired',
-    };
-  });
+    outcome = contractFields(
+      { ok: true, generation: expectGeneration + 1, reason: 'acquired' },
+      { consumed: consumedFromReceipt(receipt) },
+    );
+  };
+
+  try {
+    appendAnchored(root, runId, {
+      type: 'lease-acquired',
+      data: {
+        owner,
+        from_generation: expectGeneration,
+        to_generation: expectGeneration + 1,
+        attempt_id: null,
+      },
+      now,
+    }, mutate, preCheck, appendOptions);
+  } catch (e) {
+    // 판별 필수 — 없으면 위 8개 거부 경로(RUNTIME_FENCED·LEASE_FENCED×4 는 exit 3)와 appendAnchored 자신의
+    // fail-stop(STATE_TAMPERED / LOG_TAMPERED / RUN_TERMINAL)이 반환 객체로 강등된다.
+    if (e?.message !== ACQUIRE_HALT) throw e;
+    return e.payload;
+  }
+  return outcome;
 }
 
 export function validateBoundaryRecoveryArtifactLocked(root, runId, loop, child, guard) {

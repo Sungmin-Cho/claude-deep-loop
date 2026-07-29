@@ -11,6 +11,7 @@ import {
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
   rollbackReservedEmit,
 } from '../scripts/lib/lease.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 function seed(runtime = 'claude') {
@@ -26,6 +27,67 @@ function writeHashValidState(root, runId, data) {
   writeFileSync(join(dir, 'loop.json'), raw);
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
+
+// T2a — (d) lib 수준 응답 계약. spec §3.1/§3.2, docs/superpowers/specs/2026-07-27-acquire-resume-contract.md
+test('T2a acquireLease distinguishes proceeding from idempotent responses and anchors one receipt', () => {
+  const { root, runId } = seed();
+  const idempotent = acquireLease(root, runId, {
+    owner: runId, expectGeneration: 1, runtime: 'claude',
+  });
+  assert.equal(idempotent.reason, 'already-owned');
+  assert.equal(idempotent.ok, true);
+  assert.equal(idempotent.proceed, false);
+  assert.equal(idempotent.consumed, null);
+  assert.equal(idempotent.replayed, false);
+  assert.equal(readLines(root, runId).filter(event => event.type === 'lease-acquired').length, 0);
+
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  const acquired = acquireLease(root, runId, {
+    owner: 'FRESH', expectGeneration: 1, runtime: 'claude', attemptId: 'T2AATTEMPT01',
+  });
+  assert.equal(acquired.reason, 'acquired');
+  assert.equal(acquired.proceed, true);
+  assert.notEqual(acquired.consumed, undefined);
+  assert.equal(acquired.consumed, null);   // 예약 없는 인수 → consumed 는 null 이지만 영수증은 남는다
+  assert.equal(acquired.replayed, false);
+  const events = readLines(root, runId).filter(event => event.type === 'lease-acquired');
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0].data, {
+    owner: 'FRESH', from_generation: 1, to_generation: 2, attempt_id: 'T2AATTEMPT01',
+  });
+  const receipt = readState(root, runId).data.session_chain.lease.acquisition_receipt;
+  assert.equal(receipt.takeover_kind, 'released-takeover');
+  assert.equal(receipt.child_run_id, 'FRESH');
+  assert.equal(receipt.superseded_owner_run_id, runId);
+  assert.equal(receipt.from_generation, 1);
+  assert.equal(receipt.to_generation, 2);
+  assert.equal(receipt.attempt_id, 'T2AATTEMPT01');
+});
+
+test('T2a a consumed reservation carries the boundary receipt and echoes it as consumed', () => {
+  const { root, runId } = seed();
+  const now0 = Date.parse('2026-06-24T00:00:00.000Z');
+  const { key } = reserveHandoff(root, runId, { trigger: 'legacy-reserved-child', now: now0 });
+  advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', now: now0 });
+  const child = readState(root, runId).data.session_chain.lease.handoff_child_run_id;
+  const acquired = acquireLease(root, runId, {
+    owner: child, expectGeneration: 1, runtime: 'claude', now: now0 + 1_000,
+  });
+  assert.equal(acquired.proceed, true);
+  assert.equal(acquired.consumed.takeover_kind, 'legacy-handoff');
+  assert.equal(acquired.consumed.child_run_id, child);
+  assert.equal(acquired.consumed.boundary_event, null);
+  assert.equal(acquired.consumed.from_generation, 1);
+  assert.equal(acquired.consumed.to_generation, 2);
+  // 영수증은 consumed 의 상위집합이다 — 응답은 reservation_key/at/attempt_id 를 뺀 나머지다(§3.2).
+  const receipt = readState(root, runId).data.session_chain.lease.acquisition_receipt;
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(receipt)
+      .filter(([field]) => !['reservation_key', 'at', 'attempt_id'].includes(field))),
+    acquired.consumed,
+  );
+  assert.equal(receipt.attempt_id, null);
+});
 
 test('deriveIdempotencyKey is deterministic and trigger-sensitive', () => {
   const a = deriveIdempotencyKey('R', 1, 'milestone');
@@ -229,14 +291,20 @@ test('releasing lease blocks parent self-reacquisition through TTL and permits i
   const withinTtl = acquireLease(root, runId, {
     owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt,
   });
-  assert.deepEqual(withinTtl, { ok: false, generation: 1, reason: 'lease-not-takeable' });
+  assert.deepEqual(withinTtl, {
+    ok: false, generation: 1, reason: 'lease-not-takeable',
+    proceed: false, consumed: null, replayed: false,
+  });
   assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
   assert.equal(readState(root, runId).data.session_chain.lease.generation, 1);
 
   const afterTtl = acquireLease(root, runId, {
     owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt + 1,
   });
-  assert.deepEqual(afterTtl, { ok: true, generation: 2, reason: 'acquired' });
+  assert.deepEqual(afterTtl, {
+    ok: true, generation: 2, reason: 'acquired',
+    proceed: true, consumed: null, replayed: false,
+  });
   assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
   assert.equal(readState(root, runId).data.session_chain.lease.generation, 2);
 });
@@ -497,7 +565,10 @@ test('acquireLease checks runtime before same-owner idempotency', () => {
   const { root, runId } = seed();
   assert.deepEqual(
     acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'codex' }),
-    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+    {
+      ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex',
+      proceed: false, consumed: null, replayed: false,
+    },
   );
   assert.equal(
     acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'claude' }).reason,
@@ -517,7 +588,10 @@ test('acquireLease checks runtime before stale generation and paused unpause wit
 
   assert.deepEqual(
     acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 99, runtime: 'codex' }),
-    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+    {
+      ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex',
+      proceed: false, consumed: null, replayed: false,
+    },
   );
   const afterMismatch = readState(root, runId).data;
   assert.deepEqual(afterMismatch, before);
@@ -547,7 +621,10 @@ test('acquireLease treats only Claude as matching a valid legacy runtime state',
 
   assert.deepEqual(
     acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1, runtime: 'codex' }),
-    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+    {
+      ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex',
+      proceed: false, consumed: null, replayed: false,
+    },
   );
   const acquired = acquireLease(root, runId, {
     owner: 'FRESH', expectGeneration: 1, runtime: 'claude',

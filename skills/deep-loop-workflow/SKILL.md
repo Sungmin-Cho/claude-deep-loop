@@ -18,7 +18,7 @@ user-invocable: false
 
 ## Lease identity vocabulary
 
-`<run_id>`는 descriptor/current run이 정한 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. mutation 직전 `<owner_run_id>`는 fresh `session_chain.lease.owner_run_id`, `<generation>`은 fresh `session_chain.lease.generation`에서 읽는다. owner 세션이 바뀌어도 `<run_id>`를 재바인딩하지 않는다. 유일한 예외인 `lease acquire`는 예약된 `<child_run_id>`를 owner 인자로 쓰고 성공 후에만 그 값을 current `<owner_run_id>`로 승격한다.
+`<run_id>`는 descriptor/current run이 정한 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. mutation 직전 `<owner_run_id>`는 fresh `session_chain.lease.owner_run_id`, `<generation>`은 fresh `session_chain.lease.generation`에서 읽는다. owner 세션이 바뀌어도 `<run_id>`를 재바인딩하지 않는다. 유일한 예외인 `lease acquire`는 예약된 `<child_run_id>`를 owner 인자로 쓰고 **응답의 `proceed:true` 뒤에만** 그 값을 current `<owner_run_id>`로 승격한다 — `ok:true`는 멱등 `already-owned`(`proceed:false`)에도 나오므로 승격 조건이 될 수 없다.
 
 ## 어댑터(adapter) 4-verb 개요
 
@@ -39,5 +39,5 @@ user-invocable: false
 
 - 스킬은 상태를 **읽기만** — `state get`, `next-action`, `adapter resolve`, `budget check` 등 read-only CLI.
 - **변경은 반드시 mutating CLI subcommand로만** (`state patch`, `episode new/record/abandon`, `review dispatch/record`, `handoff emit`, `budget record`, `comprehension ack`, `finish` 등).
-- 모든 mutating CLI는 `--owner <owner_run_id> --generation <n> --run-id <run_id>` fence/identity 필수(`lease acquire`의 owner만 예약된 child 예외).
+- 모든 mutating CLI는 `--owner <owner_run_id> --generation <n> --run-id <run_id>` fence/identity 필수(`lease acquire`의 owner만 예약된 child 예외 — 승격은 위 `proceed:true` 규범을 따른다).
 - `loop.json` · `event-log.jsonl` · `.loop.hash`는 커널만 쓴다 — 스킬은 절대 직접 쓰지 않는다.

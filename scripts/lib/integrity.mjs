@@ -822,7 +822,12 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     } else {
       assertProjectRootBinding(root, loop);
     }
-    if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
+    // #8 (spec §3.2 note 8): a test-only seam between reconciliation and the caller guard. Strictly opt-in —
+    // omitting it is not merely a no-op call, there is no call at all. Callers expose it under a __test* name.
+    if (opts.preCheckSeam) opts.preCheckSeam(loop, { guard });
+    // #6 (spec §3.2 note 6): the guard ctx is ALWAYS passed. Callers whose preCheck needs a `…Locked` helper
+    // (lease.mjs / recover.mjs capsule validation) read it here; a preCheck declaring only (loop) is unaffected.
+    if (preCheck) preCheck(loop, { guard });   // throws BEFORE append → anchor stays consistent
     // Invariant: do not add a throwing guard after preCheck; preCheck side effects are coupled to this ordering.
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
@@ -901,8 +906,19 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
 
     if (!publication) {
+      // #7 (spec §3.2 note 7): the publication path already has faultAt barriers; the non-publication path had
+      // none, so a crash between the log append and writeState was unreproducible. Opt-in by OBSERVABLE
+      // behavior, not by call count — omitting opts.faultAt normalizes to a no-op that still runs twice, so the
+      // durable effects are unchanged but the body is not literally the old one. (Contrast #8 above, where the
+      // `if (opts.preCheckSeam)` guard means there is genuinely no call.)
+      // NOTE: this channel is scoped to the non-publication branch. A publication call must pass
+      // opts.publication.faultAt instead (see :792 / materializePublication at :217) — the two share a name at
+      // different depths, and handing opts.faultAt to a publication call silently arms nothing.
+      const faultAt = opts.faultAt || (() => {});
       for (const item of events) appendFileSync(logPath(root, runId), `${JSON.stringify(item)}\n`);
+      faultAt('event:appended');               // log committed, state not yet — the half-commit window
       writeState(root, runId, loop);
+      faultAt('state:written');                // both committed, caller has not observed the return yet
       return undefined;
     }
 
