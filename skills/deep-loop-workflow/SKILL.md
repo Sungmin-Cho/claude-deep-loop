@@ -31,9 +31,9 @@ user-invocable: false
 
 각 verb의 상세 수행 방법은 `references/` 디렉터리 참조:
 
-- **`references/adapters.md`** — 4-verb 수행 절차 (dispatch 디스크립터 해석, tier guard, checker 호출법)
-- **`references/review-strategy.md`** — 리뷰 전략 확인 질문 흐름, `review` JSON 조립
-- **`references/handoff-respawn.md`** — handoff emit, respawn 게이트, 비용 회계 모델
+- **`DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/adapters.md`** — 4-verb 수행 절차 (dispatch 디스크립터 해석, tier guard, checker 호출법)
+- **`DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/review-strategy.md`** — 리뷰 전략 확인 질문 흐름, `review` JSON 조립
+- **`DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/handoff-respawn.md`** — handoff emit, respawn 게이트, 비용 회계 모델
 
 ## 핵심 불변식
 

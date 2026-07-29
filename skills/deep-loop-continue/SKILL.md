@@ -133,7 +133,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --s
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field recipe.id --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-**결과가 `"harness-hill-climb"`이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("../deep-loop-workflow/references/hill-climbing.md")` §3.4):
+**결과가 `"harness-hill-climb"`이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/hill-climbing.md")` §3.4):
 
 §1.5에서 확정한 absolute worktree에 대해 host의 native path/file API로 `DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml`을 `<absolute_worktree>/.deep-review/contracts/HILLCLIMB-001.yaml`로 복사한다. mkdir/copy **전** canonical worktree containment를 확인하고, `.deep-review`, `contracts`, 대상 파일 중 존재하는 경로 성분이 symlink/reparse-point이면 중단한다. POSIX `cp`/`mkdir` 셸 문법을 가정하지 말고 현재 host에서 안전한 파일 API를 사용한다.
 
