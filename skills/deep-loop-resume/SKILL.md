@@ -36,9 +36,23 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<cano
 
 **`Status: consumed`면 어떤 branch에도 진입하지 않는다.** 그 예약은 이미 정확히 한 번
 소비됐다는 durable 사실이며(영수증 파생), 첫 줄은 실행 가능한 invocation이 아니라
-비실행 마커다. 승격하지 말고 `Consumed:` 줄의 `takeover_kind`/`superseded_owner`/
-`transition`을 그대로 인용해 비진행으로 보고하고 `/deep-loop-status`를 안내한 뒤 멈춘다.
-같은 예약으로 새로 진입을 시도하면 커널은 `proceed:false`(`already-owned`)를 낸다.
+비실행 마커다. `Consumed:` 줄의 `takeover_kind`/`superseded_owner`/`transition`을 그대로
+인용해 보고한다. **attempt_id 없이 또는 다른 값으로** 새로 진입을 시도하면 커널은
+`proceed:false`(`already-owned`)를 내므로, 그 경우에는 승격하지 말고 `/deep-loop-status`를
+안내한 뒤 멈춘다.
+
+**예외 — 이 세션이 durable하게 보유한 attempt_id가 있으면 정지가 아니다.** 그것은 "커널은
+소비를 커밋했는데 이 세션이 응답을 잃었다"는 상태(M1)일 수 있고, 커널은 **같은** attempt_id의
+재호출에 `{proceed:true, replayed:true}`를 재발급한다 — `Status: consumed`와 그 replay는
+동시에 성립한다(같은 durable 상태에 대한 두 사실이다). 따라서 보유한 값으로 아래 Boundary
+handoff의 acquire를 **정확히 한 번** 재시도하고, 그 응답의 `proceed`로 판단한다:
+`proceed:true`면 승격하고 계속하며(`replayed:true`는 같은 시도의 재확인이다),
+`proceed:false`면 그때 멈춘다. 보유한 값이 없다면 새로 만들지 않는다 — 새 값은 다른 시도이므로
+replay가 성립하지 않고, 그 경우는 §4-(b)③의 사람 런북 대상이다.
+
+> 커널이 출력하는 `Status: consumed — 새 진입 시도는 proceed:false (already-owned)` 문장은
+> 같은-attempt replay를 한정하지 않아 위 예외에 대해 정확하지 않다. 릴리스 단계의
+> spec-drift 정정 대상으로 기록돼 있다.
 
 ## Boundary handoff
 
@@ -59,9 +73,9 @@ exact reserved child, `<current_generation>`은 fresh lease generation,
 
 **attempt id 규약 — 호출 **전에** durable하게 남긴다.** 이 세션이 인수를 처음 시도할 때
 `<attempt_id>`를 한 번 만들고(형식 `^[A-Za-z0-9_-]{8,128}$`, ULID 권장), 순서는 정확히
-**① 생성 → ② 자기 쪽에 durable 영속화 → ③ 아래 acquire 호출**이다. 호출 후에 기록하면
-"호출은 성공했는데 기록 전에 죽는" amnesiac 창이 남아 재시도 때 값을 잃는다 — 그 순서를
-지키지 않은 호출자에게는 응답 유실 복구 보증이 적용되지 않는다. **재시도는 같은 값을
+**① 생성 → ② 자기 쪽에 durable 영속화 → ③ 아래 acquire 호출**이다. **호출 후에 기록하는 것은
+금지한다** — "호출은 성공했는데 기록 전에 죽는" amnesiac 창이 남아 재시도 때 값을 잃고, 그
+순서를 지키지 않은 호출자에게는 응답 유실 복구 보증이 적용되지 않는다. **재시도는 같은 값을
 재사용한다**; 새로 만들면 커널이 같은 시도로 식별하지 못해 replay가 성립하지 않고
 `proceed:false`(`already-owned`)로 떨어진다.
 

@@ -423,12 +423,34 @@ test('resume/respawn prose: promote only on proceed:true and persist the attempt
   const respawn = _rf(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8');
   const workflow = _rf(skillPath('deep-loop-workflow'), 'utf8');
 
-  // ① 승격 규범이 proceed:true 이고, `ok:true` 만으로 승격하라는 문장이 남아 있지 않다.
+  // ① 승격을 말하는 **모든** 문장이 proceed 를 근거로 삼는다.
+  //
+  // 라운드 5 F5-1: 이전 판은 두 겹으로 무력했다. (가) 파일 단위 `proceed:true` substring 검사는
+  // 다른 문단(오용 복구 문단, workflow 의 각주)이 그 문자열을 공급하면 통과했다 — 즉 이 커밋이
+  // spec §3.4 대로 추가한 각주가 같은 커밋의 게이트를 무력화했다. (나) 잔존 검사가 **한 물리 줄**만
+  // 봤는데 이 문서들은 80칼럼 하드랩이라 원문은 `ok:true` 와 `승격` 이 다른 줄에 놓인다. 실제
+  //  커밋 전 문안을 되돌리는 probe 가 세 문서 중 둘에서 통과했다.
+  // 그래서 개행을 접어 **승격 언급 주변 창**을 문장 단위로 검사한다 — 백틱·어순·언어에 둔감하다.
   for (const [name, src] of [['deep-loop-resume', resume], ['handoff-respawn', respawn], ['deep-loop-workflow', workflow]]) {
-    assert.match(src, /`?proceed:true`?/, `${name}: promotion norm must be proceed:true`);
-    const staleOkTrue = src.split('\n').filter(line => /승격/.test(line) && /`ok:true`/.test(line)
-      && !/proceed/.test(line));
-    assert.deepEqual(staleOkTrue, [], `${name}: no promotion sentence may key on ok:true alone`);
+    // 고정 폭 창은 **인접한 정당한 문장**의 `proceed` 를 주워오므로 회피를 통과시킨다(직접 확인).
+    // 개행을 접은 뒤 문장 경계(마침표/콜론)로 잘라 문장 단위로 검사한다. `proceed:true` 의 콜론은
+    // 뒤에 공백이 없어 경계로 잡히지 않는다.
+    const sentences = src.replace(/\s+/g, ' ').split(/(?<=[.:。])\s/)
+      .filter(sentence => /승격|promote/i.test(sentence));
+    assert.ok(sentences.length > 0, `${name}: must state a promotion rule at all`);
+    for (const sentence of sentences) {
+      assert.match(sentence, /proceed/,
+        `${name}: every promotion sentence must be keyed on proceed, not on success alone: ${sentence.trim()}`);
+    }
+    assert.ok(sentences.some(sentence => /proceed:true/.test(sentence)),
+      `${name}: at least one promotion sentence must name proceed:true`);
+    // `proceed` 존재만 보면 같은 문장의 부정절(`proceed:false` 언급)이 토큰을 공급해 반쪽 되돌림이
+    // 통과한다(직접 확인). **긍정형 승격 지시**는 반드시 proceed:true 를 명명해야 한다 — 부정형
+    // ("승격하지 않고"/"승격하지 말고")은 이 규칙의 대상이 아니다.
+    for (const sentence of sentences.filter(s2 => /승격한다|승격하고|\bpromote\b/i.test(s2))) {
+      assert.match(sentence, /proceed:true/,
+        `${name}: an affirmative promotion instruction must name proceed:true: ${sentence.trim()}`);
+    }
   }
   // already-owned 가 ok:true 인데도 승격 대상이 아님을 명시한다.
   assert.match(resume, /already-owned/);
@@ -440,6 +462,10 @@ test('resume/respawn prose: promote only on proceed:true and persist the attempt
     assert.match(src, /생성[\s\S]{0,80}영속화[\s\S]{0,80}acquire/, `${name}: must state generate → persist → acquire order`);
     assert.match(src, /같은 값[\s\S]{0,40}재사용/, `${name}: retries must reuse the same attempt id`);
     assert.match(src, /amnesiac/, `${name}: must warn that persisting after the call leaves an amnesiac window`);
+    // F5-5(라운드 5): 단어 존재만 보면 "호출 후에 기록해도 무방" 같은 의미 반전이 통과한다.
+    // 호출 후 영속화가 **금지**라는 규범 자체를 고정한다.
+    assert.match(src.replace(/\s+/g, ' '), /호출 후[^.]{0,60}(?:금지|남기므로 금지|안 된다)/,
+      `${name}: persisting after the call must be stated as forbidden, not merely mentioned`);
   }
 
   // ③ resume 단계 1 이 `Status: consumed` 를 비진행으로 처리한다(승격 금지 + status 안내).
@@ -718,7 +744,10 @@ test('runtime-facing skills assert runtime and carry explicit resume root/run id
   assert.match(resume, /\$deep-loop:deep-loop-resume/, 'Codex resume must use the qualified dollar skill token');
   assert.match(resume, /--project-root\s+"<canonical_project_root>"/, 'resume must accept the canonical project root from the descriptor');
   assert.match(resume, /--run-id\s+<run_id>/, 'resume must accept the explicit logical run id from the descriptor');
-  const acquire = resume.split('\n').find((line) => /lease acquire/.test(line)) || '';
+  // F5-3(라운드 5): 첫 매칭 **물리 줄**을 명령으로 간주하면 코드 블록 위 산문이 명령 이름을
+  // 언급하는 순간 혼란스러운 false RED 가 난다(이 저장소의 Phase 5 산문 편집이 실제로 그것을
+  // 밟았다). 같은 파일 아래쪽이 이미 쓰는 견고한 관용구 — 커널 명령 줄로 먼저 필터한다.
+  const acquire = kernelCommandLines(resume).find((line) => /\blease acquire\b/.test(line)) || '';
   assert.match(acquire, /--runtime\s+<claude\|codex>/, 'lease acquisition must assert the actual host runtime');
   assert.match(acquire, /--project-root\s+"<canonical_project_root>"/);
   assert.match(acquire, /--run-id\s+<run_id>/);
