@@ -24,6 +24,7 @@ import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { acquireRecovery, recoverBoundary, supersedeAffinity } from '../scripts/lib/recover.mjs';
 import { acquireRootRecovery, recoverRelocatedRoot } from '../scripts/lib/project-root-recovery.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -118,7 +119,8 @@ function seedReviewed(runtime = 'claude') {
 }
 
 // boundary handoff 예약까지 — spec §7 서두의 검증된 선례(seedReviewed → closeWithSibling → emitHandoff).
-function seedEmittedBoundary(runtime = 'claude') {
+// `platform` 은 launcher surface 강등을 호스트와 무관하게 주입하기 위한 것이다(T6 Windows 회귀).
+function seedEmittedBoundary(runtime = 'claude', platform = process.platform) {
   const f = seedReviewed(runtime);
   newWorkstream(f.root, f.runId, {
     title: 'sibling', branch: 'feature/sibling', worktree: '.claude/worktrees/sibling', fence: f.f,
@@ -135,10 +137,10 @@ function seedEmittedBoundary(runtime = 'claude') {
     trigger: 'workstream-terminal',
     now: Date.parse(T1),
     expect: { owner: f.runId, generation: 1 },
-    env: {},
+    env: {}, platform,
   });
   assert.equal(emitted.ok, true);
-  return { ...f, boundary, child: emitted.childRunId };
+  return { ...f, boundary, child: emitted.childRunId, platform };
 }
 
 // 예약 없는 released lease — §3.5 normal 행 (lease.test.mjs:347-372 선례와 같은 형태).
@@ -1358,4 +1360,58 @@ test('T6 two consecutive boundary rotations bind lineage to the current owner, n
   assert.equal(second.consumed.takeover_kind, 'boundary-handoff');
   assert.equal(second.consumed.superseded_owner_run_id, c1);
   assert.deepEqual(second.consumed.boundary_event, secondBoundary);
+});
+
+// T6 Windows 회귀 — 선재 publication 결함이 R1(2회 rotation) 이후 처음 도달 가능해진 것이다.
+// win32 에서는 8개 launcher surface 가 전부 상수 manual/unavailable 로 강등돼
+// `terminal/launch-command.txt` 가 emit 간 **바이트 동일**해진다. 그러면 그 target 은
+// "디스크 내용 == candidate" 이므로 `candidate` 로 분류되는데, 앞의 두 handoff target 은 신규(미발행)
+// 이라 contiguous-prefix 규칙이 `artifact publication order` 로 헛발화했다.
+// POSIX 에서는 osascript/cmux surface 가 emit 마다 달라져 그 조합이 만들어지지 않으므로 Windows CI
+// 에서만 드러났다 — platform 을 주입해 모든 호스트에서 같은 경로를 태운다.
+test('T6 a second boundary emit publishes an emit-invariant launcher text (Windows regression)', () => {
+  const f = seedEmittedBoundary('claude', 'win32');
+  const c1 = f.child;
+  const first = acquireLease(f.root, f.runId, {
+    owner: c1, expectGeneration: 1, runtime: 'claude', now: Date.parse(T2),
+  });
+  assert.equal(first.proceed, true);
+
+  const secondBoundary = closeSiblingForSecondBoundary(f, c1, 2);
+  const launchPath = join(runDir(f.root, f.runId), 'terminal', 'launch-command.txt');
+  const launchBefore = readFileSync(launchPath);
+
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: secondBoundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(T2) + 1_000,
+    expect: { owner: c1, generation: 2 },
+    env: {}, platform: 'win32',
+  });
+  assert.equal(emitted.ok, true);
+  const c2 = emitted.childRunId;
+
+  // 전제 고정: 이 테스트가 덮는 것은 **무변경 재발행**이다. win32 launcher 텍스트가 emit 마다 달라지게
+  // 바뀌면 여기서 먼저 깨지고, 그때는 커버리지가 옮겨간 것이다 — 메커니즘 자체는
+  // tests/transaction-journal.test.mjs 의 order-neutral 테스트가 계속 고정한다.
+  assert.deepEqual(readFileSync(launchPath), launchBefore,
+    'win32 launcher text must stay emit-invariant for this regression to cover anything');
+
+  // 앞선 신규 target 들은 실제로 발행됐고 저널은 잔존하지 않는다.
+  const dir = runDir(f.root, f.runId);
+  assert.equal(existsSync(join(dir, 'handoffs', `${c2}-next-session.md`)), true);
+  const compaction = JSON.parse(readFileSync(join(dir, 'handoffs', `${c2}-compaction-state.json`), 'utf8'));
+  assert.equal(compaction.envelope.parent_run_id, c1);
+  const meta = JSON.parse(readFileSync(join(dir, 'terminal', 'launch-command.meta.json'), 'utf8'));
+  assert.equal(meta.payload.child_run_id, c2);
+  assert.equal(meta.payload.launch_command_sha256, contentHash(launchBefore));
+
+  captureReconciledRunSnapshot(f.root, f.runId);
+  const transactions = join(dir, 'transactions');
+  const stranded = existsSync(transactions)
+    ? readdirSync(transactions).filter(entry => existsSync(join(transactions, entry, 'prepared.json'))
+      && !existsSync(join(transactions, entry, 'committed.json')))
+    : [];
+  assert.deepEqual(stranded, []);
 });

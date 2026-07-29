@@ -261,6 +261,55 @@ test('artifact replacement independently binds predecessor identity, size, and S
   assert.equal(readFileSync(target, 'utf8'), 'artifact-a');
 });
 
+// 내용 무변경 재발행(no-op republication) — candidate 바이트가 기록된 predecessor 바이트와 동일한
+// target 이다. 그런 target 의 "디스크 내용 == candidate" 는 발행 전에도 후에도 참이므로 순서 정보를
+// 담지 않는다. 이것을 발행 완료로 오독하면 앞선 미발행 target 뒤에 놓였을 때 contiguous-prefix 규칙이
+// 헛발화한다(Windows T6: emit-invariant 한 terminal/launch-command.txt).
+test('an unchanged republication is order-neutral, not an out-of-order publication', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const unchanged = join(dir, 'artifacts', 'b.txt');
+  writeFileSync(unchanged, 'artifact-b');
+  const { manifest, stages } = fixture();
+  // target 0 은 신규(predecessor absent → 미발행), target 1 은 predecessor == candidate.
+  manifest.targets[1].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('artifact-b')),
+    identity: captureStableFileIdentity(unchanged),
+    size: String(Buffer.byteLength('artifact-b')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    assert.deepEqual(journal.publishArtifactTargetsLocked(dir, guard, manifest), { ok: true, published: 2 });
+  });
+  assert.equal(readFileSync(join(dir, 'artifacts', 'a.txt'), 'utf8'), 'artifact-a');
+  assert.equal(readFileSync(unchanged, 'utf8'), 'artifact-b');
+});
+
+// 위 완화가 규칙 자체를 없애지 않았음을 고정한다 — predecessor 가 candidate 와 **다른데** 디스크가
+// candidate 이면 그 target 은 실제로 발행됐고, 앞선 미발행 target 과 함께면 진짜 순서 위반이다.
+test('a genuinely published successor still fails the contiguous publication prefix', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const published = join(dir, 'artifacts', 'b.txt');
+  writeFileSync(published, 'artifact-b');
+  const { manifest, stages } = fixture();
+  manifest.targets[1].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('older-b')),
+    identity: captureStableFileIdentity(published),
+    size: String(Buffer.byteLength('older-b')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    assert.throws(
+      () => journal.publishArtifactTargetsLocked(dir, guard, manifest),
+      /TRANSACTION_RECONCILIATION_REQUIRED: artifact publication order/,
+    );
+  });
+  assert.equal(existsSync(join(dir, 'artifacts', 'a.txt')), false);
+});
+
 test('artifact publication rejects even an internal target symlink', (t) => {
   const { root, runId, dir } = seed();
   mkdirSync(join(dir, 'artifacts'));

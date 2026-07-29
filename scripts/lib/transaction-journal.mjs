@@ -1125,7 +1125,17 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     if (replaceIntent && target.predecessor.kind !== 'present') {
       throw reconciliationError('replace-intent for absent predecessor');
     }
-    if (sawPredecessor && state === 'candidate') {
+    // contiguous-prefix 판정은 "디스크 내용 == candidate" 를 발행 완료의 증거로 쓴다. candidate 바이트가
+    // 기록된 predecessor 바이트와 **동일한** target(내용 무변경 재발행)에서는 그 추론이 성립하지 않는다 —
+    // 발행 전에도 후에도 참이므로 순서 정보를 담지 않는다. 그런 target 을 발행됨으로 오독하면 앞선 미발행
+    // target 뒤에 놓였을 때 규칙이 헛발화한다(win32 는 launcher surface 가 전부 상수로 강등돼
+    // terminal/launch-command.txt 가 emit 간 바이트 동일해지고, 2회 boundary rotation 에서 실제로 발생).
+    // 판정 제외는 이 무정보 케이스에만 적용된다 — predecessor 가 candidate 와 다르면 규칙은 그대로다.
+    const uninformative = state === 'candidate'
+      && target.predecessor.kind === 'present'
+      && target.predecessor.sha256 === target.candidate_sha256
+      && target.predecessor.size === target.candidate_size;
+    if (sawPredecessor && state === 'candidate' && !uninformative) {
       throw reconciliationError('artifact publication order');
     }
     if (state !== 'candidate') sawPredecessor = true;
