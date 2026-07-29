@@ -314,18 +314,31 @@ function plantMarker(dir, target, kind) {
   }));
 }
 
+// 원본이 살아 있는 동안 만든 파일을 rename 으로 덮는다 — 새 파일은 이미 다른 inode 를 갖고 있으므로 어느
+// 파일시스템에서도 재사용이 불가능하다. 지우고 다시 쓰면 ext4 가 같은 inode 를 재할당한다(ubuntu CI 실측).
+function substituteFile(path, bytes) {
+  const replacement = `${path}.replacement`;
+  writeFileSync(replacement, bytes);
+  renameSync(replacement, path);
+}
+
 // target 0 = 신규(미발행), target 1 = 디스크에 이미 candidate 바이트가 있는 후행 target.
-function successorFixture(operationId) {
+// predecessor 를 candidate 와 다른 바이트로 덮어쓰는 케이스는 `substitute: true` 로 정체성까지 바꿔야
+// **publisher 가 실제로 만들 수 있는** 상태가 된다 — publisher 는 temp+rename 으로만 발행하므로 교체된
+// 파일은 항상 새 파일이다. 정체성을 그대로 두면 in-place 변조 상태가 되어 다른 가드에 먼저 걸린다.
+function successorFixture(operationId, { predecessorBytes = 'artifact-b', substitute = false } = {}) {
   const { root, runId, dir } = seed();
   mkdirSync(join(dir, 'artifacts'), { recursive: true });
   const successor = join(dir, 'artifacts', 'b.txt');
   writeFileSync(successor, 'artifact-b');
+  const identity = captureStableFileIdentity(successor);
+  if (substitute) substituteFile(successor, 'artifact-b');
   const { manifest, stages } = fixture(operationId);
   manifest.targets[1].predecessor = {
     kind: 'present',
-    sha256: contentHash(Buffer.from('artifact-b')),
-    identity: captureStableFileIdentity(successor),
-    size: String(Buffer.byteLength('artifact-b')),
+    sha256: contentHash(Buffer.from(predecessorBytes)),
+    identity,
+    size: String(Buffer.byteLength(predecessorBytes)),
   };
   return { root, runId, dir, successor, manifest, stages };
 }
@@ -345,32 +358,33 @@ for (const [label, predecessorBytes] of [
   ['same length, different bytes', 'artifact-B'],
 ]) {
   test(`a genuinely published successor (${label}) still fails the contiguous prefix`, () => {
-    const f = successorFixture(`order-${label.replace(/[^a-z]+/gi, '-')}`);
-    f.manifest.targets[1].predecessor = {
-      ...f.manifest.targets[1].predecessor,
-      sha256: contentHash(Buffer.from(predecessorBytes)),
-      size: String(Buffer.byteLength(predecessorBytes)),
-    };
-    assertOrderRejected(f);
+    assertOrderRejected(successorFixture(`order-${label.replace(/[^a-z]+/gi, '-')}`, {
+      predecessorBytes, substitute: true,
+    }));
   });
 }
 
 // 기록된 predecessor 의 sha 와 size 가 서로 모순인 manifest — sha 비교만 남긴 술어를 잡는다.
 test('a predecessor whose recorded size contradicts its hash fails the contiguous prefix', () => {
-  const f = successorFixture('order-size-contradiction');
+  const f = successorFixture('order-size-contradiction', { substitute: true });
   f.manifest.targets[1].predecessor = { ...f.manifest.targets[1].predecessor, size: '9' };
   assertOrderRejected(f);
 });
 
 // durable marker 는 "발행이 이 target 을 지나갔다"는 별개 증거다. 앞 target 이 미발행인데 뒤에 marker 가
 // 있는 vector 는 순차 publisher 가 만들 수 없으므로 모순이며, 무변경 재발행이라도 fail-stop 해야 한다.
-for (const kind of ['target-done', 'replace-intent']) {
+// `target-done` 은 순서 판정에서 중립을 깨는 증거이고, `replace-intent` 는 무변경 target 에 대해 그보다
+// 앞선 전용 가드에 걸린다 — 위치(첫 target / 후행 target)와 무관하게 같은 오류여야 한다.
+for (const [kind, expected] of [
+  ['target-done', ORDER_ERROR],
+  ['replace-intent', /TRANSACTION_RECONCILIATION_REQUIRED: replace-intent for unchanged target/],
+]) {
   test(`a ${kind} marker on an unchanged successor is contradictory evidence, not neutrality`, () => {
     const f = successorFixture(`order-marker-${kind}`);
     withLock(f.root, f.runId, guard => {
       journal.preparePublicationStagesLocked(f.dir, guard, f.manifest, f.stages);
       plantMarker(f.dir, f.manifest.targets[1], kind);
-      assert.throws(() => journal.publishArtifactTargetsLocked(f.dir, guard, f.manifest), ORDER_ERROR);
+      assert.throws(() => journal.publishArtifactTargetsLocked(f.dir, guard, f.manifest), expected);
     });
     assert.equal(existsSync(join(f.dir, 'artifacts', 'a.txt')), false);
   });
@@ -396,10 +410,13 @@ test('a published successor behind an unproven unchanged target fails the contig
     size: String(Buffer.byteLength('artifact-a')),
   };
   // target 1: predecessor 와 다른 candidate 바이트가 자리에 있다 → 실제로 발행된 흔적.
+  // 발행은 temp+rename 이므로 정체성도 함께 달라져야 실제로 도달 가능한 상태가 된다.
+  const successorIdentity = captureStableFileIdentity(successor);
+  substituteFile(successor, 'artifact-b');
   manifest.targets[1].predecessor = {
     kind: 'present',
     sha256: contentHash(Buffer.from('older-b')),
-    identity: captureStableFileIdentity(successor),
+    identity: successorIdentity,
     size: String(Buffer.byteLength('older-b')),
   };
   withLock(root, runId, guard => {
@@ -430,21 +447,82 @@ test('a replace-intent marker behind an unpublished target fails the contiguous 
   assert.equal(existsSync(join(dir, 'artifacts', 'a.txt')), false);
 });
 
-// 같은 바이트를 담은 **다른 파일**로 바꿔치기 — 내용만 보면 무변경이지만 기록된 identity 와 어긋난다.
-test('an identical-byte substitution of an unchanged successor fails the contiguous prefix', () => {
-  const f = successorFixture('order-identity-substitution');
-  // 지우고 다시 쓰면 ext4 는 같은 inode 를 재할당해 identity 가 그대로다(ubuntu CI 에서 아래 전제 assert
-  // 가 실제로 걸렸다). 원본이 살아 있는 동안 만든 다른 파일을 rename 으로 덮으면 그 파일은 이미 다른
-  // inode 를 갖고 있으므로 어느 파일시스템에서도 재사용이 불가능하다.
-  const replacement = join(dirname(f.successor), 'b.replacement');
-  writeFileSync(replacement, 'artifact-b');
-  renameSync(replacement, f.successor);
+// publisher 는 temp+rename 으로만 발행하므로 "내용 무변경" 과 "같은 파일" 은 반드시 함께 참이거나 함께
+// 거짓이다. 어긋나는 두 방향은 각각 동일-바이트 바꿔치기와 in-place 변조이고, 둘 다 publisher 가 만들 수
+// 없다 — 순서 판정에 앞서 그 자리에서 fail-stop 해야 하며, **첫 target** 이어도 마찬가지다.
+const DISAGREEMENT = /TRANSACTION_RECONCILIATION_REQUIRED: artifact identity disagreement/;
+
+test('an identical-byte substitution of an unchanged target fails even as the first target', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const unchanged = join(dir, 'artifacts', 'a.txt');
+  writeFileSync(unchanged, 'artifact-a');
+  const { manifest, stages } = fixture('disagreement-substituted-identity');
+  manifest.targets[0].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('artifact-a')),
+    identity: captureStableFileIdentity(unchanged),
+    size: String(Buffer.byteLength('artifact-a')),
+  };
+  substituteFile(unchanged, 'artifact-a');
   assert.equal(
-    matchingStableFileIdentity(captureStableFileIdentity(f.successor), f.manifest.targets[1].predecessor.identity),
+    matchingStableFileIdentity(captureStableFileIdentity(unchanged), manifest.targets[0].predecessor.identity),
     false,
-    'the rewritten file must present a different stable identity for this test to cover anything',
+    'the substituted file must present a different stable identity for this test to cover anything',
   );
-  assertOrderRejected(f);
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    assert.throws(() => journal.publishArtifactTargetsLocked(dir, guard, manifest), DISAGREEMENT);
+  });
+});
+
+test('an in-place mutation of a replaced target fails even as the first target', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const mutated = join(dir, 'artifacts', 'a.txt');
+  writeFileSync(mutated, 'older-a');
+  const identity = captureStableFileIdentity(mutated);
+  // 같은 파일을 그대로 두고 내용만 candidate 로 바꾼다 — rename 이 아니므로 정체성이 유지된다.
+  writeFileSync(mutated, 'artifact-a');
+  assert.equal(
+    matchingStableFileIdentity(captureStableFileIdentity(mutated), identity), true,
+    'an in-place write must keep the stable identity for this test to cover anything',
+  );
+  const { manifest, stages } = fixture('disagreement-in-place-mutation');
+  manifest.targets[0].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('older-a')),
+    identity,
+    size: String(Buffer.byteLength('older-a')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    assert.throws(() => journal.publishArtifactTargetsLocked(dir, guard, manifest), DISAGREEMENT);
+  });
+});
+
+// 무변경 재발행 target 에는 replace-intent 가 있을 수 없다 — publisher 는 그런 target 을 candidate fast
+// path 로 지나가며 unlink 도 marker 도 하지 않는다. 앞 target 의 frontier 없이 **단독으로** 걸러야 한다.
+test('a replace-intent marker on an unchanged target fails even as the first target', () => {
+  const { root, runId, dir } = seed();
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const unchanged = join(dir, 'artifacts', 'a.txt');
+  writeFileSync(unchanged, 'artifact-a');
+  const { manifest, stages } = fixture('unchanged-replace-intent-first');
+  manifest.targets[0].predecessor = {
+    kind: 'present',
+    sha256: contentHash(Buffer.from('artifact-a')),
+    identity: captureStableFileIdentity(unchanged),
+    size: String(Buffer.byteLength('artifact-a')),
+  };
+  withLock(root, runId, guard => {
+    journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
+    plantMarker(dir, manifest.targets[0], 'replace-intent');
+    assert.throws(
+      () => journal.publishArtifactTargetsLocked(dir, guard, manifest),
+      /TRANSACTION_RECONCILIATION_REQUIRED: replace-intent for unchanged target/,
+    );
+  });
 });
 
 test('artifact publication rejects even an internal target symlink', (t) => {

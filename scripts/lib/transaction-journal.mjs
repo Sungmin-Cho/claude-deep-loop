@@ -1103,19 +1103,26 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     const { target: finalPath, parentAbsent } = artifactPathReadOnly(canonicalRunDir, target.rel, lockGuard);
     const replaceIntent = inspectMarker(prepared, 'replace-intent', target, lockGuard);
     const targetDone = inspectMarker(prepared, 'target-done', target, lockGuard);
+    // candidate 바이트가 기록된 predecessor 바이트와 같은가 — 내용 무변경 재발행인지의 판정이다.
+    // 디스크 상태와 무관하게 manifest 만으로 정해지므로 아래 분기 밖에서 구한다.
+    const unchangedBytes = target.predecessor.kind === 'present'
+      && target.predecessor.sha256 === target.candidate_sha256
+      && target.predecessor.size === target.candidate_size;
     let state;
-    // 내용 무변경 재발행 — candidate 바이트가 기록된 predecessor 바이트와 같고, 디스크에 있는 것이
-    // manifest 가 기록한 **그 파일 그대로**인 경우에만 참이다. 같은 바이트를 담은 다른 파일로 바꿔치기된
-    // 경우는 stable identity 가 어긋나므로 여기서 걸러진다.
     let unchangedInPlace = false;
     if (!parentAbsent && guarded(lockGuard, () => existsSync(finalPath))) {
       const current = readStableArtifact(finalPath, lockGuard);
       if (current.size === target.candidate_size && current.sha256 === target.candidate_sha256) {
         state = 'candidate';
-        unchangedInPlace = target.predecessor.kind === 'present'
-          && target.predecessor.sha256 === target.candidate_sha256
-          && target.predecessor.size === target.candidate_size
-          && matchingStableFileIdentity(current.identity, target.predecessor.identity);
+        // publisher 는 temp 파일을 rename 으로 덮어 발행한다 — 교체는 **반드시 다른 파일**이 되고 무변경은
+        // **반드시 같은 파일**로 남는다. 따라서 내용 무변경 여부와 파일 정체성 동일 여부는 일치해야 한다.
+        // 어긋나면 in-place 변조(바이트는 바뀌었는데 같은 파일) 또는 동일-바이트 바꿔치기(바이트는 같은데
+        // 다른 파일)이며, 둘 다 publisher 가 만들 수 없는 상태다.
+        if (target.predecessor.kind === 'present'
+          && unchangedBytes !== matchingStableFileIdentity(current.identity, target.predecessor.identity)) {
+          throw reconciliationError('artifact identity disagreement');
+        }
+        unchangedInPlace = unchangedBytes;
       } else if (target.predecessor.kind === 'present'
         && current.size === target.predecessor.size
         && current.sha256 === target.predecessor.sha256
@@ -1135,6 +1142,11 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     if (replaceIntent && target.predecessor.kind !== 'present') {
       throw reconciliationError('replace-intent for absent predecessor');
     }
+    // 무변경 재발행에는 replace-intent 가 있을 수 없다 — publisher 는 그런 target 을 candidate fast path 로
+    // 지나가며 marker 도 unlink 도 하지 않는다(:1190-1196). 있다면 모순이므로 fail-stop 한다.
+    if (replaceIntent && unchangedBytes) {
+      throw reconciliationError('replace-intent for unchanged target');
+    }
     // contiguous-prefix 판정은 "디스크 내용 == candidate" 를 발행 완료의 증거로 쓴다. candidate 바이트가
     // 기록된 predecessor 바이트와 **동일한** target(내용 무변경 재발행)에서는 그 추론이 성립하지 않는다 —
     // 발행 전에도 후에도 참이므로 순서 정보를 담지 않는다. 그런 target 을 발행됨으로 오독하면 앞선 미발행
@@ -1144,6 +1156,8 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     // 단 durable marker 가 하나라도 있으면 그것은 "발행이 이 target 을 지나갔다"는 **별개의 증거**다.
     // 순차 publisher 는 앞 target 을 끝내기 전에 뒤 target 의 marker 를 쓸 수 없으므로, 앞이 미발행인데
     // 뒤에 marker 가 있는 vector 는 모순이고 fail-stop 해야 한다 — marker 가 있으면 제외하지 않는다.
+    // `!replaceIntent` 는 위 fail-stop 이 이미 걸러내므로 여기서는 도달하지 않는다. 그 가드가 사라져도
+    // 중립 판정이 조용히 넓어지지 않도록 남겨 두는 defense-in-depth 다.
     const uninformative = unchangedInPlace && !targetDone && !replaceIntent;
     // 진행 증거 = publisher 가 이 target 을 지나갔음을 보이는 것. marker 는 그 자체로 증거이며,
     // candidate 바이트도 증거지만 무변경 재발행은 예외다 — 발행 전에도 참이라 아무것도 말해 주지 않는다.
