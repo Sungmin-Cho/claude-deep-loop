@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import * as journal from '../scripts/lib/transaction-journal.mjs';
 import { flushDirectory, renameAtomicWithRetry } from '../scripts/lib/atomic-write.mjs';
 import { contentHash, unwrap } from '../scripts/lib/envelope.mjs';
-import { captureStableFileIdentity } from '../scripts/lib/fs-safe.mjs';
+import { captureStableFileIdentity, matchingStableFileIdentity } from '../scripts/lib/fs-safe.mjs';
 import { runDir, withLock } from '../scripts/lib/state.mjs';
 import * as stateApi from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
@@ -286,28 +286,106 @@ test('an unchanged republication is order-neutral, not an out-of-order publicati
   assert.equal(readFileSync(unchanged, 'utf8'), 'artifact-b');
 });
 
-// 위 완화가 규칙 자체를 없애지 않았음을 고정한다 — predecessor 가 candidate 와 **다른데** 디스크가
-// candidate 이면 그 target 은 실제로 발행됐고, 앞선 미발행 target 과 함께면 진짜 순서 위반이다.
-test('a genuinely published successor still fails the contiguous publication prefix', () => {
+// 위 완화가 규칙을 없애지 않았음을 고정한다. 완화 술어는 네 조건의 **논리곱**이므로 각 조건을 독립적으로
+// 무너뜨리는 케이스를 따로 둔다 — 하나만 빼먹은 술어(예: size 만 비교, sha 만 비교, marker 무시,
+// identity 무시)는 아래 중 정확히 하나에서 깨진다.
+const ORDER_ERROR = /TRANSACTION_RECONCILIATION_REQUIRED: artifact publication order/;
+
+// prepared operation 디렉터리는 operationId 가 아닌 파생 이름을 쓴다 — 유일한 항목을 찾는다.
+function preparedOperationDir(dir) {
+  const transactions = join(dir, 'transactions');
+  const entries = readdirSync(transactions);
+  assert.equal(entries.length, 1, `expected one prepared operation, saw ${entries.join(',')}`);
+  return join(transactions, entries[0]);
+}
+
+// publisher 가 쓰는 것과 **바이트 동일한** marker 를 심는다. 내용이 다르면 `${kind} marker mismatch`
+// 라는 다른 오류가 나므로, 이 테스트가 순서 판정을 태우는지 확인하려면 정확해야 한다.
+function plantMarker(dir, target, kind) {
+  const markers = join(preparedOperationDir(dir), 'markers');
+  mkdirSync(markers, { recursive: true });
+  writeFileSync(join(markers, `${kind}-${String(target.stage_index).padStart(6, '0')}.json`), JSON.stringify({
+    kind,
+    stage_index: target.stage_index,
+    rel: target.rel,
+    candidate_sha256: target.candidate_sha256,
+    predecessor_sha256: target.predecessor.kind === 'present' ? target.predecessor.sha256 : null,
+  }));
+}
+
+// target 0 = 신규(미발행), target 1 = 디스크에 이미 candidate 바이트가 있는 후행 target.
+function successorFixture(operationId) {
   const { root, runId, dir } = seed();
   mkdirSync(join(dir, 'artifacts'), { recursive: true });
-  const published = join(dir, 'artifacts', 'b.txt');
-  writeFileSync(published, 'artifact-b');
-  const { manifest, stages } = fixture();
+  const successor = join(dir, 'artifacts', 'b.txt');
+  writeFileSync(successor, 'artifact-b');
+  const { manifest, stages } = fixture(operationId);
   manifest.targets[1].predecessor = {
     kind: 'present',
-    sha256: contentHash(Buffer.from('older-b')),
-    identity: captureStableFileIdentity(published),
-    size: String(Buffer.byteLength('older-b')),
+    sha256: contentHash(Buffer.from('artifact-b')),
+    identity: captureStableFileIdentity(successor),
+    size: String(Buffer.byteLength('artifact-b')),
   };
+  return { root, runId, dir, successor, manifest, stages };
+}
+
+function assertOrderRejected({ root, runId, dir, manifest, stages }) {
   withLock(root, runId, guard => {
     journal.preparePublicationStagesLocked(dir, guard, manifest, stages);
-    assert.throws(
-      () => journal.publishArtifactTargetsLocked(dir, guard, manifest),
-      /TRANSACTION_RECONCILIATION_REQUIRED: artifact publication order/,
-    );
+    assert.throws(() => journal.publishArtifactTargetsLocked(dir, guard, manifest), ORDER_ERROR);
   });
   assert.equal(existsSync(join(dir, 'artifacts', 'a.txt')), false);
+}
+
+// predecessor 바이트가 candidate 와 다르면 그 후행 target 은 **실제로 발행된** 것이므로 진짜 순서 위반이다.
+// 길이는 같고 내용만 다른 케이스를 포함해, size 비교만 남긴 술어를 잡는다.
+for (const [label, predecessorBytes] of [
+  ['different length', 'older-b'],
+  ['same length, different bytes', 'artifact-B'],
+]) {
+  test(`a genuinely published successor (${label}) still fails the contiguous prefix`, () => {
+    const f = successorFixture(`order-${label.replace(/[^a-z]+/gi, '-')}`);
+    f.manifest.targets[1].predecessor = {
+      ...f.manifest.targets[1].predecessor,
+      sha256: contentHash(Buffer.from(predecessorBytes)),
+      size: String(Buffer.byteLength(predecessorBytes)),
+    };
+    assertOrderRejected(f);
+  });
+}
+
+// 기록된 predecessor 의 sha 와 size 가 서로 모순인 manifest — sha 비교만 남긴 술어를 잡는다.
+test('a predecessor whose recorded size contradicts its hash fails the contiguous prefix', () => {
+  const f = successorFixture('order-size-contradiction');
+  f.manifest.targets[1].predecessor = { ...f.manifest.targets[1].predecessor, size: '9' };
+  assertOrderRejected(f);
+});
+
+// durable marker 는 "발행이 이 target 을 지나갔다"는 별개 증거다. 앞 target 이 미발행인데 뒤에 marker 가
+// 있는 vector 는 순차 publisher 가 만들 수 없으므로 모순이며, 무변경 재발행이라도 fail-stop 해야 한다.
+for (const kind of ['target-done', 'replace-intent']) {
+  test(`a ${kind} marker on an unchanged successor is contradictory evidence, not neutrality`, () => {
+    const f = successorFixture(`order-marker-${kind}`);
+    withLock(f.root, f.runId, guard => {
+      journal.preparePublicationStagesLocked(f.dir, guard, f.manifest, f.stages);
+      plantMarker(f.dir, f.manifest.targets[1], kind);
+      assert.throws(() => journal.publishArtifactTargetsLocked(f.dir, guard, f.manifest), ORDER_ERROR);
+    });
+    assert.equal(existsSync(join(f.dir, 'artifacts', 'a.txt')), false);
+  });
+}
+
+// 같은 바이트를 담은 **다른 파일**로 바꿔치기 — 내용만 보면 무변경이지만 기록된 identity 와 어긋난다.
+test('an identical-byte substitution of an unchanged successor fails the contiguous prefix', () => {
+  const f = successorFixture('order-identity-substitution');
+  rmSync(f.successor);
+  writeFileSync(f.successor, 'artifact-b');
+  assert.equal(
+    matchingStableFileIdentity(captureStableFileIdentity(f.successor), f.manifest.targets[1].predecessor.identity),
+    false,
+    'the rewritten file must present a different stable identity for this test to cover anything',
+  );
+  assertOrderRejected(f);
 });
 
 test('artifact publication rejects even an internal target symlink', (t) => {

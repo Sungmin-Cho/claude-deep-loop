@@ -1102,10 +1102,18 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     const replaceIntent = inspectMarker(prepared, 'replace-intent', target, lockGuard);
     const targetDone = inspectMarker(prepared, 'target-done', target, lockGuard);
     let state;
+    // 내용 무변경 재발행 — candidate 바이트가 기록된 predecessor 바이트와 같고, 디스크에 있는 것이
+    // manifest 가 기록한 **그 파일 그대로**인 경우에만 참이다. 같은 바이트를 담은 다른 파일로 바꿔치기된
+    // 경우는 stable identity 가 어긋나므로 여기서 걸러진다.
+    let unchangedInPlace = false;
     if (!parentAbsent && guarded(lockGuard, () => existsSync(finalPath))) {
       const current = readStableArtifact(finalPath, lockGuard);
       if (current.size === target.candidate_size && current.sha256 === target.candidate_sha256) {
         state = 'candidate';
+        unchangedInPlace = target.predecessor.kind === 'present'
+          && target.predecessor.sha256 === target.candidate_sha256
+          && target.predecessor.size === target.candidate_size
+          && matchingStableFileIdentity(current.identity, target.predecessor.identity);
       } else if (target.predecessor.kind === 'present'
         && current.size === target.predecessor.size
         && current.sha256 === target.predecessor.sha256
@@ -1131,10 +1139,10 @@ export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
     // target 뒤에 놓였을 때 규칙이 헛발화한다(win32 는 launcher surface 가 전부 상수로 강등돼
     // terminal/launch-command.txt 가 emit 간 바이트 동일해지고, 2회 boundary rotation 에서 실제로 발생).
     // 판정 제외는 이 무정보 케이스에만 적용된다 — predecessor 가 candidate 와 다르면 규칙은 그대로다.
-    const uninformative = state === 'candidate'
-      && target.predecessor.kind === 'present'
-      && target.predecessor.sha256 === target.candidate_sha256
-      && target.predecessor.size === target.candidate_size;
+    // 단 durable marker 가 하나라도 있으면 그것은 "발행이 이 target 을 지나갔다"는 **별개의 증거**다.
+    // 순차 publisher 는 앞 target 을 끝내기 전에 뒤 target 의 marker 를 쓸 수 없으므로, 앞이 미발행인데
+    // 뒤에 marker 가 있는 vector 는 모순이고 fail-stop 해야 한다 — marker 가 있으면 제외하지 않는다.
+    const uninformative = unchangedInPlace && !targetDone && !replaceIntent;
     if (sawPredecessor && state === 'candidate' && !uninformative) {
       throw reconciliationError('artifact publication order');
     }
