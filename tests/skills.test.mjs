@@ -769,6 +769,13 @@ test('runtime-facing skills assert runtime and carry explicit resume root/run id
   assert.match(acquire, /--run-id\s+<run_id>/);
 });
 
+test('resume skill retries a retryable lock-busy acquire only with its persisted attempt id', () => {
+  const resume = readFileSync(new URL('../skills/deep-loop-resume/SKILL.md', import.meta.url), 'utf8');
+  assert.match(resume, /reason:"lock-busy"[\s\S]{0,180}retryable:true[\s\S]{0,260}같은[\s\S]{0,80}<attempt_id>/);
+  assert.match(resume, /제한된 재시도[\s\S]{0,200}사람에게[\s\S]{0,80}멈춘다/);
+  assert.match(resume, /`retryable:true` 없는 다른 `proceed:false` 응답은 재시도하지 않는다/);
+});
+
 test('handoff execution docs preserve runtime-correct resume tokens and current Codex transport boundaries', () => {
   const paths = [
     '../skills/deep-loop-continue/SKILL.md',

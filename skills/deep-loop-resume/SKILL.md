@@ -94,6 +94,12 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id>
 이 대화는 진행 권한이 없음"을 보고하고 멈춘다. `replayed:true`는 같은 시도의 재확인이며
 진행 판단은 `proceed`만 본다. arbitrary owner나 plain timeout takeover를 시도하지 않는다.
 
+**일시적 락 경합.** 응답이 정확히 `reason:"lock-busy"`, `retryable:true`,
+`proceed:false`이면 소유권은 이동하지 않았다. `proceed:false` 응답에서 승격하거나 새 attempt id를 만들지 말고, 이미
+영속화한 **같은** `<attempt_id>`로 나중에 제한적으로 재시도한다. 재시도도 `proceed:true`일
+때만 승격한다. 제한된 재시도 후에도 `lock-busy`이면 그 구조화 응답을 포함해 사람에게
+보고하고 멈춘다. `retryable:true` 없는 다른 `proceed:false` 응답은 재시도하지 않는다.
+
 **오용 복구.** 자신이 위임된 실행 세션이 아닌데 `proceed:true`를 받았다면(위임 전 사전
 acquire 금지 위반) 즉시 preserve-pause하고 사람에게 보고한다. `<owner_run_id>`/`<generation>`은
 다른 mutating CLI와 같이 **fresh `session_chain.lease`에서 다시 읽는다** — 방금 인수했으므로

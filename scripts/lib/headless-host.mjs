@@ -208,6 +208,9 @@ function acquireHeadlessHostLock(root, runId, {
       return true;
     });
   } catch (error) {
+    // This is a direct library call, so it intentionally never sees the public
+    // CLI's `{ reason: 'lock-busy', retryable: true }` envelope.  Treat the
+    // same transient lock contention as an unavailable host lock here.
     if (String(error?.message || error).startsWith('LOCK_BUSY')) return null;
     throw error;
   }
