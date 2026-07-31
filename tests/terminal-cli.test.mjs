@@ -1,8 +1,8 @@
 // v1.6 terminal guard — mutating CLI 전수 표 (spec §4-2) + 자체-계약 verb 회귀 (§4-5d/5f④)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -25,6 +25,17 @@ function seedTerminal(status, mutate, runtime = 'claude') {
   return { root, runId, owner: data.session_chain.lease.owner_run_id, gen: data.session_chain.lease.generation };
 }
 const run = (root, args) => spawnSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+
+function runAsync(root, args) {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(process.execPath, [CLI, ...args, '--project-root', root], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    child.once('error', rejectRun);
+    child.once('close', status => resolveRun({ status, stdout, stderr }));
+  });
+}
 
 function seedBoundaryCli() {
   const root = mkdtempSync(join(tmpdir(), 'dl-term-boundary-'));
@@ -325,6 +336,59 @@ test('CLI lease acquire: terminal → exit 3 run-terminal; non-terminal generati
   assert.equal(r2res.status, 0, r2res.stdout + r2res.stderr);
   assert.equal(JSON.parse(r2res.stdout).reason, 'generation-mismatch');
   void r2;
+});
+
+test('CLI lease acquire returns a retryable JSON envelope for concurrent lock contention', async () => {
+  const { root, runId, owner, gen } = seedTerminal('running');
+  const lock = join(runDir(root, runId), '.lock');
+  // Keep the kernel lock occupied while two public acquisitions race. Both calls
+  // must surface the same structured transient result, never a raw Node stack.
+  mkdirSync(lock);
+  try {
+    const args = ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--run-id', runId];
+    const results = await Promise.all([runAsync(root, args), runAsync(root, args)]);
+    for (const result of results) {
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ok: false,
+        generation: gen,
+        reason: 'lock-busy',
+        proceed: false,
+        consumed: null,
+        replayed: false,
+        retryable: true,
+      });
+      assert.equal(result.stderr, '');
+    }
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+});
+
+test('CLI pause validates mode while preserving default, preserve, and rollback behavior', () => {
+  const invalid = seedTerminal('running');
+  const before = terminalDurableBytes(invalid.root, invalid.runId);
+  const rejected = run(invalid.root, [
+    'pause', '--owner', invalid.owner, '--generation', String(invalid.gen),
+    '--reason', 'test', '--mode', 'bogus', '--run-id', invalid.runId,
+  ]);
+  assert.equal(rejected.status, 2, rejected.stdout + rejected.stderr);
+  assert.match(rejected.stderr, /--mode must be preserve or rollback/);
+  assert.deepEqual(terminalDurableBytes(invalid.root, invalid.runId), before);
+
+  for (const mode of [undefined, 'preserve', 'rollback']) {
+    const fixture = seedTerminal('running');
+    const args = [
+      'pause', '--owner', fixture.owner, '--generation', String(fixture.gen),
+      '--reason', 'test', '--run-id', fixture.runId,
+    ];
+    if (mode) args.push('--mode', mode);
+    const result = run(fixture.root, args);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const lease = readState(fixture.root, fixture.runId).data.session_chain.lease;
+    assert.equal(lease.handoff_phase, 'idle');
+    assert.equal(lease.resume_policy, mode === 'rollback' ? undefined : 'human');
+  }
 });
 
 test('CLI lease acquire requires a valued runtime', () => {

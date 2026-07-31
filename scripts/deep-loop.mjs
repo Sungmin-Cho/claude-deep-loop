@@ -806,6 +806,21 @@ const handlers = {
         now: parseExplicitNow(f),
       }); }
       catch (e) {
+        // A held state lock is a transient acquisition failure, not an unclassified
+        // kernel crash.  Keep the public acquire contract machine-readable so a
+        // resume caller can fail closed now and decide whether to retry later.
+        if (/^LOCK_BUSY(?::|$)/.test(String(e?.message || e))) {
+          json({
+            ok: false,
+            generation: expectGeneration,
+            reason: 'lock-busy',
+            proceed: false,
+            consumed: null,
+            replayed: false,
+            retryable: true,
+          });
+          return 1;
+        }
         const classified = classifyKernelError(e);
         if (!classified) throw e;
         error(classified.message); return classified.code;
@@ -1085,6 +1100,9 @@ const handlers = {
     const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
     const reason = reqStr(f, 'reason'); if (!reason) { error('MISSING_REASON'); return 2; }
     const generation = intArg(f, 'generation');   // exits 3 on invalid/missing (consistent with other handlers)
+    if (f.mode !== undefined && f.mode !== 'preserve' && f.mode !== 'rollback') {
+      error('USAGE: --mode must be preserve or rollback'); return 2;
+    }
     const mode = (f.mode === 'rollback') ? 'rollback' : 'preserve';
     try {
       // ARC-3: 다른 verb 와 같은 optional `--now` — §8 fixture 의 timed step 이 결정론적으로 재생되려면
