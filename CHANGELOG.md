@@ -5,6 +5,18 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.13.1] — 2026-08-01
+
+### Fixed
+
+- **플러그인 내부 참조 경로를 `DEEP_LOOP_ROOT`에 고정했다.** 분석 대상 저장소가 같은 이름의
+  recipe/reference 파일을 심어 실행-plane 지시가 공격자 제어 콘텐츠를 읽게 할 수 있던 경로 혼동을
+  차단한다. 새 무결성 테스트가 skill과 guide의 플러그인 소유 경로를 default-deny로 검사한다.
+- **`lease acquire` lock 경합을 공개 JSON 계약으로 정규화했다.** 점유 중인 lock은 raw stack 대신
+  `reason:'lock-busy'`, `proceed:false`, `retryable:true`를 포함한 exit-1 응답을 반환한다. resume은
+  이 정확한 응답만 동일한 persisted attempt id로 제한 재시도하며, `pause --mode`는
+  `preserve|rollback` 외의 값을 무변 exit-2 usage 오류로 거부한다.
+
 ## [1.13.0] — 2026-07-29
 
 ### Added
