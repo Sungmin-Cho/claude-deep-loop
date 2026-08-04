@@ -96,12 +96,23 @@ checkpoint:
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint inspect --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-Use only the returned relative `<checkpoint_rel>`, then invoke the public
-fenced restore validator:
+Use only the returned relative `<checkpoint_rel>`. A trusted SessionStart
+`compacted` capsule invokes only the receipt-backed observation admission:
 
 ```text
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --admission postcompact-observation --source sessionstart --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+A direct human `restore` invocation, and only that invocation, uses the
+cooperative manual admission. It never consumes a receipt:
+
+```text
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --admission human-attested --source direct-human-skill --confirm-manual-compact --json --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+Automatic SessionStart, controller, retry, and fallback paths must never add
+`--confirm-manual-compact` or select `human-attested`. Direct-human restore
+must never select the observation admission.
 
 On success, continue in the same owner session. Claude invokes
 `/deep-loop-continue`; Codex invokes `$deep-loop:deep-loop-continue`.

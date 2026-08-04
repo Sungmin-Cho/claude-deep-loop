@@ -1041,7 +1041,8 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.ok(trustedStart >= 0 && trustedStart < inspectStart,
     'trusted evidence rejection must branch before checkpoint inspection');
   assert.match(restore, /checkpoint inspect --json/);
-  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--json/);
+  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--admission postcompact-observation[^\n]*--source sessionstart[^\n]*--json/);
+  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--admission human-attested[^\n]*--source direct-human-skill[^\n]*--confirm-manual-compact[^\n]*--json/);
   assert.match(restore, /\/deep-loop-continue/);
   assert.match(restore, /\$deep-loop:deep-loop-continue/);
   assert.match(restore, /same (?:owner )?session|동일 owner 세션/i);

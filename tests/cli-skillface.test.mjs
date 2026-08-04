@@ -298,6 +298,9 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
     '--json',
   ]);
   assert.equal(restored.code, 0, restored.err);
@@ -306,8 +309,10 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
   assert.equal(descriptor.owner_run_id, runId);
   assert.equal(descriptor.generation, 1);
   assert.equal(descriptor.runtime, 'claude');
-  assert.equal(descriptor.scope.workstream_id, checkpoint.workstream_id);
-  assert.equal(typeof descriptor.next_action.action.type, 'string');
+  assert.equal(descriptor.phase, 'restored');
+  assert.equal(descriptor.workstream_id, checkpoint.workstream_id);
+  assert.equal(descriptor.next_command, null);
+  assert.equal(descriptor.requires_model_turn, false);
 });
 
 test('checkpoint public grammar distinguishes usage, fence, and invalid data exits', () => {
@@ -357,8 +362,75 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
     '--json',
   ]).code, 1);
+
+  const admissionCheckpoint = JSON.parse(run(root, [
+    'checkpoint', 'emit', '--owner', runId, '--generation', '1', '--runtime', 'claude',
+  ]));
+  const validRestorePrefix = [
+    'checkpoint', 'restore',
+    '--checkpoint', admissionCheckpoint.checkpoint_rel,
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ];
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--json',
+  ]).code, 2, 'manual confirmation is a required non-fence option');
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'invalid',
+    '--source', 'direct-human-skill',
+    '--json',
+  ]).code, 1);
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'postcompact-observation',
+    '--source', 'sessionstart',
+    '--confirm-manual-compact',
+    '--json',
+  ]).code, 1);
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
+    '--fault', 'event:appended',
+    '--json',
+  ]).code, 2, 'production fault argv is unknown usage');
+});
+
+test('checkpoint restore ignores inherited test fault environment switches', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  const emitted = JSON.parse(run(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]));
+  const result = runBoth(root, [
+    'checkpoint', 'restore',
+    '--checkpoint', emitted.checkpoint_rel,
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
+    '--json',
+  ], {
+    env: { ...process.env, NODE_ENV: 'test', DEEP_LOOP_TEST_FAULT: 'event:appended' },
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(JSON.parse(result.out).disposition, 'committed');
 });
 
 test('checkpoint verbs reject explicit-empty and duplicate-empty project roots and run ids before fallback', () => {
@@ -490,8 +562,8 @@ test('review dispatch missing --point exits 2', () => {
 
 // ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
 import { mkdirSync, rmSync } from 'node:fs';
-function runBoth(root, args) {
-  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); return { out: out.trim(), code: 0, err: '' }; }
+function runBoth(root, args, { env = process.env } = {}) {
+  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8', env }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
 }
 function runRaw(root, args) {

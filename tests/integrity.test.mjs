@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { appendEvent, verifyLog, recomputeSpent, readLines } from '../scripts/lib/integrity.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -11,6 +12,20 @@ import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { atomicWrite } from '../scripts/lib/envelope.mjs';
 
 const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
+
+test('compact restore writer owns one lock and never calls generic append gateways', () => {
+  const source = readFileSync(join(
+    dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'integrity.mjs',
+  ), 'utf8');
+  const start = source.indexOf('function commitOrReplayCompactRestoreInternal');
+  const end = source.indexOf('\nexport function commitOrReplayCompactRestore', start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  assert.equal((body.match(/\bwithLock\s*\(/g) || []).length, 1);
+  assert.doesNotMatch(body, /\bappendAnchored\s*\(/);
+  assert.doesNotMatch(body, /\bappendEvent\s*\(/);
+  assert.doesNotMatch(body, /withReconciledMutationLock/);
+});
 
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));

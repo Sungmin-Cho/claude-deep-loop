@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   existsSync,
+  appendFileSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
@@ -13,7 +14,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
+  __testRestoreCompactCheckpoint,
   captureCheckpointSet,
   emitCompactCheckpoint,
   emitLegacyCompactCheckpointFromTrustedHook,
@@ -300,7 +303,88 @@ function durableRunBytes(fixture) {
   };
 }
 
+function durableInventory(fixture) {
+  const base = runDir(fixture.root, fixture.runId);
+  const inventory = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name === '.lock') continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else inventory[rel] = readFileSync(path).toString('base64');
+    }
+  };
+  visit(base);
+  return inventory;
+}
+
 const hostEvidence = (provider = 'claude-code', id = 'session-a') => ({ provider, id });
+const manualAdmission = Object.freeze({
+  admission: 'human-attested',
+  source: 'direct-human-skill',
+  confirmManualCompact: true,
+});
+
+function seedCompactObservation(fixture, emitted, {
+  trigger = 'auto',
+  providerEvidence = { recorded: false, supplied: false, matched: false },
+} = {}) {
+  const checkpoint = JSON.parse(readFileSync(
+    strictCheckpointPath(fixture.root, fixture.runId, emitted),
+    'utf8',
+  ));
+  const context = checkpoint.payload.context;
+  const receipt = wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'compact-observation',
+    schema: { name: 'compact-observation', version: '1.0' },
+    run_id: fixture.runId,
+    provenance: { source_artifacts: [emitted.checkpoint_rel], tool_versions: {} },
+    payload: {
+      checkpoint_key: emitted.checkpoint_key,
+      context_sha256: checkpoint.payload.context_sha256,
+      owner_run_id: fixture.runId,
+      generation: fixture.fence.generation,
+      runtime: fixture.runtime,
+      workstream_id: context.workstream.id,
+      episode_id: context.current_episode.id,
+      trigger,
+      provider_evidence: providerEvidence,
+    },
+    now: new Date(NOW_MS + 1000).toISOString(),
+  });
+  const path = join(
+    checkpointDirOf(fixture.root, fixture.runId),
+    `${emitted.checkpoint_key}-compact-observation.json`,
+  );
+  writeFileSync(path, JSON.stringify(receipt, null, 2));
+  return path;
+}
+
+function publicManualRestore(fixture, emitted, now) {
+  const env = { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli' };
+  delete env.DEEP_LOOP_UNATTENDED;
+  delete env.DEEP_LOOP_HEADLESS;
+  const result = spawnSync(process.execPath, [
+    join(process.cwd(), 'scripts', 'deep-loop.mjs'),
+    'checkpoint', 'restore',
+    '--checkpoint', emitted.checkpoint_rel,
+    '--owner', fixture.fence.owner,
+    '--generation', String(fixture.fence.generation),
+    '--runtime', fixture.runtime,
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
+    '--json',
+    '--now', String(now),
+    '--project-root', fixture.root,
+    '--run-id', fixture.runId,
+  ], { encoding: 'utf8', env });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
 
 test('strict v0.4 emit binds exact affinity context and exact retry is byte- and inode-idempotent', () => {
   const fixture = seedBound();
@@ -515,7 +599,7 @@ test('strict emit rejects missing fences, runtime drift, and every non-bound aff
   assert.equal(existsSync(checkpointDirOf(unboundRoot, unboundRunId)), false);
 });
 
-test('strict inspect derives current selectors and restore returns one bounded read-only descriptor', () => {
+test('compact restore commits one fixed event and cursor then exact-replays byte-identically', () => {
   const fixture = seedBound();
   const before = durableRunBytes(fixture);
   const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
@@ -539,54 +623,371 @@ test('strict inspect derives current selectors and restore returns one bounded r
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
-    hostSessionEvidence: hostEvidence(),
+    admission: 'human-attested',
+    source: 'direct-human-skill',
+    confirmManualCompact: true,
     now: NOW_MS + 1000,
   });
   assert.deepEqual(Object.keys(restored), [
     'ok',
+    'disposition',
+    'phase',
     'checkpoint_rel',
     'checkpoint_key',
     'owner_run_id',
     'generation',
     'runtime',
-    'scope',
-    'workstream',
-    'current_episode',
-    'next_action',
-    'context_sha256',
+    'workstream_id',
+    'episode_id',
+    'baseline_turns',
+    'cycle',
+    'restore_event',
+    'admission',
     'provider_evidence',
+    'next_command',
+    'requires_model_turn',
+    'replay',
   ]);
   assert.equal(restored.ok, true);
+  assert.equal(restored.disposition, 'committed');
+  assert.equal(restored.phase, 'restored');
   assert.equal(restored.checkpoint_rel, emitted.checkpoint_rel);
   assert.equal(restored.owner_run_id, fixture.runId);
   assert.equal(restored.generation, 1);
   assert.equal(restored.runtime, 'claude');
-  assert.equal(restored.scope.workstream_id, fixture.workstreamId);
-  assert.equal(restored.workstream.id, fixture.workstreamId);
-  assert.equal(restored.current_episode.id, fixture.episodeId);
-  assert.equal(restored.next_action.action.workstream_id, fixture.workstreamId);
-  assert.deepEqual(restored.provider_evidence, {
-    recorded: true, supplied: true, matched: true,
+  assert.equal(restored.workstream_id, fixture.workstreamId);
+  assert.equal(restored.episode_id, fixture.episodeId);
+  assert.equal(restored.baseline_turns, 4);
+  assert.equal(restored.cycle, 1);
+  assert.deepEqual(restored.admission, {
+    kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null,
   });
-  const descriptorBytes = Buffer.from(JSON.stringify(restored));
-  assert.ok(descriptorBytes.length <= 3072);
-  assert.equal(descriptorBytes.toString('utf8').includes('\uFFFD'), false);
-  assert.equal(descriptorBytes.toString('utf8').includes(fixture.root), false);
-  assert.deepEqual(durableRunBytes(fixture), before);
+  assert.deepEqual(restored.provider_evidence, {
+    recorded: true, supplied: false, matched: false,
+  });
+  assert.equal(restored.next_command, null);
+  assert.equal(restored.requires_model_turn, false);
+  assert.equal(restored.replay, 'not-applicable');
+
+  const committed = durableRunBytes(fixture);
+  assert.notDeepEqual(committed, before);
+  const state = readState(fixture.root, fixture.runId).data;
+  const owner = state.session_chain.sessions.find(session => session.run_id === fixture.runId);
+  const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
+    .split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const event = events.at(-1);
+  assert.equal(event.type, 'compact-restored');
+  assert.deepEqual(Object.keys(event.data), [
+    'operation_id', 'checkpoint_key', 'context_sha256', 'pre_restore_loop_hash',
+    'owner_run_id', 'generation', 'runtime', 'workstream_id', 'episode_id',
+    'baseline_turns', 'cycle', 'admission', 'provider_evidence',
+  ]);
+  assert.equal(event.ts, new Date(NOW_MS + 1000).toISOString());
+  assert.equal(state.updated_at, event.ts);
+  assert.equal(owner.compact_cursor.restored_at, event.ts);
+  assert.deepEqual(owner.compact_cursor.restore_event, {
+    seq: event.seq, checksum: event.checksum,
+  });
+  const exactDelta = structuredClone(state);
+  const exactDeltaOwner = exactDelta.session_chain.sessions
+    .find(session => session.run_id === fixture.runId);
+  delete exactDeltaOwner.compact_cursor;
+  exactDelta.event_log_head = JSON.parse(before.loop).event_log_head;
+  exactDelta.updated_at = JSON.parse(before.loop).updated_at;
+  assert.deepEqual(exactDelta, JSON.parse(before.loop));
+  assert.equal(committed.hash.toString('utf8'), contentHash(committed.loop));
+  assert.equal(readdirSync(join(runDir(fixture.root, fixture.runId), 'compact-restore-intents')).length, 0);
   assert.deepEqual(readdirSync(checkpointDirOf(fixture.root, fixture.runId)).sort(), fileSet);
 
   const later = NOW_MS + 86_400_001;
+  const committedInventory = durableInventory(fixture);
   const restoredLater = restoreCompactCheckpoint(fixture.root, fixture.runId, {
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
+    admission: 'human-attested',
+    source: 'direct-human-skill',
+    confirmManualCompact: true,
     now: later,
   });
-  assert.deepEqual(
-    restoredLater.next_action,
-    nextAction(readState(fixture.root, fixture.runId).data, { now: later, unattended: false }),
-    'restore derives a fresh action without making the captured checkpoint stale on clock drift alone',
+  assert.equal(restoredLater.disposition, 'replayed');
+  assert.equal(restoredLater.replay, 'exact');
+  assert.deepEqual({ ...restoredLater, disposition: 'committed', replay: 'not-applicable' }, restored);
+  assert.deepEqual(durableRunBytes(fixture), committed);
+  assert.deepEqual(durableInventory(fixture), committedInventory);
+});
+
+test('compact restore reconciles every isolated journal fault through one ordinary retry', () => {
+  for (const faultAt of [
+    'restore:intent-written',
+    'event:appended',
+    'state:written',
+    'restore:intent-cleanup',
+  ]) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...manualAdmission,
+      now: NOW_MS + 2000,
+      faultAt,
+    }), new RegExp(`TEST_FAULT:${faultAt}`), faultAt);
+
+    const restored = publicManualRestore(fixture, emitted, NOW_MS + 86_400_000);
+    assert.equal(restored.phase, 'restored', faultAt);
+    const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
+      .split('\n').filter(Boolean).map(line => JSON.parse(line));
+    assert.equal(events.filter(event => event.type === 'compact-restored').length, 1, faultAt);
+    const state = readState(fixture.root, fixture.runId).data;
+    assert.deepEqual(state.event_log_head, restored.restore_event, faultAt);
+    assert.equal(
+      readdirSync(join(runDir(fixture.root, fixture.runId), 'compact-restore-intents')).length,
+      0,
+      faultAt,
+    );
+  }
+});
+
+test('retained restore intent binds admission source and proof before any recovery mutation', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const receiptPath = seedCompactObservation(fixture, emitted);
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'sessionstart',
+    now: NOW_MS + 2000,
+    faultAt: 'restore:intent-written',
+  }), /TEST_FAULT:restore:intent-written/);
+
+  const intentDir = join(runDir(fixture.root, fixture.runId), 'compact-restore-intents');
+  const intent = JSON.parse(readFileSync(join(intentDir, readdirSync(intentDir)[0]), 'utf8'));
+  assert.match(intent.payload.operation_id, /^[0-9A-HJKMNP-TV-Z]{26}$/);
+  assert.equal(intent.payload.planned_event_line.endsWith('\n'), true);
+  assert.equal(intent.payload.planned_event_line.endsWith('\n\n'), false);
+  assert.equal(contentHash(intent.payload.planned_event_line), intent.payload.planned_event_sha256);
+  const planned = JSON.parse(intent.payload.planned_event_line.slice(0, -1));
+  assert.equal(planned.data.operation_id, intent.payload.operation_id);
+  assert.equal(planned.checksum, intent.payload.planned_event.checksum);
+  assert.equal(
+    contentHash(JSON.stringify(intent.payload.request_binding)),
+    intent.payload.request_binding_sha256,
   );
+
+  for (const request of [
+    { admission: 'postcompact-observation', source: 'external-controller' },
+    manualAdmission,
+  ]) {
+    const before = durableInventory(fixture);
+    assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...request,
+      now: NOW_MS + 3000,
+    }), /CHECKPOINT_RESTORE_REQUEST_MISMATCH/);
+    assert.deepEqual(durableInventory(fixture), before);
+  }
+
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  receipt.payload.trigger = 'manual';
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  const beforeProofMismatch = durableInventory(fixture);
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'sessionstart',
+    now: NOW_MS + 3000,
+  }), /CHECKPOINT_RESTORE_REQUEST_MISMATCH/);
+  assert.deepEqual(durableInventory(fixture), beforeProofMismatch);
+});
+
+test('committed compact cursor cross-source replay validates each request and preserves winner audit', () => {
+  for (const [winner, replay] of [
+    ['sessionstart', 'external-controller'],
+    ['external-controller', 'sessionstart'],
+  ]) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    seedCompactObservation(fixture, emitted, { trigger: 'auto' });
+    const committed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      admission: 'postcompact-observation',
+      source: winner,
+      now: NOW_MS + 2000,
+    });
+    const committedBytes = durableInventory(fixture);
+    const replayed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      admission: 'postcompact-observation',
+      source: replay,
+      now: NOW_MS + 3000,
+    });
+    assert.equal(replayed.disposition, 'replayed');
+    assert.deepEqual(replayed.admission, committed.admission);
+    assert.equal(replayed.admission.source, winner);
+    assert.deepEqual(durableInventory(fixture), committedBytes);
+  }
+
+  for (const observationFirst of [false, true]) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    seedCompactObservation(fixture, emitted);
+    const observation = {
+      admission: 'postcompact-observation', source: 'sessionstart',
+    };
+    const first = observationFirst ? observation : manualAdmission;
+    const second = observationFirst ? manualAdmission : observation;
+    const committed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...first,
+      now: NOW_MS + 2000,
+    });
+    const committedBytes = durableInventory(fixture);
+    const replayed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...second,
+      now: NOW_MS + 3000,
+    });
+    assert.equal(replayed.disposition, 'replayed');
+    assert.deepEqual(replayed.admission, committed.admission);
+    assert.deepEqual(replayed.provider_evidence, committed.provider_evidence);
+    assert.deepEqual(durableInventory(fixture), committedBytes);
+  }
+});
+
+test('observation admission validates the fixed receipt envelope and preserves its evidence row', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 1000,
+  });
+  const receiptPath = seedCompactObservation(fixture, emitted, {
+    trigger: 'manual',
+    providerEvidence: { recorded: true, supplied: true, matched: true },
+  });
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  receipt.envelope.extra = true;
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  const before = durableInventory(fixture);
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'external-controller',
+    now: NOW_MS + 2000,
+  }), /CHECKPOINT_RECEIPT_INVALID/);
+  assert.deepEqual(durableInventory(fixture), before);
+
+  delete receipt.envelope.extra;
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'external-controller',
+    now: NOW_MS + 2000,
+  });
+  assert.deepEqual(restored.admission, {
+    kind: 'postcompact-observation', source: 'external-controller', receipt_trigger: 'manual',
+  });
+  assert.deepEqual(restored.provider_evidence, {
+    recorded: true, supplied: true, matched: true,
+  });
+});
+
+test('human-attested admission requires direct source, one confirmation, and non-headless runtime', () => {
+  for (const options of [
+    { admission: 'human-attested', source: 'sessionstart', confirmManualCompact: true },
+    { admission: 'human-attested', source: 'direct-human-skill', confirmManualCompact: false },
+    {
+      admission: 'human-attested',
+      source: 'direct-human-skill',
+      confirmManualCompact: true,
+      env: { DEEP_LOOP_HEADLESS: '1' },
+    },
+  ]) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    const before = durableInventory(fixture);
+    assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...options,
+      now: NOW_MS + 2000,
+    }), /CHECKPOINT_(?:ADMISSION_INVALID|MANUAL_ATTESTATION_REQUIRED)/);
+    assert.deepEqual(durableInventory(fixture), before);
+  }
+});
+
+test('unjournaled compact-restored raw suffix fails closed without changing durable bytes', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+    faultAt: 'restore:intent-written',
+  }), /TEST_FAULT:restore:intent-written/);
+  const intentDir = join(runDir(fixture.root, fixture.runId), 'compact-restore-intents');
+  const intentPath = join(intentDir, readdirSync(intentDir)[0]);
+  const intent = JSON.parse(readFileSync(intentPath, 'utf8'));
+  rmSync(intentPath);
+  appendFileSync(logPathOf(fixture.root, fixture.runId), intent.payload.planned_event_line);
+  const before = durableInventory(fixture);
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 3000,
+  }), /LOG_TAMPERED/);
+  assert.deepEqual(durableInventory(fixture), before);
 });
 
 test('strict checkpoint projects every prepared optional-identity evidence row in ordered boolean form', () => {
@@ -629,50 +1030,13 @@ test('strict checkpoint projects every prepared optional-identity evidence row i
   );
 });
 
-test('restore always bounds and sanitizes schema-valid hostile strings without leaking absolute paths', () => {
-  const hostilePoint = `/Users/reviewer/private/${'x'.repeat(4000)}`;
-  const fixture = seedBound('claude', {
-    expectedArtifacts: [],
-    point: hostilePoint,
-  });
-  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
-    fence: fixture.fence,
-    runtime: fixture.runtime,
-    now: NOW_MS + 1000,
-  });
-  const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
-    checkpointRel: emitted.checkpoint_rel,
-    fence: fixture.fence,
-    runtime: fixture.runtime,
-    now: NOW_MS + 1000,
-  });
-  const json = JSON.stringify(restored);
-  assert.ok(Buffer.byteLength(json) <= 3072);
-  assert.equal(json.includes('/Users/reviewer/private/'), false);
-  assert.equal(json.includes(fixture.root), false);
-  assert.equal(restored.owner_run_id, fixture.runId);
-  assert.equal(restored.generation, 1);
-  assert.equal(restored.runtime, 'claude');
-  assert.equal(restored.scope.workstream_id, fixture.workstreamId);
-  assert.equal(restored.next_action.action.type, 'await_human');
-  assert.deepEqual(restored.current_episode.point, {
-    sha256: contentHash(hostilePoint),
-    utf8_bytes: Buffer.byteLength(hostilePoint),
-  });
-});
-
-test('restore hash-summarizes absolute path tokens after any punctuation and preserves exact slash commands', () => {
-  const hostilePoints = [
-    'hostile,[/tmp/strict-secret]',
-    'hostile,{/var/tmp/strict-secret}',
-    'hostile,(/opt/strict-secret)',
-    'hostile,!/srv/strict-secret',
+test('restore descriptor excludes captured routing and hostile checkpoint strings', () => {
+  for (const point of [
+    `/Users/reviewer/private/${'x'.repeat(4000)}`,
     'hostile,[C:\\strict-secret\\file.txt]',
-    'hostile,{D:/strict-secret/file.txt}',
-    'hostile,(\\\\server\\share\\strict-secret)',
-    'hostile,[/deep-loop-status]',
-  ];
-  for (const point of hostilePoints) {
+    'https://example.test/strict-secret',
+    '/deep-loop-status',
+  ]) {
     const fixture = seedBound('claude', { expectedArtifacts: [], point });
     const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
       fence: fixture.fence,
@@ -683,136 +1047,15 @@ test('restore hash-summarizes absolute path tokens after any punctuation and pre
       checkpointRel: emitted.checkpoint_rel,
       fence: fixture.fence,
       runtime: fixture.runtime,
+      ...manualAdmission,
       now: NOW_MS + 1000,
     });
     const json = JSON.stringify(restored);
-    assert.deepEqual(restored.current_episode.point, {
-      sha256: contentHash(point),
-      utf8_bytes: Buffer.byteLength(point),
-    }, point);
     assert.equal(json.includes(point), false, point);
     assert.equal(json.includes(fixture.root), false, point);
-  }
-
-  const commandFixture = seedBound('claude', { point: '/deep-loop-status' });
-  const commandCheckpoint = emitCompactCheckpoint(commandFixture.root, commandFixture.runId, {
-    fence: commandFixture.fence,
-    runtime: commandFixture.runtime,
-    now: NOW_MS + 1000,
-  });
-  const commandRestore = restoreCompactCheckpoint(commandFixture.root, commandFixture.runId, {
-    checkpointRel: commandCheckpoint.checkpoint_rel,
-    fence: commandFixture.fence,
-    runtime: commandFixture.runtime,
-    now: NOW_MS + 1000,
-  });
-  assert.equal(commandRestore.current_episode.point, '/deep-loop-status');
-  assert.equal(commandRestore.next_action.next_command, '/deep-loop-continue');
-});
-
-test('restore conservatively summarizes every slash-bearing non-command string after path-name prefixes', () => {
-  const prefixes = ['.', '_', '-', '~'];
-  const summarized = prefixes.flatMap(prefix => [
-    `x${prefix}/tmp/strict-secret`,
-    `x${prefix}C:\\strict-secret\\file.txt`,
-    `x${prefix}\\\\server\\share\\strict-secret`,
-  ]);
-  summarized.push(
-    'https://example.test/strict-secret',
-    'docs/private/strict-secret',
-  );
-  for (const point of summarized) {
-    const fixture = seedBound('claude', { expectedArtifacts: [], point });
-    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
-      checkpointRel: emitted.checkpoint_rel,
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    assert.deepEqual(restored.current_episode.point, {
-      sha256: contentHash(point),
-      utf8_bytes: Buffer.byteLength(point),
-    }, point);
-    assert.equal(JSON.stringify(restored).includes(point), false, point);
-  }
-
-  for (const point of [
-    '/deep-loop-continue',
-    '/deep-loop-discover',
-    '/deep-loop-finish',
-    '/deep-loop-handoff',
-    '/deep-loop-status',
-  ]) {
-    const fixture = seedBound('claude', { point });
-    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
-      checkpointRel: emitted.checkpoint_rel,
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    assert.equal(restored.current_episode.point, point);
-  }
-});
-
-test('restore summarizes every single-backslash string while preserving only exact slash commands', () => {
-  for (const point of [
-    '\\Users\\private\\strict-secret',
-    'docs\\private\\strict-secret',
-    'x.\\Users\\private\\strict-secret',
-    'x_\\Users\\private\\strict-secret',
-    'x-\\Users\\private\\strict-secret',
-    'x~\\Users\\private\\strict-secret',
-    'hostile,[\\Users\\private\\strict-secret]',
-  ]) {
-    const fixture = seedBound('claude', { expectedArtifacts: [], point });
-    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
-      checkpointRel: emitted.checkpoint_rel,
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    assert.deepEqual(restored.current_episode.point, {
-      sha256: contentHash(point),
-      utf8_bytes: Buffer.byteLength(point),
-    }, point);
-    assert.equal(JSON.stringify(restored).includes(point), false, point);
-  }
-
-  for (const point of [
-    '/deep-loop-continue',
-    '/deep-loop-discover',
-    '/deep-loop-finish',
-    '/deep-loop-handoff',
-    '/deep-loop-status',
-  ]) {
-    const fixture = seedBound('claude', { point });
-    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
-      checkpointRel: emitted.checkpoint_rel,
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      now: NOW_MS + 1000,
-    });
-    assert.equal(restored.current_episode.point, point);
+    assert.equal(Object.hasOwn(restored, 'scope'), false);
+    assert.equal(Object.hasOwn(restored, 'current_episode'), false);
+    assert.equal(Object.hasOwn(restored, 'next_action'), false);
   }
 });
 
@@ -881,31 +1124,10 @@ test('strict validator rejects tamper, stale context, foreign run, evidence mism
       checkpointRel: emitted.checkpoint_rel,
       fence: fixture.fence,
       runtime: fixture.runtime,
+      ...manualAdmission,
       now: NOW_MS + 1000,
     }), /CHECKPOINT_/, label);
   }
-
-  const evidenceFixture = seedBound();
-  const evidenceCheckpoint = emitCompactCheckpoint(evidenceFixture.root, evidenceFixture.runId, {
-    fence: evidenceFixture.fence,
-    runtime: evidenceFixture.runtime,
-    hostSessionEvidence: hostEvidence(),
-    now: NOW_MS + 1000,
-  });
-  assert.throws(() => restoreCompactCheckpoint(evidenceFixture.root, evidenceFixture.runId, {
-    checkpointRel: evidenceCheckpoint.checkpoint_rel,
-    fence: evidenceFixture.fence,
-    runtime: evidenceFixture.runtime,
-    hostSessionEvidence: hostEvidence('codex', 'session-a'),
-    now: NOW_MS + 1000,
-  }), /CHECKPOINT_EVIDENCE_MISMATCH/);
-  assert.throws(() => restoreCompactCheckpoint(evidenceFixture.root, evidenceFixture.runId, {
-    checkpointRel: evidenceCheckpoint.checkpoint_rel,
-    fence: evidenceFixture.fence,
-    runtime: evidenceFixture.runtime,
-    hostSessionEvidence: hostEvidence('claude-code', 'session-b'),
-    now: NOW_MS + 1000,
-  }), /CHECKPOINT_EVIDENCE_MISMATCH/);
 
   const conflictFixture = seedBound();
   const conflict = emitCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
@@ -945,6 +1167,7 @@ test('strict restore rejects every unsafe rel spelling and symlink without mutat
       checkpointRel: rel,
       fence: fixture.fence,
       runtime: fixture.runtime,
+      ...manualAdmission,
       now: NOW_MS + 1000,
     }), /CHECKPOINT_REL_INVALID/, rel);
   }
@@ -958,6 +1181,7 @@ test('strict restore rejects every unsafe rel spelling and symlink without mutat
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
+    ...manualAdmission,
     now: NOW_MS + 1000,
   }), /CHECKPOINT_PATH_INVALID/);
   assert.deepEqual(durableRunBytes(fixture), before);
@@ -975,6 +1199,7 @@ test('strict artifact observations stale on content change and invalid entries c
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
+    ...manualAdmission,
     now: NOW_MS + 1000,
   }), /CHECKPOINT_CONTEXT_MISMATCH/);
 

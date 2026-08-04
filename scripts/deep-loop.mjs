@@ -513,7 +513,8 @@ const handlers = {
       emit: new Set(['project-root', 'run-id', 'now', 'owner', 'generation', 'runtime']),
       inspect: new Set(['project-root', 'run-id', 'now', 'json']),
       restore: new Set([
-        'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime', 'json',
+        'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime',
+        'admission', 'source', 'confirm-manual-compact', 'json',
       ]),
     };
     if (!Object.hasOwn(allowed, verb) || !knownFlagVocabulary(rest, allowed[verb])) {
@@ -569,12 +570,25 @@ const handlers = {
     }
 
     const requested = reqStr(f, 'checkpoint');
-    if (!requested || f.json !== true) {
-      error('USAGE: checkpoint restore requires --checkpoint REL and --json');
+    const admission = reqStr(f, 'admission');
+    const source = reqStr(f, 'source');
+    if (!requested || !admission || !source || f.json !== true) {
+      error('USAGE: checkpoint restore requires --checkpoint REL, --admission KIND, --source SOURCE, and --json');
+      return 2;
+    }
+    if (Object.hasOwn(f, 'confirm-manual-compact') && f['confirm-manual-compact'] !== true) {
+      error('USAGE: --confirm-manual-compact is a value-less flag');
+      return 2;
+    }
+    if (admission === 'human-attested' && f['confirm-manual-compact'] !== true) {
+      error('USAGE: human-attested restore requires --confirm-manual-compact');
       return 2;
     }
     json(restoreCompactCheckpoint(root, runId, {
       checkpointRel: requested,
+      admission,
+      source,
+      confirmManualCompact: f['confirm-manual-compact'] === true,
       ...options,
     }));
     return 0;

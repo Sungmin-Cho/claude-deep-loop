@@ -117,6 +117,39 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+function seedCompactObservation(root, runId, emitted, runtime, trigger = 'auto') {
+  const checkpoint = JSON.parse(readFileSync(join(runDir(root, runId), emitted.checkpoint_rel), 'utf8'));
+  const context = checkpoint.payload.context;
+  const receipt = {
+    schema_version: '1.0',
+    envelope: {
+      producer: 'deep-loop',
+      artifact_kind: 'compact-observation',
+      schema: { name: 'compact-observation', version: '1.0' },
+      run_id: runId,
+      parent_run_id: null,
+      generated_at: FIXED_NOW,
+      git: {},
+      provenance: { source_artifacts: [emitted.checkpoint_rel], tool_versions: {} },
+    },
+    payload: {
+      checkpoint_key: emitted.checkpoint_key,
+      context_sha256: checkpoint.payload.context_sha256,
+      owner_run_id: runId,
+      generation: 1,
+      runtime,
+      workstream_id: context.workstream.id,
+      episode_id: context.current_episode.id,
+      trigger,
+      provider_evidence: { recorded: false, supplied: false, matched: false },
+    },
+  };
+  writeFileSync(
+    join(runDir(root, runId), 'checkpoints', `${emitted.checkpoint_key}-compact-observation.json`),
+    JSON.stringify(receipt, null, 2),
+  );
+}
+
 function launchCapableHost(root) {
   const marker = join(root, 'spawn-attempt.jsonl');
   if (process.platform === 'win32') {
@@ -269,11 +302,14 @@ for (const runtime of ['claude', 'codex']) {
       '--run-id', runId,
     ]), 'checkpoint inspect');
     assert.equal(inspected.checkpoint_rel, emitted.checkpoint_rel);
+    seedCompactObservation(root, runId, emitted, runtime);
 
     const restored = jsonResult(cli(root, [
       'checkpoint', 'restore',
       '--checkpoint', inspected.checkpoint_rel,
       '--runtime', runtime,
+      '--admission', 'postcompact-observation',
+      '--source', 'sessionstart',
       '--json',
       '--now', FIXED_NOW,
       ...fence1,
@@ -281,7 +317,10 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(restored.owner_run_id, runId);
     assert.equal(restored.generation, 1);
     assert.equal(restored.runtime, runtime);
-    assert.equal(restored.scope.workstream_id, workstreamA);
+    assert.equal(restored.phase, 'restored');
+    assert.equal(restored.workstream_id, workstreamA);
+    assert.equal(restored.next_command, null);
+    assert.equal(restored.requires_model_turn, false);
     assert.deepEqual(compactIdentity(state(root, runId)), identityBeforeCompact);
 
     const continuation = jsonResult(cli(root, [

@@ -23,6 +23,10 @@ import { validate } from './schema.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 import { runDir, withReconciledMutationLock } from './state.mjs';
 import {
+  __testCommitOrReplayCompactRestore,
+  commitOrReplayCompactRestore,
+} from './integrity.mjs';
+import {
   normalizeProviderEvidence,
   readStableRegular,
   STRICT_CONTEXT_DOMAIN,
@@ -653,32 +657,56 @@ export function inspectCompactCheckpoint(root, runId, {
   });
 }
 
-export function restoreCompactCheckpoint(root, runId, {
-  checkpointRel: requestedRel,
+function restoreRequest(checkpointRelValue, {
   fence,
   runtime,
-  hostSessionEvidence,
-  now = Date.now(),
+  admission,
+  source,
+  confirmManualCompact = false,
+  env = process.env,
 } = {}) {
-  return withReconciledMutationLock(root, runId, (_guard, snapshot) => {
-    assertCurrentSchema(snapshot.data);
-    assertFence(snapshot.data, fence, runtime);
-    if (snapshot.data.autonomy?.continuation_policy !== 'workstream-session') {
-      throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
-    }
-    const key = strictRel(requestedRel);
-    assertCheckpointDirectory(root, runId);
-    const path = strictPath(root, runId, key);
-    const { bytes } = readStableRegular(path);
-    const validation = validateStrictBytes(bytes, {
-      root,
-      runId,
-      key,
-      snapshot,
-      now,
-      hostSessionEvidence,
-    });
-    return descriptor(requestedRel, key, validation);
+  if (!plainObject(fence)
+    || typeof fence.owner !== 'string' || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
+    throw new Error('FENCE_REQUIRED: owner and positive generation');
+  }
+  if (typeof admission !== 'string' || typeof source !== 'string') {
+    throw new Error('CHECKPOINT_ADMISSION_INVALID');
+  }
+  const headlessTruthy = value => value === true || value === '1' || value === 'true';
+  const claudeEntrypoint = String(env?.CLAUDE_CODE_ENTRYPOINT || '').toLowerCase();
+  const headless = headlessTruthy(env?.DEEP_LOOP_UNATTENDED)
+    || headlessTruthy(env?.DEEP_LOOP_HEADLESS)
+    || (runtime === 'claude'
+      && claudeEntrypoint !== ''
+      && claudeEntrypoint !== 'cli'
+      && (claudeEntrypoint.startsWith('sdk')
+        || claudeEntrypoint.includes('print')
+        || claudeEntrypoint.includes('headless')
+        || claudeEntrypoint.includes('noninteractive')
+        || claudeEntrypoint.includes('non-interactive')));
+  return {
+    checkpointRel: checkpointRelValue,
+    checkpointKey: strictRel(checkpointRelValue),
+    fence: { owner: fence.owner, generation: fence.generation },
+    runtime,
+    admission,
+    source,
+    confirmManualCompact: confirmManualCompact === true,
+    headless,
+  };
+}
+
+export function restoreCompactCheckpoint(root, runId, options = {}) {
+  const request = restoreRequest(options.checkpointRel, options);
+  return commitOrReplayCompactRestore(root, runId, request, { now: options.now ?? Date.now() });
+}
+
+export function __testRestoreCompactCheckpoint(root, runId, options = {}) {
+  const request = restoreRequest(options.checkpointRel, options);
+  return __testCommitOrReplayCompactRestore(root, runId, request, {
+    now: options.now ?? Date.now(),
+    faultAt: options.faultAt,
   });
 }
 
