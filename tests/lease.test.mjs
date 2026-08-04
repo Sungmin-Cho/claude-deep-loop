@@ -28,6 +28,18 @@ function writeHashValidState(root, runId, data) {
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
 
+function historicalCursor(owner) {
+  return {
+    checkpoint_key: 'a'.repeat(64), context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64), owner_run_id: owner, generation: 1,
+    runtime: 'claude', workstream_id: 'ws-history', episode_id: 'ep-history',
+    baseline_turns: 7, restored_at: '2026-06-24T00:00:00.000Z', cycle: 1,
+    restore_event: { seq: 1, checksum: 'd'.repeat(64) },
+    admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+}
+
 // T2a — (d) lib 수준 응답 계약. spec §3.1/§3.2, docs/superpowers/specs/2026-07-27-acquire-resume-contract.md
 test('T2a acquireLease distinguishes proceeding from idempotent responses and anchors one receipt', () => {
   const { root, runId } = seed();
@@ -145,6 +157,9 @@ test('advanceHandoffPhase enforces forward-only and sets releasing on emitted', 
 
 test('acquireLease: child takes over released lease, generation+1; stale generation rejected', () => {
   const { root, runId } = seed();
+  const seeded = readState(root, runId).data;
+  seeded.session_chain.sessions.find(session => session.run_id === runId).compact_cursor = historicalCursor(runId);
+  writeState(root, runId, seeded);
   // parent releases (after spawning a child)
   releaseLease(root, runId, { owner: runId, generation: 1 });
   // wrong expectGeneration → fenced
@@ -157,6 +172,11 @@ test('acquireLease: child takes over released lease, generation+1; stale generat
   assert.equal(lease.state, 'active');
   assert.equal(lease.handoff_phase, 'acquired');
   assert.equal(lease.handoff_idempotency_key, null);
+  assert.deepEqual(
+    readState(root, runId).data.session_chain.sessions.find(session => session.run_id === runId).compact_cursor,
+    historicalCursor(runId),
+    'released takeover preserves historical cursor on its containing session',
+  );
 });
 
 test('acquireLease: active lease is never stolen (even past expires_at); released is takeable', () => {

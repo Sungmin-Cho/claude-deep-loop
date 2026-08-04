@@ -163,6 +163,44 @@ test('workstream-session turn cap decorates the real action with compact advice 
   assert.equal(action.action.advice_reason, 'per_session_turn_cap');
 });
 
+test('workstream-session compact advice subtracts matching cursor baseline', () => {
+  const l = scopedRoutingLoop();
+  l.episodes = [
+    { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+  ];
+  l.current_episode = '001-a';
+  l.session_chain.sessions[0].turns = 45;
+  l.session_chain.sessions[0].compact_cursor = {
+    checkpoint_key: 'a'.repeat(64),
+    context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64),
+    owner_run_id: 'R',
+    generation: l.session_chain.lease.generation,
+    runtime: 'claude',
+    workstream_id: 'ws-a',
+    episode_id: '001-a',
+    baseline_turns: 40,
+    restored_at: '2026-06-24T00:00:01.000Z',
+    cycle: 1,
+    restore_event: { seq: 1, checksum: 'd'.repeat(64) },
+    admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+
+  const beforeRelativeCap = nextAction(l, { now: NOW, unattended: false });
+  assert.equal(Object.hasOwn(beforeRelativeCap.action, 'advice'), false);
+
+  l.session_chain.sessions[0].turns = 80;
+  const atRelativeCap = nextAction(l, { now: NOW, unattended: false });
+  assert.equal(atRelativeCap.action.advice, 'compact');
+  assert.equal(atRelativeCap.action.advice_reason, 'per_session_turn_cap');
+
+  l.session_chain.sessions[0].turns = 45;
+  l.session_chain.lease.generation += 1;
+  const generationDrift = nextAction(l, { now: NOW, unattended: false });
+  assert.equal(generationDrift.action.advice, 'compact');
+});
+
 test('fresh run with no episodes → discover', () => {
   const r = nextAction(loop(), { now: Date.parse('2026-06-24T00:00:00Z') });
   assert.equal(r.gate.allowed, true);

@@ -22,11 +22,17 @@ import { validateSessionRuntime, sessionRuntime } from './runtime.mjs';
 import { validate } from './schema.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 import { runDir, withReconciledMutationLock } from './state.mjs';
+import {
+  normalizeProviderEvidence,
+  readStableRegular,
+  STRICT_CONTEXT_DOMAIN,
+  STRICT_FILE,
+  STRICT_SCHEMA_VERSION,
+  validateStrictBytes as validateStrictCheckpointBytes,
+  validateStrictSelf,
+} from './checkpoint-validation.mjs';
 
 const KEEP = 5;
-const STRICT_SCHEMA_VERSION = '2.0';
-const STRICT_CONTEXT_DOMAIN = 'deep-loop-compact-checkpoint-v2';
-const STRICT_FILE = /^([0-9a-f]{64})-compact\.json$/;
 const MAX_CHECKPOINT_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_ARTIFACTS = 256;
@@ -116,34 +122,6 @@ function assertFence(loop, fence, runtime) {
   });
   if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
   return assertedRuntime;
-}
-
-function normalizeProviderEvidence(value) {
-  if (value === undefined || value === null) return null;
-  if (!exactKeys(value, ['provider', 'id'])
-    || typeof value.provider !== 'string'
-    || value.provider.length === 0
-    || value.provider.length > 128
-    || /[\0\r\n]/.test(value.provider)
-    || typeof value.id !== 'string'
-    || value.id.length === 0
-    || value.id.length > 1024
-    || /[\0\r\n]/.test(value.id)) {
-    throw new Error('CHECKPOINT_EVIDENCE_INVALID');
-  }
-  return {
-    provider: value.provider,
-    identity_sha256: contentHash(value.id),
-  };
-}
-
-function validStoredProviderEvidence(value) {
-  return value === null || (exactKeys(value, ['provider', 'identity_sha256'])
-    && typeof value.provider === 'string'
-    && value.provider.length > 0
-    && value.provider.length <= 128
-    && !/[\0\r\n]/.test(value.provider)
-    && sha256(value.identity_sha256));
 }
 
 function assertCheckpointDirectory(root, runId, { create = false } = {}) {
@@ -272,72 +250,17 @@ function strictEnvelope(runId, context, now) {
   return { env, key };
 }
 
-function validateStrictSelf(env, { runId, key }) {
-  if (!exactKeys(env, TOP_KEYS)
-    || env.schema_version !== '1.0'
-    || !exactKeys(env.envelope, ENVELOPE_KEYS)
-    || env.envelope.producer !== 'deep-loop'
-    || env.envelope.artifact_kind !== 'compact-checkpoint'
-    || !exactKeys(env.envelope.schema, ['name', 'version'])
-    || env.envelope.schema.name !== 'compact-checkpoint'
-    || env.envelope.schema.version !== STRICT_SCHEMA_VERSION
-    || env.envelope.run_id !== runId
-    || env.envelope.parent_run_id !== null
-    || !canonicalIso(env.envelope.generated_at)
-    || !exactKeys(env.envelope.git, [])
-    || !exactKeys(env.envelope.provenance, ['source_artifacts', 'tool_versions'])
-    || !Array.isArray(env.envelope.provenance.source_artifacts)
-    || env.envelope.provenance.source_artifacts.length !== 0
-    || !exactKeys(env.envelope.provenance.tool_versions, [])
-    || !exactKeys(env.payload, PAYLOAD_KEYS)
-    || env.payload.checkpoint_key !== key
-    || !exactKeys(env.payload.context, CONTEXT_KEYS)
-    || !sha256(env.payload.context_sha256)
-    || contentHash(JSON.stringify(env.payload.context)) !== env.payload.context_sha256
-    || contentHash(JSON.stringify([STRICT_CONTEXT_DOMAIN, env.payload.context])) !== key
-    || !validStoredProviderEvidence(env.payload.context.provider_evidence)) {
-    throw new Error('CHECKPOINT_INVALID');
-  }
-  return env.payload.context;
-}
-
 function validateStrictBytes(bytes, { root, runId, key, snapshot, now, hostSessionEvidence }) {
-  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_CHECKPOINT_BYTES) {
-    throw new Error('CHECKPOINT_INVALID');
-  }
-  let env;
-  try { env = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('CHECKPOINT_INVALID'); }
-  const context = validateStrictSelf(env, { runId, key });
-  const expected = deriveContext(root, runId, snapshot, {
-    now: Date.parse(env.envelope.generated_at),
-    providerEvidence: context.provider_evidence,
+  return validateStrictCheckpointBytes(bytes, {
+    runId,
+    key,
+    hostSessionEvidence,
+    expectedContext: (context, generatedAt) => deriveContext(root, runId, snapshot, {
+      now: Date.parse(generatedAt),
+      providerEvidence: context.provider_evidence,
+    }),
+    freshNextAction: () => nextAction(snapshot.data, { now, unattended: false }),
   });
-  if (JSON.stringify(context) !== JSON.stringify(expected)) {
-    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
-  }
-  const supplied = normalizeProviderEvidence(hostSessionEvidence);
-  if (supplied !== null && context.provider_evidence !== null
-    && (supplied.provider !== context.provider_evidence.provider
-      || supplied.identity_sha256 !== context.provider_evidence.identity_sha256)) {
-    throw new Error('CHECKPOINT_EVIDENCE_MISMATCH');
-  }
-  return {
-    env,
-    context,
-    freshNextAction: nextAction(snapshot.data, { now, unattended: false }),
-    evidenceMatched: supplied === null ? null : context.provider_evidence !== null,
-  };
-}
-
-function readStableRegular(path, invalidCode = 'CHECKPOINT_PATH_INVALID') {
-  let stat;
-  try { stat = lstatSync(path); } catch { throw new Error('CHECKPOINT_NOT_FOUND'); }
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(invalidCode);
-  const before = captureStableFileIdentity(path);
-  const bytes = readFileSync(path);
-  const after = captureStableFileIdentity(path);
-  if (!matchingStableFileIdentity(before, after)) throw new Error(invalidCode);
-  return { bytes, identity: after };
 }
 
 function captureDirectoryEntries(dir) {
@@ -635,7 +558,7 @@ function summarizeEpisode(value) {
 }
 
 function descriptor(rel, key, validation) {
-  const { context, evidenceMatched, freshNextAction } = validation;
+  const { context, providerEvidence, freshNextAction } = validation;
   const result = {
     ok: true,
     checkpoint_rel: rel,
@@ -648,10 +571,7 @@ function descriptor(rel, key, validation) {
     current_episode: summarizeEpisode(context.current_episode),
     next_action: boundedDescriptorValue(freshNextAction),
     context_sha256: contentHash(JSON.stringify(context)),
-    provider_evidence: {
-      present: context.provider_evidence !== null,
-      matched: evidenceMatched,
-    },
+    provider_evidence: providerEvidence,
   };
   const bytes = Buffer.from(JSON.stringify(result));
   if (bytes.length > MAX_DESCRIPTOR_BYTES) {

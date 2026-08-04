@@ -531,7 +531,9 @@ test('strict inspect derives current selectors and restore returns one bounded r
   });
   assert.equal(inspected.ok, true);
   assert.equal(inspected.checkpoint_rel, emitted.checkpoint_rel);
-  assert.deepEqual(inspected.provider_evidence, { present: true, matched: null });
+  assert.deepEqual(inspected.provider_evidence, {
+    recorded: true, supplied: false, matched: false,
+  });
 
   const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
     checkpointRel: emitted.checkpoint_rel,
@@ -563,7 +565,9 @@ test('strict inspect derives current selectors and restore returns one bounded r
   assert.equal(restored.workstream.id, fixture.workstreamId);
   assert.equal(restored.current_episode.id, fixture.episodeId);
   assert.equal(restored.next_action.action.workstream_id, fixture.workstreamId);
-  assert.deepEqual(restored.provider_evidence, { present: true, matched: true });
+  assert.deepEqual(restored.provider_evidence, {
+    recorded: true, supplied: true, matched: true,
+  });
   const descriptorBytes = Buffer.from(JSON.stringify(restored));
   assert.ok(descriptorBytes.length <= 3072);
   assert.equal(descriptorBytes.toString('utf8').includes('\uFFFD'), false);
@@ -582,6 +586,46 @@ test('strict inspect derives current selectors and restore returns one bounded r
     restoredLater.next_action,
     nextAction(readState(fixture.root, fixture.runId).data, { now: later, unattended: false }),
     'restore derives a fresh action without making the captured checkpoint stale on clock drift alone',
+  );
+});
+
+test('strict checkpoint projects every prepared optional-identity evidence row in ordered boolean form', () => {
+  const cases = [
+    [undefined, undefined, { recorded: false, supplied: false, matched: false }],
+    [undefined, hostEvidence(), { recorded: false, supplied: true, matched: false }],
+    [hostEvidence(), undefined, { recorded: true, supplied: false, matched: false }],
+    [hostEvidence(), hostEvidence(), { recorded: true, supplied: true, matched: true }],
+  ];
+  for (const [recorded, supplied, expected] of cases) {
+    const fixture = seedBound();
+    emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: recorded,
+      now: NOW_MS + 1000,
+    });
+    const inspected = inspectCompactCheckpoint(fixture.root, fixture.runId, {
+      hostSessionEvidence: supplied,
+      now: NOW_MS + 1000,
+    });
+    assert.equal(inspected.ok, true);
+    assert.deepEqual(Object.keys(inspected.provider_evidence), ['recorded', 'supplied', 'matched']);
+    assert.deepEqual(inspected.provider_evidence, expected);
+  }
+
+  const mismatch = seedBound();
+  emitCompactCheckpoint(mismatch.root, mismatch.runId, {
+    fence: mismatch.fence,
+    runtime: mismatch.runtime,
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 1000,
+  });
+  assert.deepEqual(
+    inspectCompactCheckpoint(mismatch.root, mismatch.runId, {
+      hostSessionEvidence: hostEvidence('claude-code', 'different-session'),
+      now: NOW_MS + 1000,
+    }),
+    { ok: false, reason: 'CHECKPOINT_NOT_FOUND' },
   );
 });
 

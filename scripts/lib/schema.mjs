@@ -108,6 +108,11 @@ function validateAttendedLaunchApproval(value, errors) {
 const WORKSTREAM_SCOPE_KEYS = Object.freeze([
   'kind', 'workstream_id', 'bound_at_seq', 'terminal_event', 'closed_at', 'superseded_at',
 ]);
+const COMPACT_CURSOR_KEYS = Object.freeze([
+  'checkpoint_key', 'context_sha256', 'pre_restore_loop_hash', 'owner_run_id',
+  'generation', 'runtime', 'workstream_id', 'episode_id', 'baseline_turns',
+  'restored_at', 'cycle', 'restore_event', 'admission', 'provider_evidence',
+]);
 const LEGACY_SCOPE_KEYS = Object.freeze([
   'kind', 'workstream_id', 'bound_at_seq', 'terminal_event', 'closed_at',
 ]);
@@ -162,6 +167,54 @@ function validateSessionScope(scope, session, errors) {
     return;
   }
   fail('kind must be workstream or legacy');
+}
+
+function validateCompactCursor(cursor, session, errors) {
+  if (cursor === undefined) return;
+  const fail = detail => errors.push(`session_chain.sessions[].compact_cursor ${detail}`);
+  if (!exactObject(cursor, COMPACT_CURSOR_KEYS)) {
+    fail('must have the exact compact cursor shape');
+    return;
+  }
+  for (const field of ['checkpoint_key', 'context_sha256', 'pre_restore_loop_hash']) {
+    if (!SHA256.test(cursor[field] || '')) fail(`${field} must be lowercase 64-hex`);
+  }
+  if (cursor.owner_run_id !== session.run_id) fail('owner_run_id must match containing session run_id');
+  if (!Number.isSafeInteger(cursor.generation) || cursor.generation < 1) fail('generation must be a positive integer');
+  if (!['claude', 'codex'].includes(cursor.runtime)) fail('runtime must be claude or codex');
+  for (const field of ['workstream_id', 'episode_id']) {
+    if (!nonEmptyString(cursor[field])) fail(`${field} must be a non-empty safe string`);
+  }
+  if (!Number.isSafeInteger(cursor.baseline_turns) || cursor.baseline_turns < 0) {
+    fail('baseline_turns must be a non-negative safe integer');
+  }
+  if (!canonicalIso(cursor.restored_at)) fail('restored_at must be canonical ISO-8601');
+  if (!Number.isSafeInteger(cursor.cycle) || cursor.cycle < 1) fail('cycle must be a positive integer');
+  if (!validBoundaryIdentity(cursor.restore_event)) fail('restore_event must be an exact boundary identity');
+
+  const admission = cursor.admission;
+  if (!exactObject(admission, ['kind', 'source', 'receipt_trigger'])) {
+    fail('admission must have the exact kind/source/receipt_trigger shape');
+  } else if (admission.kind === 'postcompact-observation') {
+    if (!['sessionstart', 'external-controller'].includes(admission.source)
+      || !['manual', 'auto'].includes(admission.receipt_trigger)) {
+      fail('postcompact observation admission is invalid');
+    }
+  } else if (admission.kind === 'human-attested') {
+    if (admission.source !== 'direct-human-skill' || admission.receipt_trigger !== null) {
+      fail('human-attested admission is invalid');
+    }
+  } else {
+    fail('admission kind is invalid');
+  }
+
+  const evidence = cursor.provider_evidence;
+  if (!exactObject(evidence, ['recorded', 'supplied', 'matched'])
+    || !['recorded', 'supplied', 'matched'].every(field => typeof evidence?.[field] === 'boolean')) {
+    fail('provider_evidence must be an exact ordered boolean object');
+  } else if (evidence.matched !== (evidence.recorded && evidence.supplied)) {
+    fail('provider_evidence combination is invalid for a successful durable cursor');
+  }
 }
 
 // spec §3.2: `session_chain.lease.acquisition_receipt` — exact-key object(전 필드 동시 존재), optional.
@@ -229,6 +282,7 @@ function validateSessions(sc, errors) {
       continue;
     }
     validateSessionScope(session.scope, session, errors);
+    validateCompactCursor(session.compact_cursor, session, errors);
     if (Object.hasOwn(session, 'handoff_path')) errors.push('session_chain.sessions[].handoff_path is forbidden in v0.4');
     if (session.handoff_rel !== undefined && !portableRel(session.handoff_rel, 'handoffs/')) {
       errors.push('session_chain.sessions[].handoff_rel must be a safe handoffs/ relative path');

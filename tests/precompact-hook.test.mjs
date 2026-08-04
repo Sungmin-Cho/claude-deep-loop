@@ -207,8 +207,9 @@ test('workstream-session PreCompact checkpoints every runtime and trigger mode w
     });
     assert.equal(inspected.ok, true);
     assert.deepEqual(inspected.provider_evidence, {
-      present: evidence !== undefined,
-      matched: evidence === undefined ? null : true,
+      recorded: evidence !== undefined,
+      supplied: evidence !== undefined,
+      matched: evidence !== undefined,
     });
   }
 });

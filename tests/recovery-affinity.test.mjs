@@ -48,6 +48,18 @@ const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
 const STATE_MODULE_URL = new URL('../scripts/lib/state.mjs', import.meta.url).href;
 const NOW = Date.parse('2026-07-23T00:00:00.000Z');
 
+function historicalCursor(owner, workstreamId, episodeId) {
+  return {
+    checkpoint_key: 'a'.repeat(64), context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64), owner_run_id: owner, generation: 1,
+    runtime: 'claude', workstream_id: workstreamId, episode_id: episodeId,
+    baseline_turns: 7, restored_at: '2026-07-23T00:00:00.000Z', cycle: 1,
+    restore_event: { seq: 1, checksum: 'd'.repeat(64) },
+    admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+}
+
 // spec §3.1 의 계약 3필드(proceed/consumed/replayed)는 모든 acquire 반환 객체에 존재한다. 성공 응답의
 // `consumed` 는 실행마다 달라지는 식별자를 담으므로, 기존 형태 assertion 은 관심 필드 부분 비교로 바꾸고
 // 계약 필드는 별도로 고정한다 — spec §3.2 노트 3 의 갱신 방침.
@@ -463,6 +475,11 @@ test('ordinary new-policy recovery without a stale closed boundary never falls b
 
 test('confirmed lost-host supersession reserves one child with the transferred affinity', () => {
   const { root, runId, workstreamId } = openAffinityFixture();
+  const seeded = readState(root, runId).data;
+  seeded.session_chain.sessions[0].compact_cursor = historicalCursor(
+    runId, workstreamId, seeded.current_episode,
+  );
+  writeState(root, runId, seeded);
   const before = readState(root, runId).data;
   const oldScope = structuredClone(before.session_chain.sessions[0].scope);
 
@@ -497,6 +514,8 @@ test('confirmed lost-host supersession reserves one child with the transferred a
   assert.equal(child.scope.bound_at_seq, oldScope.bound_at_seq);
   assert.equal(child.scope.terminal_event, null);
   assert.equal(child.scope.superseded_at, null);
+  assert.equal(Object.hasOwn(child, 'compact_cursor'), false);
+  assert.deepEqual(parent.compact_cursor, historicalCursor(runId, workstreamId, before.current_episode));
   assert.equal(parent.scope.terminal_event, null);
   assert.equal(parent.scope.superseded_by, child.run_id);
   assert.equal(parent.scope.supersede_reason, 'original host conversation is irrecoverably lost');
@@ -901,6 +920,13 @@ test('affinity supersession rejects stale handoff residue even when phase is idl
 for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
   test(`boundary recovery replaces ${stalePhase} with exact journal topology and preserves it across gate retry`, () => {
     const fixture = boundaryFixture(stalePhase);
+    const seeded = readState(fixture.root, fixture.runId).data;
+    const cursorSource = seeded.session_chain.sessions.find(
+      session => session.run_id === fixture.staleSessionId,
+    ) ?? seeded.session_chain.sessions.find(session => session.run_id === fixture.runId);
+    cursorSource.compact_cursor = historicalCursor(cursorSource.run_id, 'ws-history', 'ep-history');
+    const cursorSourceId = cursorSource.run_id;
+    writeState(fixture.root, fixture.runId, seeded);
     const predecessor = readState(fixture.root, fixture.runId);
     const result = recoverBoundary(fixture.root, fixture.runId, {
       confirm: true,
@@ -926,6 +952,11 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
     assert.equal(lease.expires_at, null);
     assert.deepEqual(lease.handoff_boundary_event, fixture.boundaryEvent);
     assert.equal(replacement.recovered_from, fixture.staleSessionId);
+    assert.equal(Object.hasOwn(replacement, 'compact_cursor'), false);
+    assert.deepEqual(
+      after.session_chain.sessions.find(session => session.run_id === cursorSourceId).compact_cursor,
+      historicalCursor(cursorSourceId, 'ws-history', 'ep-history'),
+    );
     assert.equal(replacement.scope.workstream_id, null);
     assert.equal(replacement.scope.bound_at_seq, null);
     assert.equal(replacement.recovery_project_binding_generation, after.project.binding_generation);
