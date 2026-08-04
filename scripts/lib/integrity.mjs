@@ -963,7 +963,7 @@ function assertCheckpointRestoreIdentity(root, loop, request, context, affinity)
   assertProjectRootBinding(root, loop);
 }
 
-function validateRestoreAdmission(runDirectory, request, context, affinity, guard) {
+function validateRestoreAdmission(runDirectory, request, context, affinity, loop, guard) {
   const base = {
     checkpoint_key: request.checkpointKey,
     context_sha256: request.contextSha256,
@@ -1010,7 +1010,8 @@ function validateRestoreAdmission(runDirectory, request, context, affinity, guar
   } else if (request.admission === 'human-attested') {
     if (request.source !== 'direct-human-skill'
       || request.confirmManualCompact !== true
-      || request.headless === true) {
+      || request.headless === true
+      || loop.autonomy?.spawn_style === 'headless') {
       throw new Error('CHECKPOINT_MANUAL_ATTESTATION_REQUIRED');
     }
     proof = { direct_human_skill: true, non_headless: true, confirmed: true };
@@ -1088,6 +1089,42 @@ function cursorMatchesIntent(cursor, payload) {
   return JSON.stringify(cursor) === JSON.stringify(cursorFromIntent(payload));
 }
 
+function restoreCandidateFromIntent(loop, payload) {
+  const candidate = structuredClone(loop);
+  const session = ownerSession(candidate);
+  session.compact_cursor = cursorFromIntent(payload);
+  candidate.event_log_head = structuredClone(session.compact_cursor.restore_event);
+  candidate.updated_at = payload.timestamp;
+  return candidate;
+}
+
+function classifyHashFirstRestorePartial(root, runId, raw, intent) {
+  // The compact-only pair is published hash-first. A retained intent is the sole
+  // authority for interpreting that otherwise-invalid pair: the loop must still
+  // be its exact predecessor and the anchor must name the exact derived candidate.
+  if (!intent || raw.hashBytes === null
+    || contentHash(raw.loopBytes) !== intent.payload.pre_loop_hash) return null;
+  let parsed;
+  try {
+    parsed = parseHashVerifiedStateBytes(
+      root,
+      runId,
+      raw.loopBytes,
+      Buffer.from(intent.payload.pre_loop_hash),
+      { requireSchema: true },
+    );
+  } catch {
+    return null;
+  }
+  const candidate = restoreCandidateFromIntent(parsed.data, intent.payload);
+  const checked = validate(candidate);
+  if (!checked.ok) return null;
+  const candidateBytes = Buffer.from(JSON.stringify(candidate, null, 2));
+  const candidateHash = contentHash(candidateBytes);
+  if (raw.hashBytes.toString('utf8') !== candidateHash) return null;
+  return Object.freeze({ parsed });
+}
+
 function exactCursorReplay(loop, lines, context, request, baselineTurns) {
   const session = ownerSession(loop);
   const cursor = session.compact_cursor;
@@ -1138,16 +1175,24 @@ function classifyRestoreLog(raw, loop, intent) {
   if (appended && !parsed.lineBytes[preSeq].equals(Buffer.from(payload.planned_event_line))) {
     throw new Error('LOG_TAMPERED: compact restore suffix');
   }
-  const predecessor = raw.hashBytes.toString('utf8').trim() === payload.pre_loop_hash
+  const predecessorLoop = contentHash(raw.loopBytes) === payload.pre_loop_hash
     && JSON.stringify(loop.event_log_head) === JSON.stringify(payload.pre_event_log_head);
+  const storedHash = raw.hashBytes?.toString('utf8') ?? '';
+  const predecessor = predecessorLoop && storedHash === payload.pre_loop_hash;
+  const hashFirstPartial = predecessorLoop
+    && storedHash === contentHash(Buffer.from(JSON.stringify(
+      restoreCandidateFromIntent(loop, payload),
+      null,
+      2,
+    )));
   const candidate = cursorMatchesIntent(ownerSession(loop).compact_cursor, payload)
     && JSON.stringify(loop.event_log_head) === JSON.stringify({
       seq: payload.planned_event.seq, checksum: payload.planned_event.checksum,
     });
-  if ((!predecessor && !candidate) || (candidate && !appended)) {
+  if ((!predecessor && !hashFirstPartial && !candidate) || (candidate && !appended)) {
     throw new Error('LOG_TAMPERED: compact restore state');
   }
-  return { parsed, appended, predecessor, candidate };
+  return { parsed, appended, predecessor, hashFirstPartial, candidate };
 }
 
 function reconcileRestoreIntent(root, request, guard, loop, raw, intent, faultAt) {
@@ -1157,11 +1202,8 @@ function reconcileRestoreIntent(root, request, guard, loop, raw, intent, faultAt
     appendDurableLine(logPath(root, request.runId), Buffer.from(payload.planned_event_line), guard, () => {}, 0);
     faultAt('event:appended');
   }
-  if (classified.predecessor) {
-    const candidate = structuredClone(loop);
-    const session = ownerSession(candidate);
-    session.compact_cursor = cursorFromIntent(payload);
-    candidate.event_log_head = structuredClone(session.compact_cursor.restore_event);
+  if (classified.predecessor || classified.hashFirstPartial) {
+    const candidate = restoreCandidateFromIntent(loop, payload);
     writeCompactRestoreState(root, request.runId, candidate, payload.timestamp);
     guard.renew();
     faultAt('state:written');
@@ -1187,9 +1229,19 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
   const request = { ...normalizedRequest, runId };
   return withLock(root, runId, guard => {
     const raw = readRawRun(root, runId);
-    const parsed = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
-      requireSchema: true,
-    });
+    let parsed;
+    let retained;
+    try {
+      parsed = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: true,
+      });
+    } catch (error) {
+      if (!String(error?.message || error).startsWith('STATE_TAMPERED:')) throw error;
+      retained = findCompactRestoreIntentLocked(runDir(root, runId), runId, guard);
+      const partial = classifyHashFirstRestorePartial(root, runId, raw, retained);
+      if (!partial) throw error;
+      parsed = partial.parsed;
+    }
     const loop = parsed.data;
     assertProjectRootBinding(root, loop);
     assertRestoreFence(loop, request);
@@ -1202,8 +1254,10 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
     const strict = strictRestoreFile(root, runId, request);
     request.contextSha256 = strict.envelope.payload.context_sha256;
     assertCheckpointRestoreIdentity(root, loop, request, strict.context, affinity);
-    const proof = validateRestoreAdmission(runDir(root, runId), request, strict.context, affinity, guard);
-    const retained = findCompactRestoreIntentLocked(runDir(root, runId), runId, guard);
+    const proof = validateRestoreAdmission(
+      runDir(root, runId), request, strict.context, affinity, loop, guard,
+    );
+    retained ??= findCompactRestoreIntentLocked(runDir(root, runId), runId, guard);
     if (retained) {
       if (retained.payload.request_binding_sha256 !== proof.requestBindingSha256
         || JSON.stringify(retained.payload.request_binding) !== JSON.stringify(proof.requestBinding)) {
@@ -1219,7 +1273,10 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
     if (!head.ok) throw new Error(`LOG_TAMPERED: ${head.errors.join('; ')}`);
     const baselineTurns = affinity.session.turns;
     const replay = exactCursorReplay(loop, log.lines, strict.context, request, baselineTurns);
-    if (replay) return restoreDescriptor(request, replay, 'replayed');
+    if (replay) {
+      assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
+      return restoreDescriptor(request, replay, 'replayed');
+    }
 
     validateStrictBytes(strict.bytes, {
       runId,

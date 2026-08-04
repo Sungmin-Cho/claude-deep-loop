@@ -299,8 +299,8 @@ export function writeCompactRestoreState(root, runId, data, timestamp, {
   const v = validate(data);
   if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
   const raw = JSON.stringify(data, null, 2);
-  atomicWriteFn(loopPath(root, runId), raw);
   atomicWriteFn(hashPath(root, runId), contentHash(raw));
+  atomicWriteFn(loopPath(root, runId), raw);
 }
 
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);

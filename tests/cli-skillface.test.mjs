@@ -302,7 +302,7 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
     '--source', 'direct-human-skill',
     '--confirm-manual-compact',
     '--json',
-  ]);
+  ], { env: { CLAUDE_CODE_ENTRYPOINT: 'cli' } });
   assert.equal(restored.code, 0, restored.err);
   const descriptor = JSON.parse(restored.out);
   assert.equal(descriptor.checkpoint_rel, checkpoint.checkpoint_rel);
@@ -505,7 +505,11 @@ test('checkpoint restore ignores inherited test fault environment switches', () 
     '--confirm-manual-compact',
     '--json',
   ], {
-    env: { ...process.env, NODE_ENV: 'test', DEEP_LOOP_TEST_FAULT: 'event:appended' },
+    env: {
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      NODE_ENV: 'test',
+      DEEP_LOOP_TEST_FAULT: 'event:appended',
+    },
   });
   assert.equal(result.code, 0, result.err);
   assert.equal(JSON.parse(result.out).disposition, 'committed');
@@ -641,7 +645,7 @@ test('review dispatch missing --point exits 2', () => {
 // ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
 import { mkdirSync, rmSync } from 'node:fs';
 function runBoth(root, args, { env = process.env, input } = {}) {
-  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8', env, input }); return { out: out.trim(), code: 0, err: '' }; }
+  try { const out = execFileSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8', env, input }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
 }
 function runRaw(root, args) {

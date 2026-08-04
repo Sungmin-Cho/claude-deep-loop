@@ -333,6 +333,55 @@ const manualAdmission = Object.freeze({
   env: {},
 });
 
+function compactCursorFromIntent(payload) {
+  return {
+    checkpoint_key: payload.checkpoint_key,
+    context_sha256: payload.context_sha256,
+    pre_restore_loop_hash: payload.pre_restore_loop_hash,
+    owner_run_id: payload.owner_run_id,
+    generation: payload.generation,
+    runtime: payload.runtime,
+    workstream_id: payload.workstream_id,
+    episode_id: payload.episode_id,
+    baseline_turns: payload.baseline_turns,
+    restored_at: payload.timestamp,
+    cycle: payload.cycle,
+    restore_event: {
+      seq: payload.planned_event.seq,
+      checksum: payload.planned_event.checksum,
+    },
+    admission: structuredClone(payload.admission),
+    provider_evidence: structuredClone(payload.provider_evidence),
+  };
+}
+
+function compactCandidateBytes(predecessorBytes, runId, payload) {
+  const candidate = JSON.parse(predecessorBytes.toString('utf8'));
+  const owner = candidate.session_chain.sessions.find(session => session.run_id === runId);
+  owner.compact_cursor = compactCursorFromIntent(payload);
+  candidate.event_log_head = structuredClone(owner.compact_cursor.restore_event);
+  candidate.updated_at = payload.timestamp;
+  return Buffer.from(JSON.stringify(candidate, null, 2));
+}
+
+function seedHashFirstCompactPartial(fixture, emitted, admission = manualAdmission) {
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...admission,
+    now: NOW_MS + 2000,
+    faultAt: 'event:appended',
+  }), /TEST_FAULT:event:appended/);
+  const intentDir = join(runDir(fixture.root, fixture.runId), 'compact-restore-intents');
+  const intent = JSON.parse(readFileSync(join(intentDir, readdirSync(intentDir)[0]), 'utf8'));
+  const predecessorBytes = readFileSync(loopPathOf(fixture.root, fixture.runId));
+  assert.equal(contentHash(predecessorBytes), intent.payload.pre_loop_hash);
+  const candidateBytes = compactCandidateBytes(predecessorBytes, fixture.runId, intent.payload);
+  writeFileSync(hashPathOf(fixture.root, fixture.runId), contentHash(candidateBytes));
+  return { intent, predecessorBytes, candidateBytes };
+}
+
 function prepareGenericPublication(fixture, operationId) {
   assert.throws(() => appendAnchored(
     fixture.root,
@@ -460,9 +509,7 @@ function seedCompactObservation(fixture, emitted, {
 }
 
 function publicManualRestore(fixture, emitted, now) {
-  const env = { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli' };
-  delete env.DEEP_LOOP_UNATTENDED;
-  delete env.DEEP_LOOP_HEADLESS;
+  const env = { CLAUDE_CODE_ENTRYPOINT: 'cli' };
   const result = spawnSync(process.execPath, [
     join(process.cwd(), 'scripts', 'deep-loop.mjs'),
     'checkpoint', 'restore',
@@ -836,9 +883,7 @@ test('compact restore commits one fixed event and cursor then exact-replays byte
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
-    admission: 'human-attested',
-    source: 'direct-human-skill',
-    confirmManualCompact: true,
+    ...manualAdmission,
     now: NOW_MS + 1000,
   });
   assert.deepEqual(Object.keys(restored), [
@@ -918,9 +963,7 @@ test('compact restore commits one fixed event and cursor then exact-replays byte
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
-    admission: 'human-attested',
-    source: 'direct-human-skill',
-    confirmManualCompact: true,
+    ...manualAdmission,
     now: later,
   });
   assert.equal(restoredLater.disposition, 'replayed');
@@ -928,6 +971,34 @@ test('compact restore commits one fixed event and cursor then exact-replays byte
   assert.deepEqual({ ...restoredLater, disposition: 'committed', replay: 'not-applicable' }, restored);
   assert.deepEqual(durableRunBytes(fixture), committed);
   assert.deepEqual(durableInventory(fixture), committedInventory);
+});
+
+test('committed compact replay fails closed byte-identically on a prepared generic publication', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const committed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+  });
+  assert.equal(committed.disposition, 'committed');
+  prepareGenericPublication(fixture, 'committed-replay-prepared-generic');
+  const before = durableInventory(fixture);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 3000,
+  }), /TRANSACTION_RECONCILIATION_REQUIRED/);
+  assert.deepEqual(durableInventory(fixture), before);
 });
 
 test('compact restore reconciles every isolated journal fault through one ordinary retry', () => {
@@ -965,6 +1036,115 @@ test('compact restore reconciles every isolated journal fault through one ordina
       faultAt,
     );
   }
+});
+
+test('ordinary restore converges the exact compact hash-first state partial', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  seedHashFirstCompactPartial(fixture, emitted);
+  assert.throws(() => readState(fixture.root, fixture.runId), /STATE_TAMPERED/);
+
+  const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 3000,
+  });
+
+  assert.equal(restored.disposition, 'committed');
+  assert.equal(contentHash(readFileSync(loopPathOf(fixture.root, fixture.runId))),
+    readFileSync(hashPathOf(fixture.root, fixture.runId), 'utf8'));
+  assert.equal(
+    readdirSync(join(runDir(fixture.root, fixture.runId), 'compact-restore-intents')).length,
+    0,
+  );
+  const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
+    .split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.equal(events.filter(event => event.type === 'compact-restored').length, 1);
+});
+
+test('compact hash-first recovery rejects tampered predecessor and candidate anchors byte-identically', () => {
+  for (const variant of ['predecessor', 'candidate-hash']) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    const partial = seedHashFirstCompactPartial(fixture, emitted);
+    if (variant === 'predecessor') {
+      const tampered = JSON.parse(partial.predecessorBytes.toString('utf8'));
+      tampered.discovered_items.push('forged-predecessor');
+      const tamperedBytes = Buffer.from(JSON.stringify(tampered, null, 2));
+      writeFileSync(loopPathOf(fixture.root, fixture.runId), tamperedBytes);
+      writeFileSync(
+        hashPathOf(fixture.root, fixture.runId),
+        contentHash(compactCandidateBytes(tamperedBytes, fixture.runId, partial.intent.payload)),
+      );
+    } else {
+      writeFileSync(hashPathOf(fixture.root, fixture.runId), 'f'.repeat(64));
+    }
+    const before = durableInventory(fixture);
+
+    assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...manualAdmission,
+      now: NOW_MS + 3000,
+    }), /STATE_TAMPERED/, variant);
+    assert.deepEqual(durableInventory(fixture), before, variant);
+  }
+});
+
+test('compact hash-first recovery validates the fresh fence before repairing state', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  seedHashFirstCompactPartial(fixture, emitted);
+  const before = durableInventory(fixture);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: { owner: 'different-owner', generation: fixture.fence.generation },
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 3000,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(durableInventory(fixture), before);
+});
+
+test('compact hash-first recovery validates the retained request binding before repairing state', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  seedCompactObservation(fixture, emitted);
+  seedHashFirstCompactPartial(fixture, emitted, {
+    admission: 'postcompact-observation', source: 'sessionstart', env: {},
+  });
+  const before = durableInventory(fixture);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'external-controller',
+    env: {},
+    now: NOW_MS + 3000,
+  }), /CHECKPOINT_RESTORE_REQUEST_MISMATCH/);
+  assert.deepEqual(durableInventory(fixture), before);
 });
 
 test('retained compact intent recovers when the generic transactions parent is empty', () => {
@@ -1207,6 +1387,28 @@ test('human-attested admission requires direct source, one confirmation, and non
     }), /CHECKPOINT_(?:ADMISSION_INVALID|MANUAL_ATTESTATION_REQUIRED)/);
     assert.deepEqual(durableInventory(fixture), before);
   }
+});
+
+test('human-attested admission rejects durable headless spawn style with an empty environment', () => {
+  const fixture = seedBound();
+  const state = readState(fixture.root, fixture.runId).data;
+  state.autonomy.spawn_style = 'headless';
+  writeState(fixture.root, fixture.runId, state);
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const before = durableInventory(fixture);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+  }), /CHECKPOINT_MANUAL_ATTESTATION_REQUIRED/);
+  assert.deepEqual(durableInventory(fixture), before);
 });
 
 test('unjournaled compact-restored raw suffix fails closed without changing durable bytes', () => {
