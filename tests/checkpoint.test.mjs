@@ -16,11 +16,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
+  __testEmitCompactCheckpoint,
+  __testObserveCompactCheckpoint,
   __testRestoreCompactCheckpoint,
   captureCheckpointSet,
   emitCompactCheckpoint,
   emitLegacyCompactCheckpointFromTrustedHook,
+  inspectCompactForSessionStart,
   inspectCompactCheckpoint,
+  observeCompactCheckpoint,
   restoreCompactCheckpoint,
   selectCheckpoint as selectCheckpointFromSet,
 } from '../scripts/lib/checkpoint.mjs';
@@ -325,6 +329,30 @@ const manualAdmission = Object.freeze({
   admission: 'human-attested',
   source: 'direct-human-skill',
   confirmManualCompact: true,
+});
+const emptyInspectExpectation = reason => ({
+  ok: false,
+  phase: 'none',
+  reason,
+  checkpoint_rel: null,
+  checkpoint_key: null,
+  context_sha256: null,
+  pre_restore_loop_hash: null,
+  owner_run_id: null,
+  generation: null,
+  runtime: null,
+  workstream_id: null,
+  episode_id: null,
+  trigger: null,
+  cycle: null,
+  admission: null,
+  restore_event: null,
+  next_command: null,
+  requires_model_turn: false,
+  replay: 'not-applicable',
+  provider_evidence: reason === 'trusted-evidence-rejected'
+    ? { recorded: true, supplied: true, matched: false }
+    : { recorded: false, supplied: false, matched: false },
 });
 
 function seedCompactObservation(fixture, emitted, {
@@ -1005,7 +1033,7 @@ test('strict checkpoint projects every prepared optional-identity evidence row i
       hostSessionEvidence: recorded,
       now: NOW_MS + 1000,
     });
-    const inspected = inspectCompactCheckpoint(fixture.root, fixture.runId, {
+    const inspected = inspectCompactForSessionStart(fixture.root, fixture.runId, {
       hostSessionEvidence: supplied,
       now: NOW_MS + 1000,
     });
@@ -1022,12 +1050,245 @@ test('strict checkpoint projects every prepared optional-identity evidence row i
     now: NOW_MS + 1000,
   });
   assert.deepEqual(
-    inspectCompactCheckpoint(mismatch.root, mismatch.runId, {
+    inspectCompactForSessionStart(mismatch.root, mismatch.runId, {
       hostSessionEvidence: hostEvidence('claude-code', 'different-session'),
       now: NOW_MS + 1000,
     }),
-    { ok: false, reason: 'CHECKPOINT_NOT_FOUND' },
+    emptyInspectExpectation('trusted-evidence-rejected'),
   );
+});
+
+test('trusted observation creates one fixed receipt, is trigger-idempotent, and rejects identity conflict', () => {
+  const fixture = seedBound();
+  const recorded = hostEvidence();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: recorded,
+    now: NOW_MS + 1000,
+  });
+  const first = observeCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    trigger: 'manual',
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: recorded,
+    now: NOW_MS + 2000,
+  });
+  assert.deepEqual(first.provider_evidence, { recorded: true, supplied: true, matched: true });
+  assert.equal(first.created, true);
+  const receiptPath = join(
+    checkpointDirOf(fixture.root, fixture.runId),
+    `${emitted.checkpoint_key}-compact-observation.json`,
+  );
+  const firstBytes = readFileSync(receiptPath);
+
+  const retry = observeCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    trigger: 'auto',
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: recorded,
+    now: NOW_MS + 3000,
+  });
+  assert.equal(retry.created, false);
+  assert.equal(retry.trigger, 'manual');
+  assert.deepEqual(readFileSync(receiptPath), firstBytes);
+  assert.throws(() => observeCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    trigger: 'manual',
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'different-session'),
+    now: NOW_MS + 4000,
+  }), /CHECKPOINT_EVIDENCE_MISMATCH/);
+  assert.deepEqual(readFileSync(receiptPath), firstBytes);
+
+  const conflictFixture = seedBound();
+  const conflictCheckpoint = emitCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
+    fence: conflictFixture.fence,
+    runtime: conflictFixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  observeCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
+    checkpointRel: conflictCheckpoint.checkpoint_rel,
+    trigger: 'auto',
+    fence: conflictFixture.fence,
+    runtime: conflictFixture.runtime,
+    now: NOW_MS + 2000,
+  });
+  assert.throws(() => observeCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
+    checkpointRel: conflictCheckpoint.checkpoint_rel,
+    trigger: 'auto',
+    fence: conflictFixture.fence,
+    runtime: conflictFixture.runtime,
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 3000,
+  }), /CHECKPOINT_RECEIPT_CONFLICT/);
+
+  const older = emitCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
+    fence: conflictFixture.fence,
+    runtime: conflictFixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'older'),
+    now: NOW_MS + 4000,
+  });
+  emitCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
+    fence: conflictFixture.fence,
+    runtime: conflictFixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'newer'),
+    now: NOW_MS + 5000,
+  });
+  assert.throws(() => observeCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
+    checkpointRel: older.checkpoint_rel,
+    trigger: 'auto',
+    fence: conflictFixture.fence,
+    runtime: conflictFixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'older'),
+    now: NOW_MS + 6000,
+  }), /CHECKPOINT_INELIGIBLE/);
+});
+
+test('synchronized inspect exposes ordered prepared, compacted, and restored projections', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const prepared = inspectCompactForSessionStart(fixture.root, fixture.runId, {
+    now: NOW_MS + 1000,
+  });
+  assert.deepEqual(Object.keys(prepared), [
+    'ok', 'phase', 'reason', 'checkpoint_rel', 'checkpoint_key', 'context_sha256',
+    'pre_restore_loop_hash', 'owner_run_id', 'generation', 'runtime', 'workstream_id',
+    'episode_id', 'trigger', 'cycle', 'admission', 'restore_event', 'next_command',
+    'requires_model_turn', 'replay', 'provider_evidence',
+  ]);
+  assert.equal(prepared.phase, 'prepared');
+  assert.equal(prepared.admission, null);
+
+  observeCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    trigger: 'auto',
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 2000,
+  });
+  const compacted = inspectCompactCheckpoint(fixture.root, fixture.runId, { now: NOW_MS + 2000 });
+  assert.equal(compacted.phase, 'compacted');
+  assert.deepEqual(compacted.admission, {
+    kind: 'postcompact-observation', source: null, receipt_trigger: 'auto',
+  });
+
+  restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'sessionstart',
+    now: NOW_MS + 3000,
+  });
+  const restored = inspectCompactForSessionStart(fixture.root, fixture.runId, { now: NOW_MS + 3000 });
+  assert.equal(restored.phase, 'restored');
+  assert.equal(restored.requires_model_turn, false);
+  assert.equal(restored.replay, 'exact');
+
+  const newer = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'newer-global-key'),
+    now: NOW_MS + 4000,
+  });
+  const globallySelected = inspectCompactForSessionStart(fixture.root, fixture.runId, {
+    now: NOW_MS + 4000,
+  });
+  assert.equal(globallySelected.phase, 'prepared');
+  assert.equal(globallySelected.checkpoint_key, newer.checkpoint_key);
+});
+
+test('pair pruning exposes four crash seams and reconciles tombstones while live intents pin pairs', () => {
+  assert.equal(typeof __testEmitCompactCheckpoint, 'function');
+  assert.equal(typeof __testObserveCompactCheckpoint, 'function');
+  for (const seam of [
+    'prune:tombstone-written',
+    'prune:receipt-unlinked',
+    'prune:checkpoint-unlinked',
+    'prune:tombstone-cleanup',
+  ]) {
+    const fixture = seedBound();
+    for (let index = 0; index < 6; index += 1) {
+      try {
+        __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+          fence: fixture.fence,
+          runtime: fixture.runtime,
+          hostSessionEvidence: hostEvidence('claude-code', `prune-${index}`),
+          now: NOW_MS + index + 1,
+          faultAt: index === 5 ? seam : undefined,
+        });
+      } catch (error) {
+        assert.match(error.message, new RegExp(`TEST_FAULT:${seam}`));
+      }
+    }
+    emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', 'reconcile'),
+      now: NOW_MS + 100,
+    });
+    assert.equal(
+      readdirSync(checkpointDirOf(fixture.root, fixture.runId))
+        .some(name => name.endsWith('-compact-prune.json')),
+      false,
+      seam,
+    );
+  }
+});
+
+test('live restore intent pins its checkpoint and receipt pair until intent cleanup', () => {
+  const fixture = seedBound();
+  const pinned = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1,
+  });
+  const pinnedReceipt = seedCompactObservation(fixture, pinned);
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: pinned.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'sessionstart',
+    now: NOW_MS + 2,
+    faultAt: 'restore:intent-written',
+  }), /TEST_FAULT:restore:intent-written/);
+
+  for (let index = 0; index < 7; index += 1) {
+    emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `pressure-${index}`),
+      now: NOW_MS + 10 + index,
+    });
+  }
+  assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, pinned)), true);
+  assert.equal(existsSync(pinnedReceipt), true);
+
+  restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: pinned.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    admission: 'postcompact-observation',
+    source: 'sessionstart',
+    now: NOW_MS + 100,
+  });
+  emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'after-cleanup'),
+    now: NOW_MS + 101,
+  });
+  assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, pinned)), false);
+  assert.equal(existsSync(pinnedReceipt), false);
 });
 
 test('restore descriptor excludes captured routing and hostile checkpoint strings', () => {
@@ -1258,10 +1519,10 @@ test('root relocation stales old compact checkpoints by root epoch, generation, 
     now: NOW_MS + 7_000,
     clock: () => NOW_MS + 7_000,
   });
-  assert.deepEqual(inspectCompactCheckpoint(candidateRoot, fixture.runId, {
+  assert.deepEqual(inspectCompactForSessionStart(candidateRoot, fixture.runId, {
     hostSessionEvidence: hostEvidence(),
     now: NOW_MS + 8_000,
-  }), { ok: false, reason: 'CHECKPOINT_NOT_FOUND' });
+  }), emptyInspectExpectation('checkpoint-ineligible'));
   assert.deepEqual(readFileSync(join(runDir(candidateRoot, fixture.runId), oldCheckpoint.checkpoint_rel)), oldBytes);
 
   const acquired = readState(candidateRoot, fixture.runId).data;

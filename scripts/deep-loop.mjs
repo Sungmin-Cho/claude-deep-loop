@@ -66,7 +66,7 @@ import {
   diagnoseLauncherExecutable,
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
-import { sessionRuntime } from './lib/runtime.mjs';
+import { sessionRuntime, validateSessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import {
   buildRecoveryResumeDescriptor,
@@ -77,6 +77,7 @@ import {
 import {
   emitCompactCheckpoint,
   inspectCompactCheckpoint,
+  observeCompactCheckpoint,
   restoreCompactCheckpoint,
 } from './lib/checkpoint.mjs';
 
@@ -512,22 +513,45 @@ const handlers = {
     const allowed = {
       emit: new Set(['project-root', 'run-id', 'now', 'owner', 'generation', 'runtime']),
       inspect: new Set(['project-root', 'run-id', 'now', 'json']),
+      observe: new Set([
+        'project-root', 'run-id', 'now', 'checkpoint', 'trigger', 'owner', 'generation',
+        'runtime', 'trusted-postcompact-stdin', 'json',
+      ]),
       restore: new Set([
         'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime',
         'admission', 'source', 'confirm-manual-compact', 'json',
       ]),
     };
-    if (!Object.hasOwn(allowed, verb) || !knownFlagVocabulary(rest, allowed[verb])) {
-      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+    if (!Object.hasOwn(allowed, verb)) {
+      error(`USAGE: checkpoint <emit|inspect|observe|restore> has invalid grammar`);
       return 2;
     }
-    if (verb !== 'inspect'
-      && (flagOccurrences(rest, 'owner') !== 1 || flagOccurrences(rest, 'generation') !== 1)) {
-      error(`LEASE_FENCED: checkpoint ${verb} requires exactly one owner and generation`);
-      return 3;
+    let parsedFence = null;
+    if (verb !== 'inspect') {
+      const preliminary = parseFlags(rest);
+      const owner = preliminary.owner;
+      const generation = preliminary.generation;
+      if (flagOccurrences(rest, 'owner') !== 1
+        || flagOccurrences(rest, 'generation') !== 1
+        || typeof owner !== 'string'
+        || owner.length === 0
+        || owner === '.'
+        || owner === '..'
+        || /[\0\r\n/\\]/.test(owner)
+        || typeof generation !== 'string'
+        || !/^[1-9]\d*$/.test(generation)
+        || !Number.isSafeInteger(Number(generation))) {
+        error(`LEASE_FENCED: checkpoint ${verb} requires a valid owner and positive generation`);
+        return 3;
+      }
+      parsedFence = { owner, generation: Number(generation) };
+    }
+    if (!knownFlagVocabulary(rest, allowed[verb])) {
+      error(`USAGE: checkpoint <emit|inspect|observe|restore> has invalid grammar`);
+      return 2;
     }
     if (!exactFlagGrammar(rest, allowed[verb])) {
-      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+      error(`USAGE: checkpoint <emit|inspect|observe|restore> has invalid grammar`);
       return 2;
     }
     const f = parseFlags(rest);
@@ -536,36 +560,115 @@ const handlers = {
       error('USAGE: explicit --project-root and --run-id require a non-empty value');
       return 2;
     }
-    const root = rootOf(f);
-    const runId = runIdOf(root, f);
-    if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
-
     if (verb === 'inspect') {
       if (f.json !== true) { error('USAGE: checkpoint inspect requires --json'); return 2; }
-      json(inspectCompactCheckpoint(root, runId, { now: parseNow(f) }));
+      const now = parseNow(f);
+      const root = rootOf(f);
+      const runId = runIdOf(root, f);
+      if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
+      json(inspectCompactCheckpoint(root, runId, { now }));
       return 0;
     }
 
-    const owner = reqStr(f, 'owner');
-    if (!owner
-      || typeof f.generation !== 'string'
-      || !/^[1-9]\d*$/.test(f.generation)
-      || !Number.isSafeInteger(Number(f.generation))) {
-      error(`LEASE_FENCED: checkpoint ${verb} requires a valid owner and positive generation`);
-      return 3;
-    }
     const runtime = reqStr(f, 'runtime');
     if (!runtime) {
       error(`USAGE: checkpoint ${verb} requires --runtime RUNTIME`);
       return 2;
     }
+    validateSessionRuntime(runtime);
     const options = {
-      fence: { owner, generation: Number(f.generation) },
+      fence: parsedFence,
       runtime,
       now: parseNow(f),
     };
     if (verb === 'emit') {
+      const root = rootOf(f);
+      const runId = runIdOf(root, f);
+      if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
       json(emitCompactCheckpoint(root, runId, options));
+      return 0;
+    }
+
+    if (verb === 'observe') {
+      const requested = reqStr(f, 'checkpoint');
+      const trigger = reqStr(f, 'trigger');
+      if (!requested || !trigger || f.json !== true) {
+        error('USAGE: checkpoint observe requires --checkpoint REL, --trigger TRIGGER, and --json');
+        return 2;
+      }
+      if (!['manual', 'auto'].includes(trigger)
+        || !/^checkpoints\/[0-9a-f]{64}-compact\.json$/.test(requested)) {
+        error('CHECKPOINT_OBSERVE_VALUE_INVALID');
+        return 1;
+      }
+      if (Object.hasOwn(f, 'trusted-postcompact-stdin')
+        && f['trusted-postcompact-stdin'] !== true) {
+        error('USAGE: --trusted-postcompact-stdin is a value-less flag');
+        return 2;
+      }
+      if (f['trusted-postcompact-stdin'] !== true) {
+        error('OBSERVE_TRUSTED_INGRESS_REQUIRED');
+        return 1;
+      }
+      let body;
+      try {
+        const raw = await readBoundedText(process.stdin, { maxBytes: 4096 });
+        body = JSON.parse(raw);
+      } catch {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      const keys = body && typeof body === 'object' && !Array.isArray(body)
+        ? Object.keys(body)
+        : [];
+      if (!body
+        || !['hook_event_name', 'cwd', 'trigger'].every(key => keys.includes(key))
+        || keys.some(key => !['hook_event_name', 'cwd', 'trigger', 'session_id'].includes(key))
+        || body.hook_event_name !== 'PostCompact'
+        || body.trigger !== trigger
+        || typeof body.cwd !== 'string'
+        || body.cwd.length === 0) {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      const root = rootOf(f);
+      const runId = runIdOf(root, f);
+      if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
+      let canonicalBodyRoot;
+      let canonicalArgRoot;
+      try {
+        canonicalBodyRoot = canonicalProjectRoot(body.cwd);
+        canonicalArgRoot = canonicalProjectRoot(root);
+      } catch {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      if (resolve(body.cwd) !== body.cwd
+        || canonicalBodyRoot !== body.cwd
+        || canonicalBodyRoot !== canonicalArgRoot) {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      let hostSessionEvidence;
+      if (Object.hasOwn(body, 'session_id')) {
+        if (typeof body.session_id !== 'string'
+          || body.session_id.length === 0
+          || body.session_id.length > 1024
+          || /[\0\r\n]/.test(body.session_id)) {
+          error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+          return 1;
+        }
+        hostSessionEvidence = {
+          provider: runtime === 'claude' ? 'claude-code' : 'codex',
+          id: body.session_id,
+        };
+      }
+      json(observeCompactCheckpoint(root, runId, {
+        checkpointRel: requested,
+        trigger,
+        hostSessionEvidence,
+        ...options,
+      }));
       return 0;
     }
 
@@ -584,6 +687,19 @@ const handlers = {
       error('USAGE: human-attested restore requires --confirm-manual-compact');
       return 2;
     }
+    if (!/^checkpoints\/[0-9a-f]{64}-compact\.json$/.test(requested)
+      || !['postcompact-observation', 'human-attested'].includes(admission)
+      || !['sessionstart', 'external-controller', 'direct-human-skill'].includes(source)
+      || (admission === 'human-attested' && source !== 'direct-human-skill')
+      || (admission === 'postcompact-observation'
+        && !['sessionstart', 'external-controller'].includes(source))
+      || (admission === 'postcompact-observation' && f['confirm-manual-compact'] === true)) {
+      error('CHECKPOINT_RESTORE_VALUE_INVALID');
+      return 1;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
     json(restoreCompactCheckpoint(root, runId, {
       checkpointRel: requested,
       admission,

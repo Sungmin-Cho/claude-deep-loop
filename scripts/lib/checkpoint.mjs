@@ -8,7 +8,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { atomicWrite } from './atomic-write.mjs';
+import { atomicWrite, durableAtomicWrite, flushDirectory } from './atomic-write.mjs';
 import { contentHash, ulid, unwrap, wrap } from './envelope.mjs';
 import {
   captureStableFileIdentity,
@@ -27,7 +27,13 @@ import {
   commitOrReplayCompactRestore,
 } from './integrity.mjs';
 import {
+  compactObservationRel,
+  liveCompactRestorePairsLocked,
+  readCompactObservationProofLocked,
+} from './compact-restore-intent.mjs';
+import {
   normalizeProviderEvidence,
+  providerEvidenceProjection,
   readStableRegular,
   STRICT_CONTEXT_DOMAIN,
   STRICT_FILE,
@@ -48,6 +54,13 @@ const DESCRIPTOR_SLASH_COMMANDS = new Set([
   '/deep-loop-finish',
   '/deep-loop-handoff',
   '/deep-loop-status',
+]);
+const PRUNE_FILE = /^([0-9a-f]{64})-compact-prune\.json$/;
+const INSPECT_KEYS = Object.freeze([
+  'ok', 'phase', 'reason', 'checkpoint_rel', 'checkpoint_key', 'context_sha256',
+  'pre_restore_loop_hash', 'owner_run_id', 'generation', 'runtime', 'workstream_id',
+  'episode_id', 'trigger', 'cycle', 'admission', 'restore_event', 'next_command',
+  'requires_model_turn', 'replay', 'provider_evidence',
 ]);
 
 const TOP_KEYS = Object.freeze(['schema_version', 'envelope', 'payload']);
@@ -85,6 +98,10 @@ const LEGACY_PAYLOAD_KEYS = Object.freeze([
 const checkpointDir = (root, runId) => join(runDir(root, runId), 'checkpoints');
 const checkpointRel = key => `checkpoints/${key}-compact.json`;
 const strictPath = (root, runId, key) => join(checkpointDir(root, runId), `${key}-compact.json`);
+const receiptPath = (root, runId, key) => join(
+  checkpointDir(root, runId), `${key}-compact-observation.json`,
+);
+const prunePath = (root, runId, key) => join(checkpointDir(root, runId), `${key}-compact-prune.json`);
 const sha256 = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const canonicalIso = value => typeof value === 'string'
   && Number.isFinite(new Date(value).getTime())
@@ -334,10 +351,111 @@ function removeCaptured(entry) {
   return true;
 }
 
-function pruneCaptured(entries, currentPath, created, runId) {
-  let count = entries.filter(entry => entry.removable && entry.name.endsWith('-compact.json')).length
-    + (created ? 1 : 0);
+function testFault(faultAt, seam) {
+  if (typeof faultAt === 'function') faultAt(seam);
+}
+
+function tombstonedKeys(entries) {
+  return new Set(entries.flatMap(entry => {
+    const match = entry.name.match(PRUNE_FILE);
+    return match ? [match[1]] : [];
+  }));
+}
+
+function reconcilePruneTombstonesLocked(root, runId, guard) {
+  const dir = assertCheckpointDirectory(root, runId);
+  if (dir === null) return;
+  for (const entry of captureDirectoryEntries(dir)) {
+    const match = entry.name.match(PRUNE_FILE);
+    if (!match) continue;
+    guard.assertOwned(runDir(root, runId));
+    const key = match[1];
+    for (const path of [receiptPath(root, runId, key), strictPath(root, runId, key)]) {
+      if (existsSync(path)) {
+        rmSync(path, { force: true });
+        flushDirectory(dir);
+      }
+    }
+    if (existsSync(entry.path)) {
+      rmSync(entry.path, { force: true });
+      flushDirectory(dir);
+    }
+    guard.renew();
+  }
+}
+
+function pruneEnvelope(runId, key, contextSha256, receiptSha256, now) {
+  return wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'compact-prune',
+    schema: { name: 'compact-prune', version: '1.0' },
+    run_id: runId,
+    provenance: {
+      source_artifacts: [checkpointRel(key), compactObservationRel(key)],
+      tool_versions: {},
+    },
+    payload: {
+      checkpoint_key: key,
+      context_sha256: contextSha256,
+      receipt_sha256: receiptSha256,
+    },
+    now: new Date(now).toISOString(),
+  });
+}
+
+function pruneCheckpointPairLocked(root, runId, metadata, guard, {
+  now,
+  faultAt = () => {},
+} = {}) {
+  const dir = assertCheckpointDirectory(root, runId);
+  if (dir === null) return false;
+  const key = metadata.key;
+  const checkpoint = strictPath(root, runId, key);
+  const receipt = receiptPath(root, runId, key);
+  const tombstone = prunePath(root, runId, key);
+  let contextSha256 = null;
+  try {
+    const env = JSON.parse(readFileSync(checkpoint, 'utf8'));
+    contextSha256 = sha256(env?.payload?.context_sha256) ? env.payload.context_sha256 : null;
+  } catch { /* invalid checkpoints are still pair-pruned */ }
+  let receiptSha256 = null;
+  try { receiptSha256 = contentHash(readFileSync(receipt)); } catch { /* optional */ }
+  durableAtomicWrite(
+    tombstone,
+    JSON.stringify(pruneEnvelope(runId, key, contextSha256, receiptSha256, now), null, 2),
+  );
+  guard.renew();
+  testFault(faultAt, 'prune:tombstone-written');
+  if (existsSync(receipt)) {
+    rmSync(receipt, { force: true });
+    flushDirectory(dir);
+  }
+  guard.renew();
+  testFault(faultAt, 'prune:receipt-unlinked');
+  if (existsSync(checkpoint)) {
+    rmSync(checkpoint, { force: true });
+    flushDirectory(dir);
+  }
+  guard.renew();
+  testFault(faultAt, 'prune:checkpoint-unlinked');
+  rmSync(tombstone, { force: true });
+  flushDirectory(dir);
+  guard.renew();
+  testFault(faultAt, 'prune:tombstone-cleanup');
+  return true;
+}
+
+function pruneCapturedLocked(root, runId, guard, currentPath, {
+  now,
+  faultAt = () => {},
+} = {}) {
+  const dir = assertCheckpointDirectory(root, runId);
+  if (dir === null) return;
+  const entries = captureDirectoryEntries(dir);
+  let count = entries.filter(entry => entry.removable && entry.name.endsWith('-compact.json')).length;
   if (count <= KEEP) return;
+  const pinned = new Set(liveCompactRestorePairsLocked(runDir(root, runId), runId, guard)
+    .map(pair => pair.checkpoint_rel));
   const invalid = [];
   const valid = [];
   for (const entry of entries) {
@@ -360,11 +478,15 @@ function pruneCaptured(entries, currentPath, created, runId) {
   for (const entry of candidates) {
     if (count <= KEEP) break;
     if (entry.path === currentPath) continue;
-    if (removeCaptured(entry)) count -= 1;
+    const match = entry.name.match(STRICT_FILE);
+    if (!match || pinned.has(checkpointRel(match[1]))) continue;
+    if (pruneCheckpointPairLocked(root, runId, { key: match[1] }, guard, { now, faultAt })) {
+      count -= 1;
+    }
   }
 }
 
-function strictEmit(root, runId, snapshot, options) {
+function strictEmit(root, runId, guard, snapshot, options) {
   const runtime = assertFence(snapshot.data, options.fence, options.runtime);
   const providerEvidence = normalizeProviderEvidence(options.hostSessionEvidence);
   const context = deriveContext(root, runId, snapshot, {
@@ -377,7 +499,6 @@ function strictEmit(root, runId, snapshot, options) {
   if (bytes.length > MAX_CHECKPOINT_BYTES) throw new Error('CHECKPOINT_TOO_LARGE');
 
   const dir = assertCheckpointDirectory(root, runId, { create: true });
-  const entries = captureDirectoryEntries(dir);
   const path = strictPath(root, runId, key);
   const rel = checkpointRel(key);
   const result = {
@@ -404,10 +525,18 @@ function strictEmit(root, runId, snapshot, options) {
     } catch {
       throw new Error('CHECKPOINT_CONFLICT');
     }
+    pruneCapturedLocked(root, runId, guard, path, {
+      now: options.now,
+      faultAt: options.faultAt,
+    });
     return { ...result, created: false };
   }
-  atomicWrite(path, bytes);
-  pruneCaptured(entries, path, true, runId);
+  durableAtomicWrite(path, bytes);
+  guard.renew();
+  pruneCapturedLocked(root, runId, guard, path, {
+    now: options.now,
+    faultAt: options.faultAt,
+  });
   return result;
 }
 
@@ -453,17 +582,29 @@ export function emitCompactCheckpoint(root, runId, {
   hostSessionEvidence,
   now = Date.now(),
 } = {}) {
-  return withReconciledMutationLock(root, runId, (_guard, snapshot) => {
+  return withReconciledMutationLock(root, runId, (guard, snapshot) => {
+    reconcilePruneTombstonesLocked(root, runId, guard);
     if (authenticLegacy(snapshot.data)) {
       assertFence(snapshot.data, fence, runtime);
       throw new Error('CHECKPOINT_LEGACY_TRUST_REQUIRED');
     }
-    return strictEmit(root, runId, snapshot, {
+    return strictEmit(root, runId, guard, snapshot, {
       fence,
       runtime,
       hostSessionEvidence,
       now,
     });
+  });
+}
+
+export function __testEmitCompactCheckpoint(root, runId, options = {}) {
+  return withReconciledMutationLock(root, runId, (guard, snapshot) => {
+    reconcilePruneTombstonesLocked(root, runId, guard);
+    if (authenticLegacy(snapshot.data)) {
+      assertFence(snapshot.data, options.fence, options.runtime);
+      throw new Error('CHECKPOINT_LEGACY_TRUST_REQUIRED');
+    }
+    return strictEmit(root, runId, guard, snapshot, options);
   });
 }
 
@@ -561,100 +702,323 @@ function summarizeEpisode(value) {
   };
 }
 
-function descriptor(rel, key, validation) {
-  const { context, providerEvidence, freshNextAction } = validation;
-  const result = {
-    ok: true,
-    checkpoint_rel: rel,
-    checkpoint_key: key,
-    owner_run_id: boundedDescriptorValue(context.owner_run_id),
-    generation: context.generation,
-    runtime: context.runtime,
-    scope: summarizeScope(context.scope),
-    workstream: summarizeWorkstream(context.workstream),
-    current_episode: summarizeEpisode(context.current_episode),
-    next_action: boundedDescriptorValue(freshNextAction),
-    context_sha256: contentHash(JSON.stringify(context)),
-    provider_evidence: providerEvidence,
-  };
-  const bytes = Buffer.from(JSON.stringify(result));
-  if (bytes.length > MAX_DESCRIPTOR_BYTES) {
-    result.scope = {
-      kind: boundedDescriptorValue(context.scope.kind),
-      workstream_id: boundedDescriptorValue(context.scope.workstream_id),
-      bound_at_seq: context.scope.bound_at_seq,
-    };
-    result.workstream = {
-      id: boundedDescriptorValue(context.workstream.id),
-      status: boundedDescriptorValue(context.workstream.status),
-    };
-    result.current_episode = summarizeEpisode(context.current_episode);
-    result.next_action = {
-      action: {
-        type: boundedDescriptorValue(freshNextAction?.action?.type),
-      },
-      next_command: boundedDescriptorValue(freshNextAction?.next_command),
-    };
-  }
-  if (Buffer.byteLength(JSON.stringify(result)) > MAX_DESCRIPTOR_BYTES) {
-    result.scope = {
-      kind: boundedDescriptorValue(context.scope.kind),
-      sha256: contentHash(JSON.stringify(context.scope)),
-    };
-    result.workstream = {
-      id: boundedDescriptorValue(context.workstream.id),
-      status: boundedDescriptorValue(context.workstream.status),
-    };
-    result.current_episode = {
-      id: boundedDescriptorValue(context.current_episode.id),
-      point: boundedDescriptorValue(context.current_episode.point),
-    };
-    result.next_action = {
-      action: {
-        type: boundedDescriptorValue(freshNextAction?.action?.type),
-      },
-    };
-  }
-  return result;
+function emptyProjection(reason, providerEvidence = {
+  recorded: false, supplied: false, matched: false,
+}) {
+  return Object.fromEntries(INSPECT_KEYS.map(key => [key,
+    key === 'ok' ? false
+      : key === 'phase' ? 'none'
+        : key === 'reason' ? reason
+          : key === 'requires_model_turn' ? false
+            : key === 'replay' ? 'not-applicable'
+              : key === 'provider_evidence' ? structuredClone(providerEvidence)
+                : null]));
 }
 
-export function inspectCompactCheckpoint(root, runId, {
+function restoreCommand(runtime) {
+  return runtime === 'claude'
+    ? '/deep-loop-compact restore'
+    : '$deep-loop:deep-loop-compact restore';
+}
+
+function successProjection(phase, candidate, {
+  providerEvidence,
+  receipt = null,
+  cursor = null,
+  loop,
+} = {}) {
+  const context = candidate.context;
+  const restored = phase === 'restored';
+  const compacted = phase === 'compacted';
+  const admission = restored
+    ? structuredClone(cursor.admission)
+    : compacted
+      ? { kind: 'postcompact-observation', source: null, receipt_trigger: receipt.payload.trigger }
+      : null;
+  return {
+    ok: true,
+    phase,
+    reason: null,
+    checkpoint_rel: candidate.rel,
+    checkpoint_key: candidate.key,
+    context_sha256: restored ? cursor.context_sha256 : candidate.contextSha256,
+    pre_restore_loop_hash: restored ? cursor.pre_restore_loop_hash : context.loop_hash,
+    owner_run_id: restored ? cursor.owner_run_id : context.owner_run_id,
+    generation: restored ? cursor.generation : context.generation,
+    runtime: restored ? cursor.runtime : context.runtime,
+    workstream_id: restored ? cursor.workstream_id : context.workstream.id,
+    episode_id: restored ? cursor.episode_id : context.current_episode.id,
+    trigger: restored ? cursor.admission.receipt_trigger : compacted ? receipt.payload.trigger : null,
+    cycle: restored ? cursor.cycle : null,
+    admission,
+    restore_event: restored ? structuredClone(cursor.restore_event) : null,
+    next_command: restored ? null : restoreCommand(context.runtime),
+    requires_model_turn: !restored,
+    replay: restored
+      ? JSON.stringify(loop.event_log_head) === JSON.stringify(cursor.restore_event) ? 'exact' : 'stale'
+      : 'eligible',
+    provider_evidence: restored
+      ? structuredClone(cursor.provider_evidence)
+      : structuredClone(providerEvidence),
+  };
+}
+
+function cursorCandidate(loop, entries, runId, tombstones) {
+  const session = ownerSession(loop);
+  const cursor = session.compact_cursor;
+  if (!cursor || tombstones.has(cursor.checkpoint_key)) return null;
+  const entry = entries.find(item => item.name === `${cursor.checkpoint_key}-compact.json`);
+  if (!entry) return null;
+  try {
+    const metadata = capturedStrictMetadata(entry, runId);
+    const env = JSON.parse(metadata.bytes.toString('utf8'));
+    const context = validateStrictSelf(env, { runId, key: metadata.key });
+    if (metadata.key !== cursor.checkpoint_key
+      || env.payload.context_sha256 !== cursor.context_sha256
+      || context.loop_hash !== cursor.pre_restore_loop_hash
+      || context.owner_run_id !== cursor.owner_run_id
+      || context.generation !== cursor.generation
+      || context.runtime !== cursor.runtime
+      || context.workstream.id !== cursor.workstream_id
+      || context.current_episode.id !== cursor.episode_id) return null;
+    return {
+      ...metadata,
+      context,
+      contextSha256: env.payload.context_sha256,
+      cursor,
+      kind: 'cursor',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function currentCandidates(root, runId, snapshot, now, entries, tombstones) {
+  const candidates = [];
+  for (const entry of entries) {
+    try {
+      const metadata = capturedStrictMetadata(entry, runId);
+      if (tombstones.has(metadata.key)) continue;
+      const validation = validateStrictBytes(metadata.bytes, {
+        root,
+        runId,
+        key: metadata.key,
+        snapshot,
+        now,
+        hostSessionEvidence: undefined,
+      });
+      candidates.push({
+        ...metadata,
+        context: validation.context,
+        contextSha256: validation.env.payload.context_sha256,
+        kind: 'current',
+      });
+    } catch {
+      // Invalid, stale, foreign, or replaced entries remain globally ineligible.
+    }
+  }
+  return candidates;
+}
+
+function selectedCandidate(root, runId, snapshot, now, entries) {
+  const tombstones = tombstonedKeys(entries);
+  const candidates = currentCandidates(root, runId, snapshot, now, entries, tombstones);
+  const cursor = cursorCandidate(snapshot.data, entries, runId, tombstones);
+  if (cursor) {
+    const same = candidates.find(candidate => candidate.key === cursor.key);
+    if (same) candidates.splice(candidates.indexOf(same), 1);
+    candidates.push(cursor);
+  }
+  candidates.sort(compareNewest);
+  return candidates[0] ?? null;
+}
+
+function readSelectedReceipt(root, runId, candidate, guard) {
+  const expected = {
+    checkpoint_key: candidate.key,
+    context_sha256: candidate.contextSha256,
+    owner_run_id: candidate.context.owner_run_id,
+    generation: candidate.context.generation,
+    runtime: candidate.context.runtime,
+    workstream_id: candidate.context.workstream.id,
+    episode_id: candidate.context.current_episode.id,
+  };
+  try {
+    return readCompactObservationProofLocked(
+      runDir(root, runId), runId, candidate.rel, expected, guard,
+    );
+  } catch (error) {
+    if (String(error?.message || error).includes('CHECKPOINT_RECEIPT_REQUIRED')) return null;
+    return { invalid: true };
+  }
+}
+
+function inspectLocked(root, runId, guard, snapshot, {
+  hostSessionEvidence,
+  now,
+} = {}) {
+  assertCurrentSchema(snapshot.data);
+  if (['completed', 'stopped', 'paused'].includes(snapshot.data.status)) {
+    return emptyProjection('run-not-resumable');
+  }
+  if (snapshot.data.autonomy?.continuation_policy !== 'workstream-session') return null;
+  try { affinity(snapshot.data); } catch { return emptyProjection('affinity-not-open'); }
+  const dir = assertCheckpointDirectory(root, runId);
+  if (dir === null) return emptyProjection('checkpoint-not-found');
+  const entries = captureDirectoryEntries(dir);
+  const selected = selectedCandidate(root, runId, snapshot, now, entries);
+  if (!selected) {
+    return emptyProjection(entries.some(entry => entry.name.endsWith('-compact.json'))
+      ? 'checkpoint-ineligible'
+      : 'checkpoint-not-found');
+  }
+  const supplied = normalizeProviderEvidence(
+    plainObject(hostSessionEvidence)
+      && Object.keys(hostSessionEvidence).length === 1
+      && typeof hostSessionEvidence.id === 'string'
+      ? {
+        provider: selected.context.runtime === 'claude' ? 'claude-code' : 'codex',
+        id: hostSessionEvidence.id,
+      }
+      : hostSessionEvidence,
+  );
+  const evidence = providerEvidenceProjection(selected.context.provider_evidence, supplied);
+  if (evidence.recorded && evidence.supplied && !evidence.matched) {
+    return emptyProjection('trusted-evidence-rejected', evidence);
+  }
+  if (selected.kind === 'cursor') {
+    return successProjection('restored', selected, {
+      cursor: selected.cursor,
+      loop: snapshot.data,
+    });
+  }
+  const receipt = readSelectedReceipt(root, runId, selected, guard);
+  if (receipt?.invalid) return emptyProjection('checkpoint-ineligible');
+  return successProjection(receipt ? 'compacted' : 'prepared', selected, {
+    providerEvidence: receipt && supplied === null ? receipt.payload.provider_evidence : evidence,
+    receipt,
+    loop: snapshot.data,
+  });
+}
+
+export function inspectCompactCheckpoint(root, runId, { now = Date.now() } = {}) {
+  return withReconciledMutationLock(root, runId, (guard, snapshot) => (
+    inspectLocked(root, runId, guard, snapshot, { now })
+      ?? emptyProjection('checkpoint-not-found')
+  ));
+}
+
+export function inspectCompactForSessionStart(root, runId, {
   hostSessionEvidence,
   now = Date.now(),
 } = {}) {
-  return withReconciledMutationLock(root, runId, (_guard, snapshot) => {
-    assertCurrentSchema(snapshot.data);
-    if (snapshot.data.autonomy?.continuation_policy !== 'workstream-session') {
-      return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
+  return withReconciledMutationLock(root, runId, (guard, snapshot) => (
+    inspectLocked(root, runId, guard, snapshot, { hostSessionEvidence, now })
+  ));
+}
+
+function observeLocked(root, runId, guard, snapshot, options) {
+  const runtime = assertFence(snapshot.data, options.fence, options.runtime);
+  assertCurrentSchema(snapshot.data);
+  if (snapshot.data.autonomy?.continuation_policy !== 'workstream-session') {
+    throw new Error('CHECKPOINT_AFFINITY_INVALID: workstream-session required');
+  }
+  affinity(snapshot.data);
+  if (!['manual', 'auto'].includes(options.trigger)) throw new Error('CHECKPOINT_TRIGGER_INVALID');
+  const key = strictRel(options.checkpointRel);
+  const dir = assertCheckpointDirectory(root, runId);
+  if (dir === null) throw new Error('CHECKPOINT_NOT_FOUND');
+  const entries = captureDirectoryEntries(dir);
+  if (tombstonedKeys(entries).has(key)) throw new Error('CHECKPOINT_INELIGIBLE');
+  const candidates = currentCandidates(root, runId, snapshot, options.now, entries, new Set());
+  candidates.sort(compareNewest);
+  const selected = candidates[0];
+  if (!selected || selected.key !== key) throw new Error('CHECKPOINT_INELIGIBLE');
+  const supplied = normalizeProviderEvidence(options.hostSessionEvidence);
+  const evidence = providerEvidenceProjection(selected.context.provider_evidence, supplied);
+  if (evidence.recorded && evidence.supplied && !evidence.matched) {
+    throw new Error('CHECKPOINT_EVIDENCE_MISMATCH');
+  }
+  if (selected.context.runtime !== runtime) throw new Error('RUNTIME_FENCED: context runtime mismatch');
+  const payload = {
+    checkpoint_key: key,
+    context_sha256: selected.contextSha256,
+    owner_run_id: selected.context.owner_run_id,
+    generation: selected.context.generation,
+    runtime,
+    workstream_id: selected.context.workstream.id,
+    episode_id: selected.context.current_episode.id,
+    trigger: options.trigger,
+    provider_evidence: evidence,
+  };
+  const path = receiptPath(root, runId, key);
+  if (existsSync(path)) {
+    const existing = readSelectedReceipt(root, runId, selected, guard);
+    if (!existing || existing.invalid) throw new Error('CHECKPOINT_RECEIPT_CONFLICT');
+    const retainedPayload = { ...payload, trigger: existing.payload.trigger };
+    if (JSON.stringify(existing.payload) !== JSON.stringify(retainedPayload)) {
+      throw new Error('CHECKPOINT_RECEIPT_CONFLICT');
     }
-    affinity(snapshot.data);
-    const dir = assertCheckpointDirectory(root, runId);
-    if (dir === null) return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
-    const candidates = [];
-    const entries = captureDirectoryEntries(dir);
-    for (const entry of entries) {
-      try {
-        const metadata = capturedStrictMetadata(entry, runId);
-        const validation = validateStrictBytes(metadata.bytes, {
-          root,
-          runId,
-          key: metadata.key,
-          snapshot,
-          now,
-          hostSessionEvidence,
-        });
-        candidates.push({ ...metadata, validation });
-      } catch {
-        // A malformed, stale, foreign, or replaced entry is never eligible.
-      }
-    }
-    candidates.sort(compareNewest);
-    if (candidates.length > 0) {
-      const selected = candidates[0];
-      return descriptor(selected.rel, selected.key, selected.validation);
-    }
-    return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
+    pruneCapturedLocked(root, runId, guard, selected.entry.path, {
+      now: options.now,
+      faultAt: options.faultAt,
+    });
+    return {
+      ok: true,
+      created: false,
+      checkpoint_rel: selected.rel,
+      checkpoint_key: selected.key,
+      trigger: existing.payload.trigger,
+      provider_evidence: structuredClone(existing.payload.provider_evidence),
+    };
+  }
+  const envelope = wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'compact-observation',
+    schema: { name: 'compact-observation', version: '1.0' },
+    run_id: runId,
+    provenance: { source_artifacts: [selected.rel], tool_versions: {} },
+    payload,
+    now: new Date(options.now).toISOString(),
   });
+  durableAtomicWrite(path, JSON.stringify(envelope, null, 2));
+  guard.renew();
+  pruneCapturedLocked(root, runId, guard, selected.entry.path, {
+    now: options.now,
+    faultAt: options.faultAt,
+  });
+  return {
+    ok: true,
+    created: true,
+    checkpoint_rel: selected.rel,
+    checkpoint_key: selected.key,
+    trigger: options.trigger,
+    provider_evidence: evidence,
+  };
+}
+
+function observeCompactCheckpointInternal(root, runId, options) {
+  return withReconciledMutationLock(root, runId, (guard, snapshot) => {
+    reconcilePruneTombstonesLocked(root, runId, guard);
+    return observeLocked(root, runId, guard, snapshot, options);
+  });
+}
+
+export function observeCompactCheckpoint(root, runId, {
+  checkpointRel,
+  trigger,
+  fence,
+  runtime,
+  hostSessionEvidence,
+  now = Date.now(),
+} = {}) {
+  return observeCompactCheckpointInternal(root, runId, {
+    checkpointRel, trigger, fence, runtime, hostSessionEvidence, now,
+  });
+}
+
+export function __testObserveCompactCheckpoint(root, runId, options = {}) {
+  return observeCompactCheckpointInternal(root, runId, options);
 }
 
 function restoreRequest(checkpointRelValue, {
@@ -699,11 +1063,17 @@ function restoreRequest(checkpointRelValue, {
 
 export function restoreCompactCheckpoint(root, runId, options = {}) {
   const request = restoreRequest(options.checkpointRel, options);
+  if (existsSync(prunePath(root, runId, request.checkpointKey))) {
+    throw new Error('CHECKPOINT_INELIGIBLE');
+  }
   return commitOrReplayCompactRestore(root, runId, request, { now: options.now ?? Date.now() });
 }
 
 export function __testRestoreCompactCheckpoint(root, runId, options = {}) {
   const request = restoreRequest(options.checkpointRel, options);
+  if (existsSync(prunePath(root, runId, request.checkpointKey))) {
+    throw new Error('CHECKPOINT_INELIGIBLE');
+  }
   return __testCommitOrReplayCompactRestore(root, runId, request, {
     now: options.now ?? Date.now(),
     faultAt: options.faultAt,

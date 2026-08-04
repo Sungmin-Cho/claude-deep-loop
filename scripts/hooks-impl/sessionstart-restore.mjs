@@ -1,16 +1,16 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import {
   captureCheckpointSet,
-  inspectCompactCheckpoint,
+  inspectCompactForSessionStart,
   selectCheckpoint,
 } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
-import { sessionRuntime } from '../lib/runtime.mjs';
 
 const CAP = 3072;
+export const MAX_COMPACT_CAPSULE_WIRE_BYTES = 2048;
 
 function clamp(value) {
   if (Buffer.byteLength(value, 'utf8') <= CAP) return value;
@@ -25,7 +25,7 @@ function currentRunId(root) {
   return existsSync(path) ? readFileSync(path, 'utf8').trim() : null;
 }
 
-function strictHostSessionEvidence(input, runtime) {
+function strictHostSessionIdentity(input) {
   if (input.hook_event_name !== 'SessionStart') throw new Error('host-context-invalid');
   if (!Object.hasOwn(input, 'session_id')) return undefined;
   if (typeof input.session_id !== 'string'
@@ -34,46 +34,96 @@ function strictHostSessionEvidence(input, runtime) {
     || /[\0\r\n]/.test(input.session_id)) {
     throw new Error('host-evidence-invalid');
   }
-  return {
-    provider: runtime === 'claude' ? 'claude-code' : 'codex',
-    id: input.session_id,
+  return input.session_id;
+}
+
+function compactCapsule(runId, descriptor) {
+  const wire = {
+    marker: 'deep-loop-compact-capsule-v1',
+    version: 1,
+    injected_by: 'sessionstart',
+    capsule: {
+      kind: 'deep-loop-compact-capsule',
+      phase: descriptor.phase,
+      run_id: runId,
+      checkpoint_key: descriptor.checkpoint_key,
+      context_sha256: descriptor.context_sha256,
+      pre_restore_loop_hash: descriptor.pre_restore_loop_hash,
+      owner_run_id: descriptor.owner_run_id,
+      generation: descriptor.generation,
+      runtime: descriptor.runtime,
+      workstream_id: descriptor.workstream_id,
+      episode_id: descriptor.episode_id,
+      provider_evidence: structuredClone(descriptor.provider_evidence),
+      admission: structuredClone(descriptor.admission),
+      restore_event: structuredClone(descriptor.restore_event),
+      restore_command: descriptor.next_command,
+    },
   };
+  let serialized;
+  try { serialized = JSON.stringify(wire); } catch { return null; }
+  return Buffer.byteLength(serialized, 'utf8') <= MAX_COMPACT_CAPSULE_WIRE_BYTES
+    ? serialized
+    : null;
 }
 
-function strictRestoreContext(runId, descriptor, { source }) {
-  const runtime = descriptor.runtime;
-  const command = runtime === 'claude'
-    ? '/deep-loop-compact restore'
-    : '$deep-loop:deep-loop-compact restore';
-  const sourceLabel = source === 'compact' ? 'source=compact' : 'source-unverified';
-  const evidenceLabel = descriptor.provider_evidence?.matched === true
-    ? 'evidence-verified'
-    : 'evidence-unverified';
-  return clamp(
-    `deep-loop compact restore ${sourceLabel} ${evidenceLabel}: invoke ${command} now in the same owner session. `
-    + `checkpoint_rel=${descriptor.checkpoint_rel} owner=${descriptor.owner_run_id} `
-    + `generation=${descriptor.generation} runtime=${runtime} `
-    + `workstream=${descriptor.scope?.workstream_id ?? 'none'} run=${runId}.`,
-  );
-}
-
-function strictUnavailableContext({ evidencePresent, runtime }) {
+function strictRejectedContext(runtime) {
   const restoreCommand = runtime === 'claude'
     ? '/deep-loop-compact restore'
     : '$deep-loop:deep-loop-compact restore';
   const statusCommand = runtime === 'claude'
     ? '/deep-loop-status'
     : '$deep-loop:deep-loop-status';
-  return evidencePresent
-    ? clamp(
-      `deep-loop checkpoint-unavailable-with-trusted-evidence: invoke ${restoreCommand} now for `
-      + 'preserve-pause and host resume guidance; do not retry without trusted evidence. '
-      + `Run ${statusCommand} for bounded diagnostics.`,
-    )
-    : clamp(
-      `deep-loop checkpoint-unavailable evidence-unverified: invoke ${restoreCommand} now for the `
-      + `state-derived fallback; run ${statusCommand} for bounded diagnostics and preserve the current owner session.`,
-    );
+  return clamp(
+    'deep-loop-compact-preserve-pause-only '
+    + 'checkpoint-unavailable-with-trusted-evidence provider-evidence-mismatch: '
+    + `invoke ${restoreCommand} for preserve-pause only; run ${statusCommand} for host-resume guidance.`,
+  );
+}
+
+function strictMissingContext(runtime) {
+  const statusCommand = runtime === 'claude'
+    ? '/deep-loop-status'
+    : '$deep-loop:deep-loop-status';
+  return clamp(`deep-loop checkpoint-unavailable: run ${statusCommand} for bounded diagnostics; no restore was authorized.`);
+}
+
+export function resolveSessionStartProjectRoot(cwd, { expectedRoot } = {}) {
+  try {
+    if (typeof cwd !== 'string' || cwd.length === 0 || resolve(cwd) !== cwd) return null;
+    const canonicalCwd = realpathSync(cwd);
+    if (canonicalCwd !== cwd) return null;
+    const found = findRoot(canonicalCwd);
+    const base = realpathSync(found);
+    if (found !== base || (expectedRoot !== undefined && realpathSync(expectedRoot) !== base)) return null;
+    if (!existsSync(join(base, '.deep-loop', 'current'))) return null;
+    if (canonicalCwd === base) return base;
+    const rel = relative(base, canonicalCwd);
+    if (!rel || rel.startsWith('..') || rel.split(sep).includes('..')) return null;
+    const parts = rel.split(sep);
+    const offset = parts[0] === '.worktrees'
+      ? 1
+      : parts[0] === '.claude' && parts[1] === 'worktrees'
+        ? 2
+        : -1;
+    if (offset < 0 || typeof parts[offset] !== 'string' || parts[offset].length === 0) return null;
+    const worktreeRoot = join(base, ...parts.slice(0, offset + 1));
+    if (realpathSync(worktreeRoot) !== worktreeRoot) return null;
+    if (existsSync(join(worktreeRoot, '.deep-loop', 'current'))) return null;
+    let current = canonicalCwd;
+    while (current !== worktreeRoot) {
+      if (existsSync(join(current, '.deep-loop', 'current')) || existsSync(join(current, '.git'))) {
+        return null;
+      }
+      const parent = join(current, '..');
+      const resolvedParent = resolve(parent);
+      if (resolvedParent === current) return null;
+      current = resolvedParent;
+    }
+    return base;
+  } catch {
+    return null;
+  }
 }
 
 // Read-only restore glue (spec §4.2). No branch mutates durable state.
@@ -81,12 +131,62 @@ export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
   now = Date.now(),
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
+  inspectCompact = inspectCompactForSessionStart,
+  runtimeHint = 'claude',
 } = {}) {
-  if (Object.hasOwn(input, 'source') && input.source !== 'compact') {
+  if (input.source !== 'compact') {
     return { ok: true, branch: 'source-other', additionalContext: null };
   }
   const runId = currentRunId(root);
   if (!runId) return { ok: true, branch: 'no-run', additionalContext: null };
+
+  let hostSessionIdentity;
+  try { hostSessionIdentity = strictHostSessionIdentity(input); } catch {
+    return { ok: false, branch: 'evidence-invalid', additionalContext: null };
+  }
+
+  let inspected;
+  try {
+    inspected = inspectCompact(root, runId, {
+      hostSessionEvidence: hostSessionIdentity === undefined ? undefined : { id: hostSessionIdentity },
+      now,
+    });
+  } catch {
+    return { ok: true, branch: 'unreadable', additionalContext: null };
+  }
+
+  if (inspected !== null) {
+    if (!inspected.ok) {
+      if (inspected.reason === 'trusted-evidence-rejected') {
+        return {
+          ok: true,
+          branch: 'checkpoint-unavailable-with-trusted-evidence',
+          additionalContext: strictRejectedContext(runtimeHint),
+        };
+      }
+      if (['checkpoint-not-found', 'checkpoint-ineligible'].includes(inspected.reason)) {
+        return {
+          ok: true,
+          branch: 'no-checkpoint',
+          additionalContext: strictMissingContext(runtimeHint),
+        };
+      }
+      return {
+        ok: true,
+        branch: inspected.reason === 'run-not-resumable'
+          ? 'terminal-or-paused'
+          : inspected.reason,
+        additionalContext: null,
+      };
+    }
+    if (inspected.phase === 'restored') {
+      return { ok: true, branch: 'restored', additionalContext: null };
+    }
+    const additionalContext = compactCapsule(runId, inspected);
+    return additionalContext === null
+      ? { ok: true, branch: 'capsule-unavailable', additionalContext: null }
+      : { ok: true, branch: inspected.phase, additionalContext };
+  }
 
   let loop;
   let hash;
@@ -103,39 +203,6 @@ export function runSessionStartRestore(input = {}, {
   }
 
   const lease = loop.session_chain?.lease || {};
-  if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    let runtime;
-    let hostSessionEvidence;
-    try {
-      runtime = sessionRuntime(loop);
-      hostSessionEvidence = strictHostSessionEvidence(input, runtime);
-    } catch {
-      return { ok: false, branch: 'evidence-invalid', additionalContext: null };
-    }
-    const inspected = inspectCompactCheckpoint(root, runId, {
-      hostSessionEvidence,
-      now,
-    });
-    if (!inspected.ok) {
-      return {
-        ok: true,
-        branch: hostSessionEvidence
-          ? 'checkpoint-unavailable-with-trusted-evidence'
-          : 'no-checkpoint',
-        additionalContext: strictUnavailableContext({
-          evidencePresent: hostSessionEvidence !== undefined,
-          runtime,
-        }),
-      };
-    }
-    return {
-      ok: true,
-      branch: input.source === 'compact' ? 'resume' : 'resume-source-unverified',
-      additionalContext: strictRestoreContext(runId, inspected, {
-        source: input.source,
-      }),
-    };
-  }
 
   const advisory = `deep-loop lease owner=${lease.owner_run_id} gen=${lease.generation}. 이 세션이 해당 run의 owner가 아니면 mutation을 시도하지 말 것.`;
 
@@ -220,7 +287,12 @@ export async function main() {
     const cwd = input && typeof input.cwd === 'string' && input.cwd.length > 0
       ? input.cwd
       : process.cwd();
-    const result = runSessionStartRestore(input ?? {}, { root: findRoot(cwd) });
+    const root = resolveSessionStartProjectRoot(cwd);
+    if (root === null) return;
+    const result = runSessionStartRestore(input ?? {}, {
+      root,
+      runtimeHint: process.env.CLAUDE_PLUGIN_ROOT ? 'claude' : 'codex',
+    });
     if (!result.ok) throw new Error('restore-context-invalid');
     if (result.additionalContext) {
       process.stdout.write(`${JSON.stringify({

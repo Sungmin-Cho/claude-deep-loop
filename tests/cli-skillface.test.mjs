@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -315,6 +315,82 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
   assert.equal(descriptor.requires_model_turn, false);
 });
 
+test('checkpoint observe accepts only bounded trusted PostCompact stdin and inspect stays evidence-free', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  const emitted = JSON.parse(run(root, [
+    'checkpoint', 'emit', '--owner', runId, '--generation', '1', '--runtime', 'claude',
+  ]));
+  const observeArgs = [
+    'checkpoint', 'observe',
+    '--checkpoint', emitted.checkpoint_rel,
+    '--trigger', 'manual',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--json',
+  ];
+  assert.equal(runBoth(root, observeArgs).code, 1, 'trusted ingress is semantic, not grammar');
+  const body = JSON.stringify({
+    hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'manual', session_id: 'cli-session',
+  });
+  const observed = runBoth(root, [...observeArgs, '--trusted-postcompact-stdin'], { input: body });
+  assert.equal(observed.code, 0, observed.err);
+  assert.deepEqual(JSON.parse(observed.out).provider_evidence, {
+    recorded: false, supplied: true, matched: false,
+  });
+  const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
+  assert.equal(inspected.code, 0, inspected.err);
+  assert.deepEqual(JSON.parse(inspected.out).provider_evidence, {
+    recorded: false, supplied: true, matched: false,
+  });
+  assert.equal(inspected.out.includes('cli-session'), false);
+  assert.equal(inspected.out.includes('claude-code'), false);
+
+  for (const input of [
+    '{',
+    JSON.stringify({ hook_event_name: 'SessionStart', cwd: realpathSync(root), trigger: 'manual' }),
+    JSON.stringify({ hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'auto' }),
+    JSON.stringify({ hook_event_name: 'PostCompact', cwd: `${root}/..`, trigger: 'manual' }),
+    `${JSON.stringify({ hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'manual' })}${' '.repeat(4097)}`,
+  ]) {
+    assert.equal(
+      runBoth(root, [...observeArgs, '--trusted-postcompact-stdin'], { input }).code,
+      1,
+      input.slice(0, 80),
+    );
+  }
+});
+
+test('checkpoint mutators apply fence-first polarity before all other grammar', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  for (const verb of ['emit', 'observe', 'restore']) {
+    for (const malformedFence of [
+      [],
+      ['--owner', runId],
+      ['--generation', '1'],
+      ['--owner', runId, '--generation', '0'],
+      ['--owner', runId, '--generation', '01'],
+      ['--owner', runId, '--generation', '1', '--generation', '1'],
+    ]) {
+      assert.equal(
+        runBoth(root, ['checkpoint', verb, ...malformedFence, '--unknown']).code,
+        3,
+        `${verb}: ${malformedFence.join(' ')}`,
+      );
+    }
+    assert.equal(runBoth(root, [
+      'checkpoint', verb, '--owner', runId, '--generation', '1', '--fault', 'x',
+    ]).code, 2, `${verb}: production --fault`);
+  }
+  for (const args of [
+    ['checkpoint', 'inspect', '--owner', runId, '--json'],
+    ['checkpoint', 'inspect', '--json=true'],
+    ['checkpoint', 'inspect', '--json', '--json'],
+  ]) assert.equal(runBoth(root, args).code, 2, args.join(' '));
+});
+
 test('checkpoint public grammar distinguishes usage, fence, and invalid data exits', () => {
   const { root, runId } = seed();
   bindCheckpointAffinity(root, runId);
@@ -562,8 +638,8 @@ test('review dispatch missing --point exits 2', () => {
 
 // ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
 import { mkdirSync, rmSync } from 'node:fs';
-function runBoth(root, args, { env = process.env } = {}) {
-  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8', env }); return { out: out.trim(), code: 0, err: '' }; }
+function runBoth(root, args, { env = process.env, input } = {}) {
+  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8', env, input }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
 }
 function runRaw(root, args) {

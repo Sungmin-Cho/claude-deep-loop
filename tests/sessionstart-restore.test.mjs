@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,7 +21,11 @@ import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { advanceHandoffPhase, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { pauseRun, readState, runDir, writeState } from '../scripts/lib/state.mjs';
-import { runSessionStartRestore } from '../scripts/hooks-impl/sessionstart-restore.mjs';
+import {
+  MAX_COMPACT_CAPSULE_WIRE_BYTES,
+  resolveSessionStartProjectRoot,
+  runSessionStartRestore,
+} from '../scripts/hooks-impl/sessionstart-restore.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 
@@ -86,7 +92,9 @@ function initBound(root, runtime = 'claude') {
   return { root, runId, runtime, fence: ownerFence, workstreamId, episodeId };
 }
 
-const restore = root => runSessionStartRestore({}, { root, now: NOW_MS });
+const restore = root => runSessionStartRestore({
+  hook_event_name: 'SessionStart', source: 'compact',
+}, { root, now: NOW_MS });
 const fence = runId => ({ owner: runId, generation: 1 });
 const loopPathOf = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPathOf = (root, runId) => join(runDir(root, runId), '.loop.hash');
@@ -102,10 +110,15 @@ function stateBytes(root, runId) {
 }
 
 function runHook(root, payload) {
+  const normalized = payload && typeof payload === 'object' && !Buffer.isBuffer(payload)
+    ? { ...payload, ...(payload.cwd === root ? { cwd: realpathSync(root) } : {}) }
+    : payload;
   return spawnSync(process.execPath, [RESTORE_HOOK], {
     cwd: root,
     encoding: 'utf8',
-    input: typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload),
+    input: typeof normalized === 'string' || Buffer.isBuffer(normalized)
+      ? normalized
+      : JSON.stringify(normalized),
     maxBuffer: 2_097_152,
   });
 }
@@ -115,60 +128,71 @@ function runManifestHook(root, payload, runtime = 'claude') {
   delete env.CLAUDE_PLUGIN_ROOT;
   delete env.PLUGIN_ROOT;
   env[runtime === 'claude' ? 'CLAUDE_PLUGIN_ROOT' : 'PLUGIN_ROOT'] = PROOT;
+  const normalized = payload && typeof payload === 'object'
+    ? { ...payload, ...(payload.cwd === root ? { cwd: realpathSync(root) } : {}) }
+    : payload;
   return spawnSync(process.execPath, ['-e', BOOTSTRAP_SOURCE], {
     cwd: root,
     encoding: 'utf8',
-    input: JSON.stringify(payload),
+    input: JSON.stringify(normalized),
     env,
     maxBuffer: 2_097_152,
   });
 }
 
-test('exact manifest SessionStart restores strict Claude and Codex checkpoints with bounded relative-only context', () => {
+test('exact manifest SessionStart injects one bounded canonical prepared capsule for Claude and Codex', () => {
   const manifest = JSON.parse(readFileSync(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
   assert.equal(manifest.hooks.SessionStart[0].hooks[0].command, EXPECTED_BOOTSTRAP);
   for (const [runtime, evidenceProvider, command] of [
     ['claude', 'claude-code', '/deep-loop-compact restore'],
     ['codex', 'codex', '$deep-loop:deep-loop-compact restore'],
   ]) {
-    for (const source of ['compact', undefined]) {
-      const root = freshRoot();
-      const fixture = initBound(root, runtime);
-      const evidenceId = `${runtime}-${source ?? 'missing-source'}`;
-      const emitted = emitCompactCheckpoint(root, fixture.runId, {
-        fence: fixture.fence,
-        runtime,
-        hostSessionEvidence: { provider: evidenceProvider, id: evidenceId },
-        now: NOW_MS + 1,
-      });
-      const before = stateBytes(root, fixture.runId);
-      const beforeState = structuredClone(readState(root, fixture.runId).data);
-      const payload = {
-        cwd: root,
-        hook_event_name: 'SessionStart',
-        session_id: evidenceId,
-      };
-      if (source !== undefined) payload.source = source;
+    const root = freshRoot();
+    const fixture = initBound(root, runtime);
+    const evidenceId = `${runtime}-session`;
+    const emitted = emitCompactCheckpoint(root, fixture.runId, {
+      fence: fixture.fence,
+      runtime,
+      hostSessionEvidence: { provider: evidenceProvider, id: evidenceId },
+      now: NOW_MS + 1,
+    });
+    const checkpoint = JSON.parse(readFileSync(join(runDir(root, fixture.runId), emitted.checkpoint_rel), 'utf8'));
+    const before = stateBytes(root, fixture.runId);
+    const beforeState = structuredClone(readState(root, fixture.runId).data);
+    const result = runManifestHook(root, {
+      cwd: root, hook_event_name: 'SessionStart', source: 'compact', session_id: evidenceId,
+    }, runtime);
 
-      const result = runManifestHook(root, payload, runtime);
-
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stderr, '');
-      const output = JSON.parse(result.stdout);
-      const context = output.hookSpecificOutput.additionalContext;
-      assert.ok(Buffer.byteLength(context, 'utf8') <= 3072);
-      assert.match(context, new RegExp(command.replace(/[$]/g, '\\$&')));
-      assert.match(context, new RegExp(emitted.checkpoint_rel.replace(/[.]/g, '\\.')));
-      assert.match(context, new RegExp(`owner=${fixture.runId}`));
-      assert.match(context, /generation=1/);
-      assert.match(context, new RegExp(`runtime=${runtime}`));
-      assert.match(context, new RegExp(`workstream=${fixture.workstreamId}`));
-      assert.match(context, source === undefined ? /source-unverified/ : /source=compact/);
-      assert.doesNotMatch(context, /lease acquire|handoff emit|\brespawn\b|workstream terminal|\bfinish\b/i);
-      assert.equal(context.includes(root), false);
-      assert.deepEqual(stateBytes(root, fixture.runId), before);
-      assert.deepEqual(readState(root, fixture.runId).data, beforeState);
-    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(Buffer.byteLength(context, 'utf8') <= 2048);
+    const wire = JSON.parse(context);
+    assert.deepEqual(Object.keys(wire), ['marker', 'version', 'injected_by', 'capsule']);
+    assert.equal(wire.marker, 'deep-loop-compact-capsule-v1');
+    assert.equal(wire.version, 1);
+    assert.equal(wire.injected_by, 'sessionstart');
+    assert.deepEqual(wire.capsule, {
+      kind: 'deep-loop-compact-capsule',
+      phase: 'prepared',
+      run_id: fixture.runId,
+      checkpoint_key: emitted.checkpoint_key,
+      context_sha256: checkpoint.payload.context_sha256,
+      pre_restore_loop_hash: checkpoint.payload.context.loop_hash,
+      owner_run_id: fixture.runId,
+      generation: 1,
+      runtime,
+      workstream_id: fixture.workstreamId,
+      episode_id: fixture.episodeId,
+      provider_evidence: { recorded: true, supplied: true, matched: true },
+      admission: null,
+      restore_event: null,
+      restore_command: command,
+    });
+    assert.equal(context.includes(evidenceId), false);
+    assert.equal(context.includes(root), false);
+    assert.deepEqual(stateBytes(root, fixture.runId), before);
+    assert.deepEqual(readState(root, fixture.runId).data, beforeState);
   }
 });
 
@@ -205,9 +229,12 @@ test('strict SessionStart treats other sources as silent and missing provider ev
   assert.equal(missingResult.status, 0, missingResult.stderr);
   assert.equal(missingResult.stderr, '');
   const context = JSON.parse(missingResult.stdout).hookSpecificOutput.additionalContext;
-  assert.match(context, /\$deep-loop:deep-loop-compact restore/);
-  assert.match(context, new RegExp(emitted.checkpoint_rel.replace(/[.]/g, '\\.')));
-  assert.match(context, /evidence-unverified/);
+  const capsule = JSON.parse(context).capsule;
+  assert.equal(capsule.restore_command, '$deep-loop:deep-loop-compact restore');
+  assert.equal(capsule.checkpoint_key, emitted.checkpoint_key);
+  assert.deepEqual(capsule.provider_evidence, {
+    recorded: false, supplied: false, matched: false,
+  });
 });
 
 test('strict SessionStart labels supplied evidence unverified when the stored checkpoint has no evidence', () => {
@@ -229,9 +256,11 @@ test('strict SessionStart labels supplied evidence unverified when the stored ch
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, '');
   const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
-  assert.match(context, new RegExp(emitted.checkpoint_rel.replace(/[.]/g, '\\.')));
-  assert.match(context, /evidence-unverified/);
-  assert.doesNotMatch(context, /evidence-verified/);
+  const capsule = JSON.parse(context).capsule;
+  assert.equal(capsule.checkpoint_key, emitted.checkpoint_key);
+  assert.deepEqual(capsule.provider_evidence, {
+    recorded: false, supplied: true, matched: false,
+  });
 });
 
 test('strict SessionStart trusted-evidence rejection invokes runtime-correct restore and status guidance read-only', () => {
@@ -262,10 +291,11 @@ test('strict SessionStart trusted-evidence rejection invokes runtime-correct res
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stderr, '');
     const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    assert.match(context, /deep-loop-compact-preserve-pause-only/);
     assert.match(context, /checkpoint-unavailable-with-trusted-evidence/);
-    assert.match(context, /preserve-pause/);
-    assert.match(context, /host resume/i);
-    assert.match(context, /do not retry without trusted evidence/i);
+    assert.match(context, /provider-evidence-mismatch/);
+    assert.match(context, /preserve-pause only/);
+    assert.match(context, /host-resume/i);
     assert.ok(context.includes(restoreToken), `${runtime}: missing ${restoreToken}`);
     assert.ok(context.includes(statusToken), `${runtime}: missing ${statusToken}`);
     assert.equal(context.includes(oppositeRestore), false);
@@ -299,10 +329,9 @@ test('strict SessionStart evidence-unverified absence invokes runtime-correct re
     assert.equal(result.stderr, '');
     const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
     assert.match(context, /checkpoint-unavailable/);
-    assert.match(context, /evidence-unverified/);
     assert.doesNotMatch(context, /checkpoint-unavailable-with-trusted-evidence/);
-    assert.ok(context.includes(restoreToken), `${runtime}: missing ${restoreToken}`);
     assert.ok(context.includes(statusToken), `${runtime}: missing ${statusToken}`);
+    assert.equal(context.includes(restoreToken), false);
     assert.equal(context.includes(oppositeRestore), false);
     assert.equal(context.includes(oppositeStatus), false);
     assert.equal(context.includes(root), false);
@@ -336,6 +365,73 @@ test('strict SessionStart malformed or ambiguous provider evidence fails best-ef
     assert.equal(result.stderr, 'deep-loop: sessionstart restore hook failed\n');
     assert.deepEqual(stateBytes(root, fixture.runId), before);
   }
+});
+
+test('workstream SessionStart uses one inspector result, never rereads checkpoint bytes, and fails closed on wire cap', () => {
+  const root = freshRoot();
+  const fixture = initBound(root);
+  let calls = 0;
+  const projection = {
+    ok: true,
+    phase: 'prepared',
+    reason: null,
+    checkpoint_rel: `checkpoints/${'a'.repeat(64)}-compact.json`,
+    checkpoint_key: 'a'.repeat(64),
+    context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64),
+    owner_run_id: fixture.runId,
+    generation: 1,
+    runtime: 'claude',
+    workstream_id: fixture.workstreamId,
+    episode_id: fixture.episodeId,
+    trigger: null,
+    cycle: null,
+    admission: null,
+    restore_event: null,
+    next_command: '/deep-loop-compact restore',
+    requires_model_turn: true,
+    replay: 'eligible',
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+  const result = runSessionStartRestore({ hook_event_name: 'SessionStart', source: 'compact' }, {
+    root,
+    now: NOW_MS,
+    inspectCompact: () => { calls += 1; return projection; },
+    readCheckpoint: () => { throw new Error('checkpoint-reread'); },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.branch, 'prepared');
+  assert.ok(Buffer.byteLength(result.additionalContext, 'utf8') <= MAX_COMPACT_CAPSULE_WIRE_BYTES);
+
+  const oversized = runSessionStartRestore({ hook_event_name: 'SessionStart', source: 'compact' }, {
+    root,
+    inspectCompact: () => ({ ...projection, owner_run_id: 'x'.repeat(3000) }),
+  });
+  assert.deepEqual(oversized, {
+    ok: true, branch: 'capsule-unavailable', additionalContext: null,
+  });
+  const restored = runSessionStartRestore({ hook_event_name: 'SessionStart', source: 'compact' }, {
+    root,
+    inspectCompact: () => ({ ...projection, phase: 'restored', requires_model_turn: false }),
+  });
+  assert.deepEqual(restored, { ok: true, branch: 'restored', additionalContext: null });
+});
+
+test('SessionStart root mapping accepts only canonical base or contained worktree paths', () => {
+  const root = freshRoot();
+  initBound(root);
+  const base = realpathSync(root);
+  const nested = join(base, '.claude', 'worktrees', 'root-map', 'src');
+  mkdirSync(nested, { recursive: true });
+  assert.equal(resolveSessionStartProjectRoot(base, { expectedRoot: base }), base);
+  assert.equal(resolveSessionStartProjectRoot(nested, { expectedRoot: base }), base);
+  assert.equal(resolveSessionStartProjectRoot(`${nested}/..`, { expectedRoot: base }), null);
+
+  const external = realpathSync(freshRoot());
+  assert.equal(resolveSessionStartProjectRoot(external, { expectedRoot: base }), null);
+  mkdirSync(join(nested, '.deep-loop'), { recursive: true });
+  writeFileSync(join(nested, '.deep-loop', 'current'), 'nested\n');
+  assert.equal(resolveSessionStartProjectRoot(nested, { expectedRoot: base }), null);
 });
 
 test('no run / terminal / paused → no injection', () => {
@@ -481,7 +577,7 @@ test('checkpoint parse failure after selection → no-checkpoint with advisory',
   const { runId } = initClaude(root);
   const checkpoint = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
 
-  const r = runSessionStartRestore({}, {
+  const r = runSessionStartRestore({ hook_event_name: 'SessionStart', source: 'compact' }, {
     root,
     now: NOW_MS,
     readCheckpoint: path => path === checkpoint.path ? '{' : readFileSync(path, 'utf8'),

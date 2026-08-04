@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   writeFileSync,
 } from 'node:fs';
@@ -100,7 +101,7 @@ function mutationArgs(runId, owner, generation) {
 
 function runSessionStart(root, runtime) {
   const payload = {
-    cwd: root,
+    cwd: realpathSync(root),
     hook_event_name: 'SessionStart',
     source: 'compact',
   };
@@ -115,39 +116,6 @@ function runSessionStart(root, runtime) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-function seedCompactObservation(root, runId, emitted, runtime, trigger = 'auto') {
-  const checkpoint = JSON.parse(readFileSync(join(runDir(root, runId), emitted.checkpoint_rel), 'utf8'));
-  const context = checkpoint.payload.context;
-  const receipt = {
-    schema_version: '1.0',
-    envelope: {
-      producer: 'deep-loop',
-      artifact_kind: 'compact-observation',
-      schema: { name: 'compact-observation', version: '1.0' },
-      run_id: runId,
-      parent_run_id: null,
-      generated_at: FIXED_NOW,
-      git: {},
-      provenance: { source_artifacts: [emitted.checkpoint_rel], tool_versions: {} },
-    },
-    payload: {
-      checkpoint_key: emitted.checkpoint_key,
-      context_sha256: checkpoint.payload.context_sha256,
-      owner_run_id: runId,
-      generation: 1,
-      runtime,
-      workstream_id: context.workstream.id,
-      episode_id: context.current_episode.id,
-      trigger,
-      provider_evidence: { recorded: false, supplied: false, matched: false },
-    },
-  };
-  writeFileSync(
-    join(runDir(root, runId), 'checkpoints', `${emitted.checkpoint_key}-compact-observation.json`),
-    JSON.stringify(receipt, null, 2),
-  );
 }
 
 function launchCapableHost(root) {
@@ -282,18 +250,21 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(hook.stderr, '');
     const hookOutput = JSON.parse(hook.stdout);
     const context = hookOutput.hookSpecificOutput.additionalContext;
-    assert.match(context, /source=compact/);
-    assert.match(
-      context,
+    const preparedCapsule = JSON.parse(context);
+    assert.equal(preparedCapsule.marker, 'deep-loop-compact-capsule-v1');
+    assert.equal(preparedCapsule.injected_by, 'sessionstart');
+    assert.equal(preparedCapsule.capsule.phase, 'prepared');
+    assert.equal(preparedCapsule.capsule.checkpoint_key, emitted.checkpoint_key);
+    assert.equal(preparedCapsule.capsule.owner_run_id, runId);
+    assert.equal(preparedCapsule.capsule.generation, 1);
+    assert.equal(preparedCapsule.capsule.runtime, runtime);
+    assert.equal(preparedCapsule.capsule.workstream_id, workstreamA);
+    assert.equal(
+      preparedCapsule.capsule.restore_command,
       runtime === 'claude'
-        ? /\/deep-loop-compact restore/
-        : /\$deep-loop:deep-loop-compact restore/,
+        ? '/deep-loop-compact restore'
+        : '$deep-loop:deep-loop-compact restore',
     );
-    assert.match(context, new RegExp(emitted.checkpoint_rel.replace(/[.]/g, '\\.')));
-    assert.match(context, new RegExp(`owner=${runId}`));
-    assert.match(context, /generation=1/);
-    assert.match(context, new RegExp(`runtime=${runtime}`));
-    assert.match(context, new RegExp(`workstream=${workstreamA}`));
 
     const inspected = jsonResult(cli(root, [
       'checkpoint', 'inspect',
@@ -302,7 +273,38 @@ for (const runtime of ['claude', 'codex']) {
       '--run-id', runId,
     ]), 'checkpoint inspect');
     assert.equal(inspected.checkpoint_rel, emitted.checkpoint_rel);
-    seedCompactObservation(root, runId, emitted, runtime);
+    assert.equal(inspected.phase, 'prepared');
+    const observed = jsonResult(cli(root, [
+      'checkpoint', 'observe',
+      '--checkpoint', emitted.checkpoint_rel,
+      '--trigger', 'auto',
+      '--runtime', runtime,
+      '--trusted-postcompact-stdin',
+      '--json',
+      '--now', FIXED_NOW,
+      ...fence1,
+    ], {
+      input: JSON.stringify({
+        hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'auto',
+      }),
+    }), 'checkpoint observe');
+    assert.equal(observed.created, true);
+    assert.equal(observed.checkpoint_key, emitted.checkpoint_key);
+    const compacted = jsonResult(cli(root, [
+      'checkpoint', 'inspect', '--json', '--now', FIXED_NOW, '--run-id', runId,
+    ]), 'checkpoint inspect compacted');
+    assert.equal(compacted.phase, 'compacted');
+    assert.equal(compacted.trigger, 'auto');
+
+    const compactedHook = runSessionStart(root, runtime);
+    assert.equal(compactedHook.status, 0, compactedHook.stderr);
+    const compactedCapsule = JSON.parse(
+      JSON.parse(compactedHook.stdout).hookSpecificOutput.additionalContext,
+    ).capsule;
+    assert.equal(compactedCapsule.phase, 'compacted');
+    assert.deepEqual(compactedCapsule.admission, {
+      kind: 'postcompact-observation', source: null, receipt_trigger: 'auto',
+    });
 
     const restored = jsonResult(cli(root, [
       'checkpoint', 'restore',
@@ -322,6 +324,9 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(restored.next_command, null);
     assert.equal(restored.requires_model_turn, false);
     assert.deepEqual(compactIdentity(state(root, runId)), identityBeforeCompact);
+    const restoredHook = runSessionStart(root, runtime);
+    assert.equal(restoredHook.status, 0, restoredHook.stderr);
+    assert.equal(restoredHook.stdout, '');
 
     const continuation = jsonResult(cli(root, [
       'next-action',
