@@ -141,6 +141,50 @@ function transactionError(message) {
   return new Error(`TRANSACTION_RECONCILIATION_REQUIRED: ${message}`);
 }
 
+function classifyGenericPublicationJournalLocked(root, runId, guard) {
+  const base = runDir(root, runId);
+  const transactions = join(base, 'transactions');
+  guard.assertOwned(base);
+  let stat;
+  try {
+    stat = lstatSync(transactions, { bigint: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      guard.renew(base);
+      return 'absent';
+    }
+    throw transactionError('generic publication journal unreadable');
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw transactionError('generic publication journal path');
+  }
+  const before = captureStableFileIdentity(transactions, { lstatFn: () => stat });
+  let canonicalBase;
+  let canonicalTransactions;
+  let entries;
+  let after;
+  try {
+    canonicalBase = (realpathSync.native || realpathSync)(base);
+    canonicalTransactions = (realpathSync.native || realpathSync)(transactions);
+    entries = readdirSync(transactions);
+    after = captureStableFileIdentity(transactions);
+  } catch {
+    throw transactionError('generic publication journal unreadable');
+  }
+  guard.renew(base);
+  if (resolve(canonicalTransactions) !== resolve(join(canonicalBase, 'transactions'))
+    || !matchingStableFileIdentity(before, after)) {
+    throw transactionError('generic publication journal identity');
+  }
+  return entries.length === 0 ? 'empty' : 'unresolved';
+}
+
+function assertNoUnresolvedGenericPublicationLocked(root, runId, guard) {
+  if (classifyGenericPublicationJournalLocked(root, runId, guard) === 'unresolved') {
+    throw transactionError('generic publication pending during compact restore');
+  }
+}
+
 function exactLogBytes(lines) {
   return Buffer.from(lines.map(line => `${JSON.stringify(line)}\n`).join(''));
 }
@@ -1165,9 +1209,7 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
         || JSON.stringify(retained.payload.request_binding) !== JSON.stringify(proof.requestBinding)) {
         throw new Error('CHECKPOINT_RESTORE_REQUEST_MISMATCH');
       }
-      if (existsSync(join(runDir(root, runId), 'transactions'))) {
-        throw transactionError('generic publication pending during compact restore');
-      }
+      assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
       const recovered = reconcileRestoreIntent(root, request, guard, loop, raw, retained, faultAt);
       return restoreDescriptor(request, ownerSession(recovered.loop).compact_cursor, recovered.disposition);
     }
@@ -1188,9 +1230,7 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
       hostSessionEvidence: undefined,
       freshNextAction: () => nextAction(loop, { now, unattended: false }),
     });
-    if (existsSync(join(runDir(root, runId), 'transactions'))) {
-      throw transactionError('generic publication pending during compact restore');
-    }
+    assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
     const timestamp = operationTimestamp(now);
     const operationId = ulid(Date.parse(timestamp));
     const cycle = affinity.session.compact_cursor ? affinity.session.compact_cursor.cycle + 1 : 1;

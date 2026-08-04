@@ -360,6 +360,44 @@ function prepareGenericPublication(fixture, operationId) {
     },
   ), /TRANSACTION_PENDING/);
 }
+
+function retireGenericPublicationToEmptyParent(fixture, operationId) {
+  appendAnchored(
+    fixture.root,
+    fixture.runId,
+    {
+      type: 'checkpoint-generic-publication-commit',
+      data: { operation_id: operationId },
+      now: new Date(NOW_MS + 1500).toISOString(),
+    },
+    loop => { loop.discovered_items.push(operationId); },
+    undefined,
+    {
+      publication: {
+        kind: 'workstream-boundary',
+        operationId,
+        artifacts: [{
+          rel: `artifacts/${operationId}.txt`,
+          bytes: Buffer.from(`artifact:${operationId}`),
+        }],
+        topology: { operation_id: operationId, phase: 'committed' },
+      },
+    },
+  );
+  appendAnchored(
+    fixture.root,
+    fixture.runId,
+    {
+      type: 'checkpoint-generic-publication-retire',
+      data: { operation_id: operationId },
+      now: new Date(NOW_MS + 1600).toISOString(),
+    },
+    loop => { loop.discovered_items.push(`retired:${operationId}`); },
+  );
+  const transactions = join(runDir(fixture.root, fixture.runId), 'transactions');
+  assert.equal(existsSync(transactions), true);
+  assert.deepEqual(readdirSync(transactions), []);
+}
 const emptyInspectExpectation = reason => ({
   ok: false,
   phase: 'none',
@@ -642,6 +680,50 @@ test('invalid restore fence cannot reconcile or retire an unrelated prepared pub
   assert.deepEqual(durableInventory(fixture), before);
 });
 
+test('valid restore commits after a generic publication retires to an empty transactions parent', () => {
+  const fixture = seedBound();
+  retireGenericPublicationToEmptyParent(fixture, 'empty-parent-valid-restore');
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 2000,
+  });
+
+  const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 3000,
+  });
+
+  assert.equal(restored.disposition, 'committed');
+  assert.equal(restored.checkpoint_key, emitted.checkpoint_key);
+  const transactions = join(runDir(fixture.root, fixture.runId), 'transactions');
+  assert.equal(existsSync(transactions), true);
+  assert.deepEqual(readdirSync(transactions), []);
+});
+
+test('valid restore with a prepared generic publication fails closed byte-identically', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  prepareGenericPublication(fixture, 'valid-restore-prepared-generic');
+  const before = durableInventory(fixture);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+  }), /TRANSACTION_RECONCILIATION_REQUIRED/);
+  assert.deepEqual(durableInventory(fixture), before);
+});
+
 test('paused restore reports the fresh fence result before paused status', () => {
   const fixture = seedBound();
   const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
@@ -883,6 +965,42 @@ test('compact restore reconciles every isolated journal fault through one ordina
       faultAt,
     );
   }
+});
+
+test('retained compact intent recovers when the generic transactions parent is empty', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+    faultAt: 'restore:intent-written',
+  }), /TEST_FAULT:restore:intent-written/);
+  const transactions = join(runDir(fixture.root, fixture.runId), 'transactions');
+  mkdirSync(transactions);
+  assert.deepEqual(readdirSync(transactions), []);
+
+  const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 3000,
+  });
+
+  assert.equal(restored.disposition, 'committed');
+  assert.equal(
+    readdirSync(join(runDir(fixture.root, fixture.runId), 'compact-restore-intents')).length,
+    0,
+  );
+  assert.equal(existsSync(transactions), true);
+  assert.deepEqual(readdirSync(transactions), []);
 });
 
 test('retained restore intent binds admission source and proof before any recovery mutation', () => {
