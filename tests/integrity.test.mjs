@@ -27,6 +27,39 @@ test('compact restore writer owns one lock and never calls generic append gatewa
   assert.doesNotMatch(body, /withReconciledMutationLock/);
 });
 
+test('checkpoint fenced gateway verifies before and after reconciliation and callbacks fence before prune', () => {
+  const libDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib');
+  const integritySource = readFileSync(join(libDir, 'integrity.mjs'), 'utf8');
+  const gatewayStart = integritySource.indexOf('export function withFencedReconciledMutationLock');
+  const gatewayEnd = integritySource.indexOf('\nexport function withVerifiedReadLock', gatewayStart);
+  assert.ok(gatewayStart >= 0 && gatewayEnd > gatewayStart);
+  const gateway = integritySource.slice(gatewayStart, gatewayEnd);
+  const firstSnapshot = gateway.indexOf('let snapshot = snapshotRaw');
+  const firstFence = gateway.indexOf('assertEstablishedFence');
+  const reconcile = gateway.indexOf('reconcileAnchoredPublicationLocked');
+  const secondSnapshot = gateway.indexOf('\n    snapshot = snapshotRaw');
+  const secondFence = gateway.indexOf('assertEstablishedFence', firstFence + 1);
+  const retire = gateway.indexOf('retireCommittedPublicationLocked');
+  const callback = gateway.indexOf('return callback');
+  assert.ok(firstSnapshot < firstFence && firstFence < reconcile);
+  assert.ok(reconcile < secondSnapshot && secondSnapshot < secondFence);
+  assert.ok(secondFence < retire && retire < callback);
+
+  const checkpointSource = readFileSync(join(libDir, 'checkpoint.mjs'), 'utf8');
+  for (const [startMarker, endMarker] of [
+    ['export function emitCompactCheckpoint', '\nexport function __testEmitCompactCheckpoint'],
+    ['function observeCompactCheckpointInternal', '\nexport function observeCompactCheckpoint'],
+  ]) {
+    const start = checkpointSource.indexOf(startMarker);
+    const end = checkpointSource.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start);
+    const body = checkpointSource.slice(start, end);
+    const fence = body.indexOf('assertFence');
+    const prune = body.indexOf('reconcilePruneTombstonesLocked');
+    assert.ok(fence >= 0 && fence < prune, startMarker);
+  }
+});
+
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   mkdirSync(runDir(root, 'R'), { recursive: true });

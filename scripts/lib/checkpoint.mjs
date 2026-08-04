@@ -15,17 +15,18 @@ import {
   matchingStableFileIdentity,
   normalizePortableRelativePath,
 } from './fs-safe.mjs';
-import { leaseCheck } from './lease.mjs';
 import { nextAction } from './next-action.mjs';
 import { projectRootDigest } from './project-root.mjs';
-import { validateSessionRuntime, sessionRuntime } from './runtime.mjs';
+import { sessionRuntime } from './runtime.mjs';
 import { validate } from './schema.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 import { runDir, withReconciledMutationLock } from './state.mjs';
 import {
   __testCommitOrReplayCompactRestore,
+  assertEstablishedFence as assertFence,
   commitOrReplayCompactRestore,
   reconcileCompactPruneTombstonesLocked,
+  withFencedReconciledMutationLock,
   withVerifiedReadLock,
 } from './integrity.mjs';
 import {
@@ -126,25 +127,6 @@ function assertCurrentSchema(loop) {
   if (loop?.schema_version !== '0.4.0' || !result.ok) {
     throw new Error(`CHECKPOINT_STATE_INVALID: ${result.errors.join('; ')}`);
   }
-}
-
-function assertFence(loop, fence, runtime) {
-  if (!plainObject(fence)
-    || typeof fence.owner !== 'string'
-    || fence.owner.length === 0
-    || !Number.isSafeInteger(fence.generation)
-    || fence.generation < 1) {
-    throw new Error('FENCE_REQUIRED: owner and positive generation');
-  }
-  const assertedRuntime = validateSessionRuntime(runtime);
-  if (sessionRuntime(loop) !== assertedRuntime) throw new Error('RUNTIME_FENCED: runtime mismatch');
-  const checked = leaseCheck(loop, {
-    owner: fence.owner,
-    generation: fence.generation,
-    runtime: assertedRuntime,
-  });
-  if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
-  return assertedRuntime;
 }
 
 function assertCheckpointDirectory(root, runId, { create = false } = {}) {
@@ -566,7 +548,8 @@ export function emitCompactCheckpoint(root, runId, {
   hostSessionEvidence,
   now = Date.now(),
 } = {}) {
-  return withReconciledMutationLock(root, runId, (guard, snapshot) => {
+  return withFencedReconciledMutationLock(root, runId, (guard, snapshot) => {
+    assertFence(snapshot.data, fence, runtime);
     reconcilePruneTombstonesLocked(root, runId, guard);
     if (authenticLegacy(snapshot.data)) {
       assertFence(snapshot.data, fence, runtime);
@@ -578,18 +561,19 @@ export function emitCompactCheckpoint(root, runId, {
       hostSessionEvidence,
       now,
     });
-  });
+  }, { fence, runtime });
 }
 
 export function __testEmitCompactCheckpoint(root, runId, options = {}) {
-  return withReconciledMutationLock(root, runId, (guard, snapshot) => {
+  return withFencedReconciledMutationLock(root, runId, (guard, snapshot) => {
+    assertFence(snapshot.data, options.fence, options.runtime);
     reconcilePruneTombstonesLocked(root, runId, guard);
     if (authenticLegacy(snapshot.data)) {
       assertFence(snapshot.data, options.fence, options.runtime);
       throw new Error('CHECKPOINT_LEGACY_TRUST_REQUIRED');
     }
     return strictEmit(root, runId, guard, snapshot, options);
-  });
+  }, { fence: options.fence, runtime: options.runtime });
 }
 
 // Compatibility-only adapter for the installed PreCompact hook. Public callers must use
@@ -982,10 +966,11 @@ function observeLocked(root, runId, guard, snapshot, options) {
 }
 
 function observeCompactCheckpointInternal(root, runId, options) {
-  return withReconciledMutationLock(root, runId, (guard, snapshot) => {
+  return withFencedReconciledMutationLock(root, runId, (guard, snapshot) => {
+    assertFence(snapshot.data, options.fence, options.runtime);
     reconcilePruneTombstonesLocked(root, runId, guard);
     return observeLocked(root, runId, guard, snapshot, options);
-  });
+  }, { fence: options.fence, runtime: options.runtime });
 }
 
 export function observeCompactCheckpoint(root, runId, {

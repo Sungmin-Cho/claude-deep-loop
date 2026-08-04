@@ -410,6 +410,44 @@ function prepareGenericPublication(fixture, operationId) {
   ), /TRANSACTION_PENDING/);
 }
 
+test('public emit rejects a wrong fence before reconciling a prepared generic publication', () => {
+  const fixture = seedBound();
+  prepareGenericPublication(fixture, 'emit-wrong-fence-prepared-generic');
+  const before = durableInventory(fixture);
+
+  assert.throws(() => emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: { owner: 'wrong-owner', generation: fixture.fence.generation },
+    runtime: fixture.runtime,
+    now: NOW_MS + 2000,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(durableInventory(fixture), before);
+});
+
+test('public observe rejects a wrong fence before generic or tombstone reconciliation', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const tombstone = join(
+    checkpointDirOf(fixture.root, fixture.runId),
+    `${emitted.checkpoint_key}-compact-prune.json`,
+  );
+  writeFileSync(tombstone, '{}');
+  prepareGenericPublication(fixture, 'observe-wrong-fence-prepared-generic');
+  const before = durableInventory(fixture);
+
+  assert.throws(() => observeCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    trigger: 'manual',
+    fence: { owner: 'wrong-owner', generation: fixture.fence.generation },
+    runtime: fixture.runtime,
+    now: NOW_MS + 2000,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(durableInventory(fixture), before);
+});
+
 function retireGenericPublicationToEmptyParent(fixture, operationId) {
   appendAnchored(
     fixture.root,

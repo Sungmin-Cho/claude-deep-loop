@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { runDir } from '../scripts/lib/state.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) { return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); }
@@ -270,6 +272,92 @@ function bindCheckpointAffinity(root, runId) {
     '--generation', '1',
   ]);
   return { workstream, episode };
+}
+
+function checkpointDurableInventory(root, runId) {
+  const inventory = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name === '.lock') continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else inventory[rel] = readFileSync(path).toString('base64');
+    }
+  };
+  visit(runDir(root, runId));
+  return inventory;
+}
+
+function prepareCheckpointGenericPublication(root, runId, operationId) {
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    {
+      type: 'checkpoint-cli-generic-publication-test',
+      data: { operation_id: operationId },
+      now: '2026-06-24T00:00:01.500Z',
+    },
+    loop => { loop.discovered_items.push(operationId); },
+    undefined,
+    {
+      publication: {
+        kind: 'workstream-boundary',
+        operationId,
+        artifacts: [{
+          rel: `artifacts/${operationId}.txt`,
+          bytes: Buffer.from(`artifact:${operationId}`),
+        }],
+        topology: { operation_id: operationId, phase: 'prepared' },
+        faultAt(label) {
+          if (label === 'prepared:digest-verified') throw new Error('prepared publication');
+        },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+}
+
+for (const verb of ['emit', 'observe']) {
+  test(`public CLI ${verb} fences before generic publication and tombstone reconciliation`, () => {
+    const { root, runId } = seed();
+    bindCheckpointAffinity(root, runId);
+    let emitted;
+    let input;
+    if (verb === 'observe') {
+      emitted = JSON.parse(run(root, [
+        'checkpoint', 'emit', '--owner', runId, '--generation', '1', '--runtime', 'claude',
+      ]));
+      writeFileSync(join(
+        runDir(root, runId),
+        'checkpoints',
+        `${emitted.checkpoint_key}-compact-prune.json`,
+      ), '{}');
+      const containedCwd = join(realpathSync(root), '.claude', 'worktrees', 'checkpoint', 'src');
+      mkdirSync(containedCwd, { recursive: true });
+      input = JSON.stringify({
+        hook_event_name: 'PostCompact', cwd: containedCwd, trigger: 'manual',
+      });
+    }
+    prepareCheckpointGenericPublication(root, runId, `cli-${verb}-wrong-fence`);
+    const before = checkpointDurableInventory(root, runId);
+    const args = verb === 'emit'
+      ? ['checkpoint', 'emit']
+      : [
+          'checkpoint', 'observe', '--checkpoint', emitted.checkpoint_rel,
+          '--trigger', 'manual', '--trusted-postcompact-stdin', '--json',
+        ];
+    const result = runBoth(root, [
+      ...args,
+      '--owner', 'wrong-owner',
+      '--generation', '1',
+      '--runtime', 'claude',
+    ], { input });
+
+    assert.equal(result.code, 3, `${verb}: ${result.err}`);
+    assert.match(result.err, /LEASE_FENCED: owner-mismatch/);
+    assert.deepEqual(checkpointDurableInventory(root, runId), before, verb);
+  });
 }
 
 test('checkpoint emit, inspect, and restore expose the exact public grammar', () => {

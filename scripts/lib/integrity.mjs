@@ -821,6 +821,44 @@ export function withReconciledMutationLock(root, runId, callback, options = {}) 
   }, options.lockOptions);
 }
 
+export function assertEstablishedFence(loop, fence, runtime) {
+  if (!fence || typeof fence !== 'object' || Array.isArray(fence)
+    || typeof fence.owner !== 'string'
+    || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation)
+    || fence.generation < 1) {
+    throw new Error('FENCE_REQUIRED: owner and positive generation');
+  }
+  const assertedRuntime = validateSessionRuntime(runtime);
+  if (sessionRuntime(loop) !== assertedRuntime) throw new Error('RUNTIME_FENCED: runtime mismatch');
+  const checked = leaseCheck(loop, {
+    owner: fence.owner,
+    generation: fence.generation,
+    runtime: assertedRuntime,
+  });
+  if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
+  return assertedRuntime;
+}
+
+export function withFencedReconciledMutationLock(root, runId, callback, {
+  fence,
+  runtime,
+  ...options
+} = {}) {
+  if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
+  return withLock(root, runId, guard => {
+    let snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    assertEstablishedFence(snapshot.data, fence, runtime);
+    reconcileAnchoredPublicationLocked(root, runId, guard, options);
+    snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    assertEstablishedFence(snapshot.data, fence, runtime);
+    if (existsSync(join(runDir(root, runId), 'transactions'))) {
+      retireCommittedPublicationLocked(runDir(root, runId), guard);
+    }
+    return callback(guard, snapshot);
+  }, options.lockOptions);
+}
+
 export function withVerifiedReadLock(root, runId, callback, options = {}) {
   if (typeof callback !== 'function') throw new Error('READ_CALLBACK_REQUIRED');
   return withLock(root, runId, guard => {
