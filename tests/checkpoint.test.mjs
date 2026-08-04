@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   __testEmitCompactCheckpoint,
   __testObserveCompactCheckpoint,
@@ -31,8 +31,9 @@ import {
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
-import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { readState, runDir, withLock, writeState } from '../scripts/lib/state.mjs';
 import { contentHash, ulid, wrap } from '../scripts/lib/envelope.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import {
   acquireRootRecovery,
@@ -329,7 +330,36 @@ const manualAdmission = Object.freeze({
   admission: 'human-attested',
   source: 'direct-human-skill',
   confirmManualCompact: true,
+  env: {},
 });
+
+function prepareGenericPublication(fixture, operationId) {
+  assert.throws(() => appendAnchored(
+    fixture.root,
+    fixture.runId,
+    {
+      type: 'checkpoint-generic-publication-test',
+      data: { operation_id: operationId },
+      now: new Date(NOW_MS + 1500).toISOString(),
+    },
+    loop => { loop.discovered_items.push(operationId); },
+    undefined,
+    {
+      publication: {
+        kind: 'workstream-boundary',
+        operationId,
+        artifacts: [{
+          rel: `artifacts/${operationId}.txt`,
+          bytes: Buffer.from(`artifact:${operationId}`),
+        }],
+        topology: { operation_id: operationId, phase: 'prepared' },
+        faultAt(label) {
+          if (label === 'prepared:digest-verified') throw new Error('prepared publication');
+        },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+}
 const emptyInspectExpectation = reason => ({
   ok: false,
   phase: 'none',
@@ -564,6 +594,79 @@ test('strict retention validates chronology, keeps the newest five, and removes 
     inspectCompactCheckpoint(fixture.root, fixture.runId, { now: NOW_MS + 2000 }).checkpoint_rel,
     emitted.at(-1).checkpoint_rel,
   );
+});
+
+test('public and SessionStart inspectors preserve a prepared generic publication byte-for-byte', () => {
+  for (const [label, inspect] of [
+    ['public', (fixture, now) => inspectCompactCheckpoint(fixture.root, fixture.runId, { now })],
+    ['sessionstart', (fixture, now) => inspectCompactForSessionStart(
+      fixture.root,
+      fixture.runId,
+      { now },
+    )],
+  ]) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    prepareGenericPublication(fixture, `inspect-${label}`);
+    const before = durableInventory(fixture);
+
+    const descriptor = inspect(fixture, NOW_MS + 2000);
+
+    assert.equal(descriptor.ok, true, label);
+    assert.equal(descriptor.checkpoint_rel, emitted.checkpoint_rel, label);
+    assert.deepEqual(durableInventory(fixture), before, label);
+  }
+});
+
+test('invalid restore fence cannot reconcile or retire an unrelated prepared publication', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  prepareGenericPublication(fixture, 'restore-wrong-fence');
+  const before = durableInventory(fixture);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: { owner: 'different-owner', generation: fixture.fence.generation },
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(durableInventory(fixture), before);
+});
+
+test('paused restore reports the fresh fence result before paused status', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const state = readState(fixture.root, fixture.runId).data;
+  state.status = 'paused';
+  writeState(fixture.root, fixture.runId, state);
+
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: { owner: 'different-owner', generation: fixture.fence.generation },
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+  }), /LEASE_FENCED: RUN_PAUSED/);
 });
 
 test('strict affinity permits a bound current episode with an empty expected_artifacts set', () => {
@@ -813,6 +916,7 @@ test('retained restore intent binds admission source and proof before any recove
     contentHash(JSON.stringify(intent.payload.request_binding)),
     intent.payload.request_binding_sha256,
   );
+  prepareGenericPublication(fixture, 'retained-restore-wrong-binding');
 
   for (const request of [
     { admission: 'postcompact-observation', source: 'external-controller' },
@@ -1242,6 +1346,124 @@ test('pair pruning exposes four crash seams and reconciles tombstones while live
       seam,
     );
   }
+});
+
+test('direct restore retry converges a crashed prune tombstone under the restore transaction lock', () => {
+  for (const seam of [
+    'prune:tombstone-written',
+    'prune:receipt-unlinked',
+    'prune:checkpoint-unlinked',
+  ]) {
+    const fixture = seedBound();
+    const emitted = [];
+    for (let index = 0; index < 6; index += 1) {
+      try {
+        emitted.push(__testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+          fence: fixture.fence,
+          runtime: fixture.runtime,
+          hostSessionEvidence: hostEvidence('claude-code', `restore-prune-${index}`),
+          now: NOW_MS + index + 1,
+          faultAt: index === 5
+            ? label => { if (label === seam) throw new Error(`TEST_FAULT:${label}`); }
+            : undefined,
+        }));
+      } catch (error) {
+        assert.match(error.message, new RegExp(`TEST_FAULT:${seam}`));
+      }
+    }
+    const target = emitted[0];
+    const dir = checkpointDirOf(fixture.root, fixture.runId);
+    const tombstone = join(dir, `${target.checkpoint_key}-compact-prune.json`);
+    const checkpoint = strictCheckpointPath(fixture.root, fixture.runId, target);
+    const receipt = join(dir, `${target.checkpoint_key}-compact-observation.json`);
+    assert.equal(existsSync(tombstone), true, seam);
+    const beforeRun = durableRunBytes(fixture);
+
+    assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: target.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...manualAdmission,
+      now: NOW_MS + 100,
+    }), /CHECKPOINT_INELIGIBLE/, seam);
+
+    assert.equal(existsSync(tombstone), false, seam);
+    assert.equal(existsSync(checkpoint), false, seam);
+    assert.equal(existsSync(receipt), false, seam);
+    assert.deepEqual(durableRunBytes(fixture), beforeRun, seam);
+    assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: target.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...manualAdmission,
+      now: NOW_MS + 101,
+    }), /CHECKPOINT_NOT_FOUND/, seam);
+  }
+});
+
+test('restore rechecks prune ineligibility after a competing writer held the transaction lock', async () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const marker = join(fixture.root, 'restore-child-ready');
+  const tombstone = join(
+    checkpointDirOf(fixture.root, fixture.runId),
+    `${emitted.checkpoint_key}-compact-prune.json`,
+  );
+  const cli = join(process.cwd(), 'scripts', 'deep-loop.mjs');
+  const childSource = `
+    import { writeFileSync } from 'node:fs';
+    import { spawnSync } from 'node:child_process';
+    writeFileSync(${JSON.stringify(marker)}, 'ready');
+    const env = { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli' };
+    delete env.DEEP_LOOP_UNATTENDED;
+    delete env.DEEP_LOOP_HEADLESS;
+    const result = spawnSync(process.execPath, ${JSON.stringify([
+      cli,
+      'checkpoint', 'restore',
+      '--checkpoint', emitted.checkpoint_rel,
+      '--owner', fixture.fence.owner,
+      '--generation', String(fixture.fence.generation),
+      '--runtime', fixture.runtime,
+      '--admission', 'human-attested',
+      '--source', 'direct-human-skill',
+      '--confirm-manual-compact',
+      '--json',
+      '--now', String(NOW_MS + 2000),
+      '--project-root', fixture.root,
+      '--run-id', fixture.runId,
+    ])}, { encoding: 'utf8', env });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exit(result.status ?? 1);
+  `;
+  let child;
+  let stdout = '';
+  let stderr = '';
+  withLock(fixture.root, fixture.runId, () => {
+    child = spawn(process.execPath, ['--input-type=module', '-e', childSource]);
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const deadline = Date.now() + 5000;
+    while (!existsSync(marker) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    assert.equal(existsSync(marker), true);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    writeFileSync(tombstone, '{}');
+  });
+  const code = await new Promise((resolveCode, reject) => {
+    child.once('error', reject);
+    child.once('close', resolveCode);
+  });
+
+  assert.equal(code, 1, `${stdout}\n${stderr}`);
+  assert.match(stderr, /CHECKPOINT_INELIGIBLE/);
+  assert.equal(existsSync(tombstone), false);
+  assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, emitted)), false);
 });
 
 test('live restore intent pins its checkpoint and receipt pair until intent cleanup', () => {

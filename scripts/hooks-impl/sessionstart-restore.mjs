@@ -25,15 +25,9 @@ function currentRunId(root) {
   return existsSync(path) ? readFileSync(path, 'utf8').trim() : null;
 }
 
-function strictHostSessionIdentity(input) {
+function hostSessionIdentityInput(input) {
   if (input.hook_event_name !== 'SessionStart') throw new Error('host-context-invalid');
   if (!Object.hasOwn(input, 'session_id')) return undefined;
-  if (typeof input.session_id !== 'string'
-    || input.session_id.length === 0
-    || input.session_id.length > 1024
-    || /[\0\r\n]/.test(input.session_id)) {
-    throw new Error('host-evidence-invalid');
-  }
   return input.session_id;
 }
 
@@ -141,7 +135,7 @@ export function runSessionStartRestore(input = {}, {
   if (!runId) return { ok: true, branch: 'no-run', additionalContext: null };
 
   let hostSessionIdentity;
-  try { hostSessionIdentity = strictHostSessionIdentity(input); } catch {
+  try { hostSessionIdentity = hostSessionIdentityInput(input); } catch {
     return { ok: false, branch: 'evidence-invalid', additionalContext: null };
   }
 
@@ -151,7 +145,10 @@ export function runSessionStartRestore(input = {}, {
       hostSessionEvidence: hostSessionIdentity === undefined ? undefined : { id: hostSessionIdentity },
       now,
     });
-  } catch {
+  } catch (error) {
+    if (String(error?.message || error).includes('CHECKPOINT_EVIDENCE_INVALID')) {
+      return { ok: false, branch: 'evidence-invalid', additionalContext: null };
+    }
     return { ok: true, branch: 'unreadable', additionalContext: null };
   }
 

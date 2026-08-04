@@ -25,6 +25,8 @@ import { runDir, withReconciledMutationLock } from './state.mjs';
 import {
   __testCommitOrReplayCompactRestore,
   commitOrReplayCompactRestore,
+  reconcileCompactPruneTombstonesLocked,
+  withVerifiedReadLock,
 } from './integrity.mjs';
 import {
   compactObservationRel,
@@ -363,25 +365,7 @@ function tombstonedKeys(entries) {
 }
 
 function reconcilePruneTombstonesLocked(root, runId, guard) {
-  const dir = assertCheckpointDirectory(root, runId);
-  if (dir === null) return;
-  for (const entry of captureDirectoryEntries(dir)) {
-    const match = entry.name.match(PRUNE_FILE);
-    if (!match) continue;
-    guard.assertOwned(runDir(root, runId));
-    const key = match[1];
-    for (const path of [receiptPath(root, runId, key), strictPath(root, runId, key)]) {
-      if (existsSync(path)) {
-        rmSync(path, { force: true });
-        flushDirectory(dir);
-      }
-    }
-    if (existsSync(entry.path)) {
-      rmSync(entry.path, { force: true });
-      flushDirectory(dir);
-    }
-    guard.renew();
-  }
+  return reconcileCompactPruneTombstonesLocked(root, runId, guard);
 }
 
 function pruneEnvelope(runId, key, contextSha256, receiptSha256, now) {
@@ -902,7 +886,7 @@ function inspectLocked(root, runId, guard, snapshot, {
 }
 
 export function inspectCompactCheckpoint(root, runId, { now = Date.now() } = {}) {
-  return withReconciledMutationLock(root, runId, (guard, snapshot) => (
+  return withVerifiedReadLock(root, runId, (guard, snapshot) => (
     inspectLocked(root, runId, guard, snapshot, { now })
       ?? emptyProjection('checkpoint-not-found')
   ));
@@ -912,7 +896,7 @@ export function inspectCompactForSessionStart(root, runId, {
   hostSessionEvidence,
   now = Date.now(),
 } = {}) {
-  return withReconciledMutationLock(root, runId, (guard, snapshot) => (
+  return withVerifiedReadLock(root, runId, (guard, snapshot) => (
     inspectLocked(root, runId, guard, snapshot, { hostSessionEvidence, now })
   ));
 }
@@ -1063,17 +1047,11 @@ function restoreRequest(checkpointRelValue, {
 
 export function restoreCompactCheckpoint(root, runId, options = {}) {
   const request = restoreRequest(options.checkpointRel, options);
-  if (existsSync(prunePath(root, runId, request.checkpointKey))) {
-    throw new Error('CHECKPOINT_INELIGIBLE');
-  }
   return commitOrReplayCompactRestore(root, runId, request, { now: options.now ?? Date.now() });
 }
 
 export function __testRestoreCompactCheckpoint(root, runId, options = {}) {
   const request = restoreRequest(options.checkpointRel, options);
-  if (existsSync(prunePath(root, runId, request.checkpointKey))) {
-    throw new Error('CHECKPOINT_INELIGIBLE');
-  }
   return __testCommitOrReplayCompactRestore(root, runId, request, {
     now: options.now ?? Date.now(),
     faultAt: options.faultAt,

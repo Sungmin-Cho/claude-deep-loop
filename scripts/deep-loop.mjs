@@ -634,18 +634,20 @@ const handlers = {
       const root = rootOf(f);
       const runId = runIdOf(root, f);
       if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
-      let canonicalBodyRoot;
+      let canonicalBodyCwd;
+      let mappedBodyRoot;
       let canonicalArgRoot;
       try {
-        canonicalBodyRoot = canonicalProjectRoot(body.cwd);
+        canonicalBodyCwd = canonicalProjectRoot(body.cwd);
+        mappedBodyRoot = canonicalProjectRoot(findRoot(canonicalBodyCwd));
         canonicalArgRoot = canonicalProjectRoot(root);
       } catch {
         error('OBSERVE_TRUSTED_CONTEXT_INVALID');
         return 1;
       }
       if (resolve(body.cwd) !== body.cwd
-        || canonicalBodyRoot !== body.cwd
-        || canonicalBodyRoot !== canonicalArgRoot) {
+        || canonicalBodyCwd !== body.cwd
+        || mappedBodyRoot !== canonicalArgRoot) {
         error('OBSERVE_TRUSTED_CONTEXT_INVALID');
         return 1;
       }

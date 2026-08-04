@@ -539,6 +539,22 @@ test('compact-in-place + matching checkpoint → resume capsule ≤3KB(bytes) wi
   assertAdvisory(r.additionalContext, runId);
 });
 
+test('migrated compact-in-place ignores workstream-only host identity validation', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
+
+  const restored = runSessionStartRestore({
+    hook_event_name: 'SessionStart',
+    source: 'compact',
+    session_id: 42,
+  }, { root, now: NOW_MS });
+
+  assert.equal(restored.ok, true);
+  assert.equal(restored.branch, 'resume');
+  assertAdvisory(restored.additionalContext, runId);
+});
+
 test('UTF-8 clamp preserves code points and the owner advisory within 3072 bytes', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);

@@ -331,8 +331,10 @@ test('checkpoint observe accepts only bounded trusted PostCompact stdin and insp
     '--json',
   ];
   assert.equal(runBoth(root, observeArgs).code, 1, 'trusted ingress is semantic, not grammar');
+  const containedCwd = join(realpathSync(root), '.claude', 'worktrees', 'checkpoint', 'src');
+  mkdirSync(containedCwd, { recursive: true });
   const body = JSON.stringify({
-    hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'manual', session_id: 'cli-session',
+    hook_event_name: 'PostCompact', cwd: containedCwd, trigger: 'manual', session_id: 'cli-session',
   });
   const observed = runBoth(root, [...observeArgs, '--trusted-postcompact-stdin'], { input: body });
   assert.equal(observed.code, 0, observed.err);

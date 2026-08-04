@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { contentHash, ulid } from './envelope.mjs';
@@ -63,6 +64,47 @@ import { sessionRuntime, validateSessionRuntime } from './runtime.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
+const COMPACT_PRUNE_FILE = /^([0-9a-f]{64})-compact-prune\.json$/;
+
+function compactCheckpointDirectory(root, runId) {
+  const dir = join(runDir(root, runId), 'checkpoints');
+  if (!existsSync(dir)) return null;
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink() || !stat.isDirectory()
+    || realpathSync(dir) !== realpathSync(join(runDir(root, runId), 'checkpoints'))) {
+    throw new Error('CHECKPOINT_PATH_INVALID');
+  }
+  return dir;
+}
+
+export function reconcileCompactPruneTombstonesLocked(
+  root,
+  runId,
+  guard,
+  { checkpointKey } = {},
+) {
+  const dir = compactCheckpointDirectory(root, runId);
+  if (dir === null) return false;
+  let reconciled = false;
+  for (const name of readdirSync(dir).sort()) {
+    const match = name.match(COMPACT_PRUNE_FILE);
+    if (!match || (checkpointKey !== undefined && match[1] !== checkpointKey)) continue;
+    guard.assertOwned(runDir(root, runId));
+    const key = match[1];
+    for (const path of [
+      join(dir, `${key}-compact-observation.json`),
+      join(dir, `${key}-compact.json`),
+      join(dir, name),
+    ]) {
+      if (!existsSync(path) && path !== join(dir, name)) continue;
+      rmSync(path, { force: true });
+      flushDirectory(dir);
+    }
+    guard.renew();
+    reconciled = true;
+  }
+  return reconciled;
+}
 
 // #3: every business-intent mutation is charged at least this many turns via appendAnchored's `opts.floor`
 // (paired cost, same anchor). Lives here (with the floor mechanism) so both state.mjs and budget.mjs can import
@@ -735,6 +777,14 @@ export function withReconciledMutationLock(root, runId, callback, options = {}) 
   }, options.lockOptions);
 }
 
+export function withVerifiedReadLock(root, runId, callback, options = {}) {
+  if (typeof callback !== 'function') throw new Error('READ_CALLBACK_REQUIRED');
+  return withLock(root, runId, guard => {
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    return callback(guard, snapshot);
+  }, options.lockOptions);
+}
+
 const RESTORE_EVENT_DATA_KEYS = Object.freeze([
   'operation_id', 'checkpoint_key', 'context_sha256', 'pre_restore_loop_hash',
   'owner_run_id', 'generation', 'runtime', 'workstream_id', 'episode_id',
@@ -842,7 +892,6 @@ function strictRestoreFile(root, runId, request) {
 }
 
 function assertRestoreFence(loop, request) {
-  if (loop.status !== 'running') throw new Error('LEASE_FENCED: RUN_TERMINAL');
   const runtime = validateSessionRuntime(request.runtime);
   if (sessionRuntime(loop) !== runtime) throw new Error('RUNTIME_FENCED: runtime mismatch');
   const checked = leaseCheck(loop, {
@@ -1093,10 +1142,6 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
 } = {}) {
   const request = { ...normalizedRequest, runId };
   return withLock(root, runId, guard => {
-    reconcileAnchoredPublicationLocked(root, runId, guard);
-    if (existsSync(join(runDir(root, runId), 'transactions'))) {
-      retireCommittedPublicationLocked(runDir(root, runId), guard);
-    }
     const raw = readRawRun(root, runId);
     const parsed = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
       requireSchema: true,
@@ -1105,6 +1150,11 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
     assertProjectRootBinding(root, loop);
     assertRestoreFence(loop, request);
     const affinity = restoreAffinity(loop);
+    if (reconcileCompactPruneTombstonesLocked(root, runId, guard, {
+      checkpointKey: request.checkpointKey,
+    })) {
+      throw new Error('CHECKPOINT_INELIGIBLE');
+    }
     const strict = strictRestoreFile(root, runId, request);
     request.contextSha256 = strict.envelope.payload.context_sha256;
     assertCheckpointRestoreIdentity(root, loop, request, strict.context, affinity);
@@ -1114,6 +1164,9 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
       if (retained.payload.request_binding_sha256 !== proof.requestBindingSha256
         || JSON.stringify(retained.payload.request_binding) !== JSON.stringify(proof.requestBinding)) {
         throw new Error('CHECKPOINT_RESTORE_REQUEST_MISMATCH');
+      }
+      if (existsSync(join(runDir(root, runId), 'transactions'))) {
+        throw transactionError('generic publication pending during compact restore');
       }
       const recovered = reconcileRestoreIntent(root, request, guard, loop, raw, retained, faultAt);
       return restoreDescriptor(request, ownerSession(recovered.loop).compact_cursor, recovered.disposition);
@@ -1135,6 +1188,9 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
       hostSessionEvidence: undefined,
       freshNextAction: () => nextAction(loop, { now, unattended: false }),
     });
+    if (existsSync(join(runDir(root, runId), 'transactions'))) {
+      throw transactionError('generic publication pending during compact restore');
+    }
     const timestamp = operationTimestamp(now);
     const operationId = ulid(Date.parse(timestamp));
     const cycle = affinity.session.compact_cursor ? affinity.session.compact_cursor.cycle + 1 : 1;
