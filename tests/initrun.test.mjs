@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { initRun, buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
+
+const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 
 // Inject a no-signal env + no-op probe so detect-terminal deterministically yields launcher:'none'
 // regardless of the developer's ambient terminal environment.
@@ -83,6 +87,35 @@ test('initRun creates state, current pointer, valid schema', () => {
   assert.deepEqual(data.review.points, ['design', 'plan', 'implementation']);
   assert.equal(data.autonomy.tier, 'recommend'); // 기본
   assert.equal(data.session_chain.lease.owner_run_id, runId);
+});
+
+test('new runs persist the activation deadline config and explicit null lease marker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-activation-schema-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-08-05T00:00:00Z'),
+    env: noSignalEnv, platform: noSignalPlatform, run: noOpRun,
+  });
+  const { data } = readState(root, runId);
+  const lease = data.session_chain.lease;
+  assert.equal(data.session_chain.activation_deadline_sec, 900);
+  assert.equal(Object.hasOwn(lease, 'activation_deadline_at'), true);
+  assert.equal(lease.activation_deadline_at, null);
+  assert.equal(lease.state === 'active' && !Object.hasOwn(lease, 'activation_deadline_at'), false);
+});
+
+test('fresh initRun output passes the public validate CLI', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-activation-validate-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-08-05T00:00:00Z'),
+    env: noSignalEnv, platform: noSignalPlatform, run: noOpRun,
+  });
+  const { data } = readState(root, runId);
+  assert.equal(data.session_chain.activation_deadline_sec, 900);
+  assert.equal(data.session_chain.lease.activation_deadline_at, null);
+  const result = spawnSync(process.execPath, [CLI, 'validate', '--project-root', root, '--run-id', runId], {
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 // ── C2: object-shape initial reviewer selection — routes on present (installed‖initialized) ───

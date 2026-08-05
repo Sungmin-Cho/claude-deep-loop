@@ -32,7 +32,7 @@ export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {
     comprehension: { episodes_total: 0, episodes_human_reviewed: 0, episodes_agent_reviewed: 0, unreviewed_diff_lines: 0, debt_ratio: 0, debt_threshold: 0.5 },
     circuit_breaker: { consecutive_request_changes: 0, tripped: false, trip_reason: null },
     event_log_head: { seq: 0, checksum: 'GENESIS' },
-    session_chain: { parent_run_id: null, lease: { owner_run_id: runId, generation: 1, acquired_at: iso, expires_at: null, state: 'active', handoff_idempotency_key: null, handoff_phase: 'idle', handoff_trigger: null, takeover_kind: null }, stale_lease_ttl_sec: 900, consumed_milestones: [], sessions: [{ run_id: runId, started_at: iso, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope }] },
+    session_chain: { parent_run_id: null, lease: { owner_run_id: runId, generation: 1, acquired_at: iso, expires_at: null, activation_deadline_at: null, state: 'active', handoff_idempotency_key: null, handoff_phase: 'idle', handoff_trigger: null, takeover_kind: null }, stale_lease_ttl_sec: 900, activation_deadline_sec: 900, consumed_milestones: [], sessions: [{ run_id: runId, started_at: iso, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope }] },
     session_spawn: detectTerminal({ env, platform, run, now: iso, pid }),
     workspace_policy: 'recommend',
     workstreams: [], active_workstreams: [],

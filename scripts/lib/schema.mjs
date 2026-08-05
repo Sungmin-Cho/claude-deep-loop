@@ -5,9 +5,14 @@ import { normalizePortableRelativePath } from './fs-safe.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
+const ACTIVATION_EVENT_TYPES = Object.freeze(['lease-activated', 'activation-expired']);
 
 export function loadSchema() {
-  return JSON.parse(readFileSync(join(here, '../../schemas/loop-run.schema.json'), 'utf8'));
+  const schema = JSON.parse(readFileSync(join(here, '../../schemas/loop-run.schema.json'), 'utf8'));
+  return {
+    ...schema,
+    event_types: [...new Set([...(schema.event_types || []), ...ACTIVATION_EVENT_TYPES])],
+  };
 }
 
 function get(obj, path) {
@@ -175,6 +180,16 @@ const RECEIPT_TAKEOVER_KINDS = [
   'boundary-handoff', 'legacy-handoff', 'boundary-recovery',
   'affinity-supersession', 'project-root', 'released-takeover',
 ];
+const ACTIVATION_RECEIPT_KEYS = Object.freeze([
+  'owner_run_id', 'generation', 'from_generation', 'to_generation', 'attempt_id',
+  'activation_token_digest', 'activated_at',
+]);
+const EXPIRY_RECEIPT_KEYS = Object.freeze([
+  'decision_kind', 'evidence_kind', 'authority', 'transition', 'run_id',
+  'subject_owner_run_id', 'subject_attempt_id', 'subject_from_generation',
+  'subject_to_generation', 'deadline_at', 'decided_at',
+]);
+const ATTEMPT_ID = /^[A-Za-z0-9_-]{8,128}$/;
 
 function validateAcquisitionReceipt(receipt, errors) {
   if (receipt === undefined) return;
@@ -215,6 +230,53 @@ function validateAcquisitionReceipt(receipt, errors) {
   }
   if (receipt.attempt_id !== null && !/^[A-Za-z0-9_-]{8,128}$/.test(receipt.attempt_id || '')) {
     fail('attempt_id must be null or match ^[A-Za-z0-9_-]{8,128}$');
+  }
+}
+
+function validateActivationReceipt(receipt, errors) {
+  if (receipt === undefined) return;
+  const fail = detail => errors.push(`session_chain.lease.activation ${detail}`);
+  if (!exactObject(receipt, ACTIVATION_RECEIPT_KEYS)) {
+    fail(`must carry exactly ${ACTIVATION_RECEIPT_KEYS.join(', ')}`);
+    return;
+  }
+  if (!nonEmptyString(receipt.owner_run_id)) fail('owner_run_id must be a non-empty string');
+  for (const key of ['generation', 'from_generation', 'to_generation']) {
+    if (!Number.isSafeInteger(receipt[key]) || receipt[key] < 1) fail(`${key} must be a positive integer`);
+  }
+  if (!ATTEMPT_ID.test(receipt.attempt_id || '')) {
+    fail('attempt_id must match ^[A-Za-z0-9_-]{8,128}$');
+  }
+  if (!SHA256.test(receipt.activation_token_digest || '')) {
+    fail('activation_token_digest must be lowercase 64-hex');
+  }
+  if (!canonicalIso(receipt.activated_at)) fail('activated_at must be canonical ISO-8601');
+}
+
+function validateExpiryReceipt(receipt, errors) {
+  if (receipt === undefined) return;
+  const fail = detail => errors.push(`session_chain.lease.expiry_receipt ${detail}`);
+  if (!exactObject(receipt, EXPIRY_RECEIPT_KEYS)) {
+    fail(`must carry exactly ${EXPIRY_RECEIPT_KEYS.join(', ')}`);
+    return;
+  }
+  if (receipt.decision_kind !== 'activation-expiry') fail('decision_kind must be activation-expiry');
+  if (receipt.evidence_kind !== 'kernel-activation-deadline') {
+    fail('evidence_kind must be kernel-activation-deadline');
+  }
+  if (receipt.authority !== 'kernel-clock') fail('authority must be kernel-clock');
+  if (receipt.transition !== 'preserve-pause') fail('transition must be preserve-pause');
+  for (const key of ['run_id', 'subject_owner_run_id']) {
+    if (!nonEmptyString(receipt[key])) fail(`${key} must be a non-empty string`);
+  }
+  if (!ATTEMPT_ID.test(receipt.subject_attempt_id || '')) {
+    fail('subject_attempt_id must match ^[A-Za-z0-9_-]{8,128}$');
+  }
+  for (const key of ['subject_from_generation', 'subject_to_generation']) {
+    if (!Number.isSafeInteger(receipt[key]) || receipt[key] < 1) fail(`${key} must be a positive integer`);
+  }
+  for (const key of ['deadline_at', 'decided_at']) {
+    if (!canonicalIso(receipt[key])) fail(`${key} must be canonical ISO-8601`);
   }
 }
 
@@ -552,7 +614,23 @@ export function validate(loopJson, schema = loadSchema()) {
     if (takeover === 'boundary-handoff' && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
       errors.push('boundary-handoff takeover requires exact boundary handoff fields');
     }
+    const activationDeadlineSec = sc.activation_deadline_sec;
+    if (activationDeadlineSec !== undefined
+      && (!Number.isSafeInteger(activationDeadlineSec)
+        || activationDeadlineSec < 60 || activationDeadlineSec > 86400)) {
+      errors.push('session_chain.activation_deadline_sec must be an integer in [60, 86400]');
+    }
+    const activationDeadlineAt = sc.lease?.activation_deadline_at;
+    if (activationDeadlineAt !== undefined && activationDeadlineAt !== null
+      && !canonicalIso(activationDeadlineAt)) {
+      errors.push('session_chain.lease.activation_deadline_at must be null or canonical ISO-8601');
+    }
+    if (sc.lease?.expires_at != null && activationDeadlineAt != null) {
+      errors.push('session_chain.lease.expires_at and activation_deadline_at must not both be non-null');
+    }
     validateAcquisitionReceipt(sc.lease?.acquisition_receipt, errors);
+    validateActivationReceipt(sc.lease?.activation, errors);
+    validateExpiryReceipt(sc.lease?.expiry_receipt, errors);
     validateSessions(sc, errors);
   }
   if (!Number.isSafeInteger(loopJson.project?.binding_generation) || loopJson.project.binding_generation < 1) {
