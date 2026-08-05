@@ -27,23 +27,31 @@ test('compact restore writer owns one lock and never calls generic append gatewa
   assert.doesNotMatch(body, /withReconciledMutationLock/);
 });
 
-test('checkpoint fenced gateway verifies before and after reconciliation and callbacks fence before prune', () => {
+test('checkpoint fenced gateway authorizes verified prepared manifests before recovery and callbacks fence before prune', () => {
   const libDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib');
   const integritySource = readFileSync(join(libDir, 'integrity.mjs'), 'utf8');
+  const authorityStart = integritySource.indexOf('function assertPreparedPublicationFence');
+  const authorityEnd = integritySource.indexOf('\nexport function withFencedReconciledMutationLock', authorityStart);
+  assert.ok(authorityStart >= 0 && authorityEnd > authorityStart);
+  const authority = integritySource.slice(authorityStart, authorityEnd);
+  assert.match(authority, /manifest\.expect\.owner/);
+  assert.match(authority, /manifest\.expect\.generation/);
+  assert.match(authority, /manifest\.runtime/);
+
   const gatewayStart = integritySource.indexOf('export function withFencedReconciledMutationLock');
   const gatewayEnd = integritySource.indexOf('\nexport function withVerifiedReadLock', gatewayStart);
   assert.ok(gatewayStart >= 0 && gatewayEnd > gatewayStart);
   const gateway = integritySource.slice(gatewayStart, gatewayEnd);
-  const firstSnapshot = gateway.indexOf('let snapshot = snapshotRaw');
-  const firstFence = gateway.indexOf('assertEstablishedFence');
+  const prepared = gateway.indexOf('findPreparedPublicationLocked');
+  const manifestFence = gateway.indexOf('assertPreparedPublicationFence');
   const reconcile = gateway.indexOf('reconcileAnchoredPublicationLocked');
-  const secondSnapshot = gateway.indexOf('\n    snapshot = snapshotRaw');
-  const secondFence = gateway.indexOf('assertEstablishedFence', firstFence + 1);
+  const strictSnapshot = gateway.indexOf('snapshotRaw', reconcile);
+  const strictFence = gateway.indexOf('assertEstablishedFence', strictSnapshot);
   const retire = gateway.indexOf('retireCommittedPublicationLocked');
   const callback = gateway.indexOf('return callback');
-  assert.ok(firstSnapshot < firstFence && firstFence < reconcile);
-  assert.ok(reconcile < secondSnapshot && secondSnapshot < secondFence);
-  assert.ok(secondFence < retire && retire < callback);
+  assert.ok(prepared >= 0 && prepared < manifestFence && manifestFence < reconcile);
+  assert.ok(reconcile < strictSnapshot && strictSnapshot < strictFence);
+  assert.ok(strictFence < retire && retire < callback);
 
   const checkpointSource = readFileSync(join(libDir, 'checkpoint.mjs'), 'utf8');
   for (const [startMarker, endMarker] of [

@@ -821,7 +821,7 @@ export function withReconciledMutationLock(root, runId, callback, options = {}) 
   }, options.lockOptions);
 }
 
-export function assertEstablishedFence(loop, fence, runtime) {
+function validatedFenceRequest(fence, runtime) {
   if (!fence || typeof fence !== 'object' || Array.isArray(fence)
     || typeof fence.owner !== 'string'
     || fence.owner.length === 0
@@ -829,15 +829,32 @@ export function assertEstablishedFence(loop, fence, runtime) {
     || fence.generation < 1) {
     throw new Error('FENCE_REQUIRED: owner and positive generation');
   }
-  const assertedRuntime = validateSessionRuntime(runtime);
+  return { fence, runtime: validateSessionRuntime(runtime) };
+}
+
+export function assertEstablishedFence(loop, fence, runtime) {
+  const validated = validatedFenceRequest(fence, runtime);
+  const assertedRuntime = validated.runtime;
   if (sessionRuntime(loop) !== assertedRuntime) throw new Error('RUNTIME_FENCED: runtime mismatch');
   const checked = leaseCheck(loop, {
-    owner: fence.owner,
-    generation: fence.generation,
+    owner: validated.fence.owner,
+    generation: validated.fence.generation,
     runtime: assertedRuntime,
   });
   if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
   return assertedRuntime;
+}
+
+function assertPreparedPublicationFence(manifest, fence, runtime) {
+  const validated = validatedFenceRequest(fence, runtime);
+  if (manifest.runtime !== validated.runtime) throw new Error('RUNTIME_FENCED: runtime mismatch');
+  if (manifest.expect.owner !== validated.fence.owner) {
+    throw new Error('LEASE_FENCED: owner-mismatch');
+  }
+  if (manifest.expect.generation !== validated.fence.generation) {
+    throw new Error('LEASE_FENCED: generation-mismatch');
+  }
+  return validated.runtime;
 }
 
 export function withFencedReconciledMutationLock(root, runId, callback, {
@@ -847,10 +864,18 @@ export function withFencedReconciledMutationLock(root, runId, callback, {
 } = {}) {
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
   return withLock(root, runId, guard => {
-    let snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
-    assertEstablishedFence(snapshot.data, fence, runtime);
+    const prepared = findPreparedPublicationLocked(runDir(root, runId), guard);
+    if (prepared) {
+      assertPreparedPublicationFence(prepared.manifest, fence, runtime);
+    } else {
+      const raw = readRawRun(root, runId);
+      const current = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: false,
+      });
+      assertEstablishedFence(current.data, fence, runtime);
+    }
     reconcileAnchoredPublicationLocked(root, runId, guard, options);
-    snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
     assertEstablishedFence(snapshot.data, fence, runtime);
     if (existsSync(join(runDir(root, runId), 'transactions'))) {
       retireCommittedPublicationLocked(runDir(root, runId), guard);

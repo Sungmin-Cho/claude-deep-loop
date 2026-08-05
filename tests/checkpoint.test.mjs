@@ -410,6 +410,176 @@ function prepareGenericPublication(fixture, operationId) {
   ), /TRANSACTION_PENDING/);
 }
 
+function seedGenericPublicationPartial(fixture, operationId, seam) {
+  assert.throws(() => appendAnchored(
+    fixture.root,
+    fixture.runId,
+    {
+      type: 'checkpoint-partial-recovery-test',
+      data: { operation_id: operationId },
+      now: new Date(NOW_MS + 1500).toISOString(),
+    },
+    loop => { loop.discovered_items.push(operationId); },
+    undefined,
+    {
+      publication: {
+        kind: 'workstream-boundary',
+        operationId,
+        artifacts: [{
+          rel: `artifacts/${operationId}.txt`,
+          bytes: Buffer.from(`artifact:${operationId}`),
+        }],
+        topology: { operation_id: operationId, phase: 'partial' },
+        faultAt(label) {
+          if (label === seam) throw new Error(`partial:${seam}`);
+        },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+  const operationDir = join(runDir(fixture.root, fixture.runId), 'transactions', operationId);
+  const prepared = JSON.parse(readFileSync(join(operationDir, 'prepared.json'), 'utf8'));
+  const candidateStage = prepared.payload.stages.find(stage => stage.role === 'candidate-loop');
+  const candidateBytes = readFileSync(join(
+    operationDir,
+    'stages',
+    `${String(candidateStage.index).padStart(6, '0')}.bin`,
+  ));
+  return {
+    operationId,
+    candidate: JSON.parse(candidateBytes.toString('utf8')),
+    candidateHash: prepared.payload.manifest.candidateLoopHash,
+  };
+}
+
+function writeCandidateCheckpoint(fixture, partial, now) {
+  const loop = partial.candidate;
+  const session = loop.session_chain.sessions.find(item => item.run_id === fixture.runId);
+  const workstream = loop.workstreams.find(item => item.id === fixture.workstreamId);
+  const episode = loop.episodes.find(item => item.id === fixture.episodeId);
+  const artifacts = [...new Set([
+    ...(episode.expected_artifacts || []),
+    ...(episode.artifacts || []),
+  ])].sort().map(rel => {
+    const path = join(fixture.root, rel);
+    if (!existsSync(path)) return { rel, state: 'absent', sha256: null, size: null };
+    const bytes = readFileSync(path);
+    return { rel, state: 'present', sha256: contentHash(bytes), size: bytes.length };
+  });
+  const context = {
+    run_id: fixture.runId,
+    owner_run_id: fixture.fence.owner,
+    generation: fixture.fence.generation,
+    project_root_digest: projectRootDigest(loop.project.root),
+    project_binding_generation: loop.project.binding_generation,
+    runtime: fixture.runtime,
+    loop_hash: partial.candidateHash,
+    scope: structuredClone(session.scope),
+    workstream: structuredClone(workstream),
+    current_episode: structuredClone(episode),
+    artifacts,
+    next_action: nextAction(loop, { now, unattended: false }),
+    provider_evidence: null,
+  };
+  const key = contentHash(JSON.stringify(['deep-loop-compact-checkpoint-v2', context]));
+  const env = wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'compact-checkpoint',
+    schema: { name: 'compact-checkpoint', version: '2.0' },
+    run_id: fixture.runId,
+    payload: {
+      checkpoint_key: key,
+      context,
+      context_sha256: contentHash(JSON.stringify(context)),
+    },
+    now: new Date(now).toISOString(),
+  });
+  mkdirSync(checkpointDirOf(fixture.root, fixture.runId), { recursive: true });
+  writeFileSync(join(checkpointDirOf(fixture.root, fixture.runId), `${key}-compact.json`),
+    JSON.stringify(env, null, 2));
+  return { checkpoint_rel: `checkpoints/${key}-compact.json`, checkpoint_key: key };
+}
+
+for (const seam of ['event:0:append', 'state:loop:rename']) {
+  for (const verb of ['emit', 'observe']) {
+    test(`${verb} reconciles the verified ${seam} publication partial exactly once`, () => {
+      const fixture = seedBound();
+      const operationId = `${verb}-${seam.replaceAll(':', '-')}-valid`;
+      const partial = seedGenericPublicationPartial(fixture, operationId, seam);
+      const checkpoint = verb === 'observe'
+        ? writeCandidateCheckpoint(fixture, partial, NOW_MS + 2000)
+        : null;
+
+      const result = verb === 'emit'
+        ? emitCompactCheckpoint(fixture.root, fixture.runId, {
+            fence: fixture.fence,
+            runtime: fixture.runtime,
+            now: NOW_MS + 2500,
+          })
+        : observeCompactCheckpoint(fixture.root, fixture.runId, {
+            checkpointRel: checkpoint.checkpoint_rel,
+            trigger: 'manual',
+            fence: fixture.fence,
+            runtime: fixture.runtime,
+            now: NOW_MS + 2500,
+          });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.created, true);
+      const state = readState(fixture.root, fixture.runId).data;
+      assert.equal(state.discovered_items.filter(item => item === operationId).length, 1);
+      const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
+        .split('\n').filter(Boolean).map(line => JSON.parse(line));
+      assert.equal(events.filter(event => event.type === 'checkpoint-partial-recovery-test').length, 1);
+      assert.equal(readFileSync(join(
+        runDir(fixture.root, fixture.runId), 'artifacts', `${operationId}.txt`,
+      ), 'utf8'), `artifact:${operationId}`);
+      assert.deepEqual(readdirSync(join(runDir(fixture.root, fixture.runId), 'transactions')), []);
+      if (verb === 'emit') {
+        assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, result)), true);
+      } else {
+        assert.equal(existsSync(join(
+          checkpointDirOf(fixture.root, fixture.runId),
+          `${checkpoint.checkpoint_key}-compact-observation.json`,
+        )), true);
+      }
+    });
+
+    test(`${verb} wrong fence or runtime cannot reconcile the ${seam} publication partial`, () => {
+      const fixture = seedBound();
+      const operationId = `${verb}-${seam.replaceAll(':', '-')}-wrong`;
+      const partial = seedGenericPublicationPartial(fixture, operationId, seam);
+      const checkpoint = verb === 'observe'
+        ? writeCandidateCheckpoint(fixture, partial, NOW_MS + 2000)
+        : null;
+      for (const rejected of [
+        {
+          fence: { owner: 'wrong-owner', generation: fixture.fence.generation },
+          runtime: fixture.runtime,
+          error: /LEASE_FENCED: owner-mismatch/,
+        },
+        { fence: fixture.fence, runtime: 'codex', error: /RUNTIME_FENCED: runtime mismatch/ },
+      ]) {
+        const before = durableInventory(fixture);
+        const invoke = () => verb === 'emit'
+          ? emitCompactCheckpoint(fixture.root, fixture.runId, {
+              fence: rejected.fence,
+              runtime: rejected.runtime,
+              now: NOW_MS + 2500,
+            })
+          : observeCompactCheckpoint(fixture.root, fixture.runId, {
+              checkpointRel: checkpoint.checkpoint_rel,
+              trigger: 'manual',
+              fence: rejected.fence,
+              runtime: rejected.runtime,
+              now: NOW_MS + 2500,
+            });
+        assert.throws(invoke, rejected.error);
+        assert.deepEqual(durableInventory(fixture), before);
+      }
+    });
+  }
+}
+
 test('public emit rejects a wrong fence before reconciling a prepared generic publication', () => {
   const fixture = seedBound();
   prepareGenericPublication(fixture, 'emit-wrong-fence-prepared-generic');
