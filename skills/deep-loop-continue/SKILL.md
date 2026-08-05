@@ -43,19 +43,13 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 model/effort를 public kernel route로 갱신한다. 스킬이 상태 파일을 직접
 쓰지 않는다.
 
-현재 호스트가 알려 준 model과 effort를 직접 관측한다. 둘 다 있으면 다음 완전한 명령을 사용한다:
+현재 호스트가 알려 준 model과 effort를 직접 관측한다. 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만들고 다음 완전한 명령 하나를 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --effort "<session_effort>" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --session-profile '<session_profile_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-effort를 관측하지 못했으면 `--effort`를 넣지 않은 다음 완전한 명령을 사용한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-- **빈 값 금지**: `--model`/`--effort`는 관측된 것만 포함한다(`CLAUDE_EFFORT`가 비면 `--effort` 생략). 모델도 관측 못 하고 effort도 비면 이 단계 전체를 건너뛴다(state 그대로 진행 — 무해).
+`<session_profile_json_compact>` 내부의 JSON double quotes(JSON 이중 따옴표)는 그대로 두고 바깥 single quotes로 argv 하나를 만든다. 둘 다 관측하지 못하면 이 refresh 전체를 건너뛴다(state 그대로 진행 — 무해).
 - 값이 그대로면 no-op이다. 관측값이 없으면 이 단계를 건너뛴다.
 - handoff가 진행 중이어도 다음 분기를 추측하지 않는다. 항상 §1의 새
   `next-action` 응답만 따른다.

@@ -747,7 +747,8 @@ test('continue and resume refresh the active owner session profile (WS1)', () =>
 test('deep-loop init skill observes + seeds session model/effort into init-run (WS1)', () => {
   const body = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
   assert.match(body, /CLAUDE_EFFORT/, 'init skill observes CLAUDE_EFFORT');
-  assert.match(body, /init-run[\s\S]*--model[\s\S]*--effort/, 'init skill threads --model/--effort into init-run');
+  assert.match(body, /init-run[^\n]*--session-profile\s+'<session_profile_json_compact>'/,
+    'init skill threads one compact session profile into init-run');
 });
 
 test('runtime-facing skills assert runtime and carry explicit resume root/run identity', () => {
@@ -894,14 +895,26 @@ test('review strategy separates durable reviewer enums from host invocation skil
 test('init review JSON is one exact cross-POSIX/PowerShell single-quoted argv argument', () => {
   const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
   const initCommands = kernelCommandLines(entry).filter((line) => /\binit-run\b/.test(line));
-  assert.ok(initCommands.length >= 3, 'all documented model/effort variants remain explicit');
+  assert.equal(initCommands.length, 1, 'entry exposes exactly one canonical init-run template');
   for (const line of initCommands) {
     assert.match(line, /--review\s+'<review_json_compact>'(?:\s|$)/,
       `init-run review JSON must be one single-quoted argv argument: ${line}`);
     assert.doesNotMatch(line, /--review\s+"<review_json_compact>"/);
+    assert.match(line, /--session-profile\s+'<session_profile_json_compact>'(?:\s|$)/,
+      `init-run session profile JSON must be one single-quoted argv argument: ${line}`);
   }
   assert.match(entry, /<review_json_compact>[\s\S]{0,360}(?:compact JSON|압축 JSON)[\s\S]{0,240}(?:JSON double quotes|JSON 이중 따옴표)/i,
     'placeholder substitution must preserve JSON double quotes inside the single-quoted argument');
+  assert.match(entry, /<session_profile_json_compact>[\s\S]{0,360}(?:compact JSON|압축 JSON)[\s\S]{0,240}(?:JSON double quotes|JSON 이중 따옴표)/i,
+    'session profile placeholder must preserve JSON double quotes inside the single-quoted argument');
+});
+
+test('continue exposes exactly one canonical session-profile JSON template', () => {
+  const body = readFileSync(new URL('../skills/deep-loop-continue/SKILL.md', import.meta.url), 'utf8');
+  const commands = kernelCommandLines(body).filter(line => /\bsession-profile set\b/.test(line));
+  assert.equal(commands.length, 1, 'continue exposes exactly one session-profile set template');
+  assert.match(commands[0], /--session-profile\s+'<session_profile_json_compact>'(?:\s|$)/);
+  assert.doesNotMatch(commands[0], /--model\b|--effort\b/);
 });
 
 test('portable command contract: free-form reason placeholders remain one argv value', () => {

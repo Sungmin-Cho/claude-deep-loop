@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { initRun, buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 
@@ -11,6 +13,16 @@ import { readState, runDir } from '../scripts/lib/state.mjs';
 const noSignalEnv = {};
 const noSignalPlatform = 'linux';
 const noOpRun = () => ({ code: 1 });
+const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
+
+function initCli(root, args) {
+  return spawnSync(process.execPath, [CLI, 'init-run', '--goal', 'g', '--runtime', 'claude', ...args, '--project-root', root], { encoding: 'utf8' });
+}
+
+function initializedState(root, result) {
+  assert.equal(result.status, 0, result.stderr);
+  return readState(root, JSON.parse(result.stdout).run_id).data;
+}
 
 const OPEN_WORKSTREAM_SCOPE = {
   kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
@@ -108,6 +120,70 @@ test('initRun omits session_model/effort when not provided (backward compat)', (
   const { loop } = initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   assert.equal(loop.autonomy.session_model, undefined);
   assert.equal(loop.autonomy.session_effort, undefined);
+});
+
+test('CLI init-run accepts empty, partial, and complete session-profile JSON', () => {
+  for (const [profile, expected] of [
+    ['{}', {}],
+    ['{"model":"opus"}', { session_model: 'opus' }],
+    ['{"model":"opus","effort":"xhigh"}', { session_model: 'opus', session_effort: 'xhigh' }],
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-profile-'));
+    const data = initializedState(root, initCli(root, ['--session-profile', profile]));
+    assert.equal(data.autonomy.session_model, expected.session_model);
+    assert.equal(data.autonomy.session_effort, expected.session_effort);
+  }
+});
+
+test('CLI init-run session-profile matches legacy seed and keeps independent Codex validation', () => {
+  const legacyRoot = mkdtempSync(join(tmpdir(), 'dl-init-legacy-'));
+  const jsonRoot = mkdtempSync(join(tmpdir(), 'dl-init-json-'));
+  const legacy = initializedState(legacyRoot, initCli(legacyRoot, ['--model', 'opus', '--effort', 'xhigh']));
+  const json = initializedState(jsonRoot, initCli(jsonRoot, ['--session-profile', '{"model":"opus","effort":"xhigh"}']));
+  assert.deepEqual(
+    { model: json.autonomy.session_model, effort: json.autonomy.session_effort },
+    { model: legacy.autonomy.session_model, effort: legacy.autonomy.session_effort },
+  );
+
+  const codexRoot = mkdtempSync(join(tmpdir(), 'dl-init-codex-max-'));
+  const result = spawnSync(process.execPath, [
+    CLI, 'init-run', '--goal', 'g', '--runtime', 'codex',
+    '--session-profile', '{"model":"gpt-5.6-sol","effort":"max"}',
+    '--project-root', codexRoot,
+  ], { encoding: 'utf8' });
+  const codex = initializedState(codexRoot, result);
+  assert.equal(codex.autonomy.session_model, 'gpt-5.6-sol');
+  assert.equal(codex.autonomy.session_effort, 'max');
+});
+
+test('CLI init-run classifies malformed session-profile JSON and invalid shapes as exit 1', () => {
+  const invalid = [
+    '{', 'null', '[]', '"opus"',
+    '{"unknown":"x"}', '{"model":null}', '{"model":1}', '{"model":""}', '{"effort":""}',
+  ];
+  for (const profile of invalid) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-profile-invalid-'));
+    const result = initCli(root, ['--session-profile', profile]);
+    assert.equal(result.status, 1, `${profile}: ${result.stderr}`);
+    assert.match(result.stderr, /INVALID_SESSION_PROFILE/);
+    assert.equal(existsSync(join(root, '.deep-loop')), false);
+  }
+});
+
+test('CLI init-run classifies every value-less session-profile spelling and legacy mixing as usage', () => {
+  const cases = [
+    ['--session-profile'],
+    ['--session-profile='],
+    ['--session-profile', ''],
+    ['--session-profile', '{}', '--model', 'opus'],
+    ['--session-profile', '{}', '--effort', 'high'],
+  ];
+  for (const args of cases) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-profile-usage-'));
+    const result = initCli(root, args);
+    assert.equal(result.status, 2, `${JSON.stringify(args)}: ${result.stderr}`);
+    assert.equal(existsSync(join(root, '.deep-loop')), false);
+  }
 });
 
 test('initRun rejects invalid effort (WS1)', () => {

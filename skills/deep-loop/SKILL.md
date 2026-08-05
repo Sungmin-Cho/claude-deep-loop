@@ -113,32 +113,19 @@ cooperative subagent를 선택하면 durable reviewer enum은 `subagent-checker`
 
 respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 시 현재 세션 값을 호스트 컨텍스트에서 직접 관측한다(이 값이 durable "init seed" — 첫 handoff가 PreCompact/headless여도 fallback이 된다). Claude host가 제공하는 `CLAUDE_EFFORT`와 정확한 모델 ID는 셸에서 읽지 말고 로드된 세션 컨텍스트 값으로 사용한다. Codex도 현재 task의 모델과 effort를 같은 방식으로 사용한다.
 
-- effort가 비어 있으면 그 항목만 생략한다. 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
-- 관측된 값만 아래 `init-run`에 플래그로 덧붙인다(값 없는 `--model`/`--effort`는 커널이 usage exit 2로 거부하므로, 관측 못 한 항목은 플래그 자체를 생략한다). 무효 effort는 커널이 exit 1로 거부.
+- 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만든다. 둘 다 관측하지 못하면 `{}`다. 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
 
 ### 2-5. Run 생성 (`init-run`)
 
-현재 runtime을 실제 `claude` 또는 `codex`로 치환한다. model과 effort를 둘 다 관측했으면 다음 완전한 명령을 사용한다:
+현재 runtime을 실제 `claude` 또는 `codex`로 치환하고 다음 완전한 명령 하나를 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --effort "<session_effort>" --project-root "<canonical_project_root>"
-```
-
-model만 관측했으면 다음 완전한 명령을 사용한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --project-root "<canonical_project_root>"
-```
-
-둘 다 관측하지 못했으면 다음 완전한 명령을 사용한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --session-profile '<session_profile_json_compact>' --project-root "<canonical_project_root>"
 ```
 
 `--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.
 `<review_json_compact>` placeholder는 선택한 durable review object의 한 줄 compact JSON으로 치환한다. compact JSON 내부의 JSON double quotes(JSON 이중 따옴표)는 그대로 유지하고, 바깥 single quotes가 전체 JSON을 POSIX와 PowerShell 모두에서 하나의 argv 값으로 보존한다.
-`--model`/`--effort`는 §2-4.5에서 관측한 값(관측된 것만; effort가 비면 `--effort` 생략, 둘 다 못 하면 둘 다 생략 → 커널 기본값). 이 값이 `autonomy.session_model`/`session_effort`로 seed된다.
+`<session_profile_json_compact>`도 §2-4.5의 한 줄 compact JSON으로 치환한다. 내부 JSON double quotes(JSON 이중 따옴표)는 그대로 두고 바깥 single quotes로 argv 하나를 만든다. `{}`도 유효하며, 관측된 값은 `autonomy.session_model`/`session_effort`로 seed된다.
 init-run 반환의 `<run_id>`를 저장한다. 이 값은 descriptor/current run의 논리적(logical) loop run id이며 전체 run 수명 동안 불변(immutable)이다. 초기 lease는 init-run이 같은 ID와 generation 1로 만들지만 두 역할의 placeholder는 이후에도 구분한다: `<owner_run_id> = <run_id>`, `<generation> = 1`. 이후 모든 mutating CLI는 `--owner <owner_run_id> --generation <generation> --run-id <run_id>`를 사용하며 논리 ID를 owner 변수로 재사용하지 않는다.
 
 ### 2-5-1. Continuity 기본값
