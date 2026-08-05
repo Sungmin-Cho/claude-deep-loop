@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  renameSync, writeFileSync,
+  renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -257,10 +257,15 @@ test('import rejects file-symlink escapes from the reviewed worktree', (t) => {
   const worktree = '.claude/worktrees/w'; mkdirSync(join(root, worktree), { recursive: true });
   const ws = newWorkstream(root, runId, { title: 'w', branch: 'b', worktree, fence }).id;
   const artifactRel = `${worktree}/link.txt`;
-  if (!createFileSymlinkOrSkip(t, external, join(root, artifactRel))) return;
+  const artifactPath = join(root, artifactRel);
+  writeFileSync(artifactPath, 'contained proof');
   const makerId = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: [artifactRel], fence }).id;
   recordEpisode(root, runId, makerId, { status: 'in_progress', fence });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
+  // P1-c rejects an external symlink at maker settlement now. Replace the already-settled contained proof so this
+  // review boundary continues to exercise its independent post-settlement TOCTOU/escape revalidation.
+  unlinkSync(artifactPath);
+  if (!createFileSymlinkOrSkip(t, external, artifactPath)) return;
   const checkerId = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence }).checkerEpisodeId;
   assert.throws(() => claimIndependentReview(root, runId, {
     episodeId: checkerId, fence, attemptIdFactory: () => 'attempt-01',

@@ -41,3 +41,4 @@ user-invocable: false
 - **변경은 반드시 mutating CLI subcommand로만** (`state patch`, `episode new/record/abandon`, `review dispatch/record`, `handoff emit`, `budget record`, `comprehension ack`, `finish` 등).
 - 모든 mutating CLI는 `--owner <owner_run_id> --generation <n> --run-id <run_id>` fence/identity 필수(`lease acquire`의 owner만 예약된 child 예외 — 승격은 위 `proceed:true` 규범을 따른다).
 - `loop.json` · `event-log.jsonl` · `.loop.hash`는 커널만 쓴다 — 스킬은 절대 직접 쓰지 않는다.
+- **Artifact 상세 교정 규칙:** 모든 artifact 인자는 project-root-relative(프로젝트 루트 기준 상대)다. maker workstream의 artifact는 기록된 root-relative worktree 경로를 prefix(접두)로 사용하고, adapter `read.path`도 그 prefix를 붙여 변환한다. `episode new`의 expected 목록과 `episode record`의 submitted 목록은 일치해야 한다. 커널의 `EPISODE_ARTIFACT_UNSAFE`·`EPISODE_ARTIFACT_ESCAPE` 오류가 거부 경로와 expected 교정 형식을 제시하므로 그대로 따른다.

@@ -579,16 +579,14 @@ test('handoff-respawn resume contract uses descriptor root/run/runtime and exact
     'per-action worktree routing must remain delegated to deep-loop-continue');
 });
 
-// FIX D: continue skill must document ORIG_ROOT-relative, worktree-prefixed artifact paths.
-test('deep-loop-continue: artifact paths in record/dispatch examples are ORIG_ROOT-relative worktree-prefixed', () => {
+// FIX D retarget: continuation keeps canonical examples and points to the single workflow-core rule.
+test('deep-loop-continue: artifact examples stay prefixed with a concise workflow-core pointer', () => {
   const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
-  // Must NOT have bare relative paths like 'path/to/artifact' or 'path/to/fix-output' in --artifacts examples
   assert.ok(!cont.includes('"path/to/artifact"'), 'bare "path/to/artifact" must be replaced with worktree-prefixed path');
   assert.ok(!cont.includes('"path/to/fix-output"'), 'bare "path/to/fix-output" must be replaced with worktree-prefixed path');
-  // Must have worktree-prefixed artifact paths (.claude/worktrees/<slug>/... OR .worktrees/<slug>/...) — FIX J: generic convention
   assert.match(cont, /(?:\.claude\/worktrees|\.worktrees)\/[^\s"]*\/[^\s"]+/, 'artifact examples must use recorded worktree path (.claude/worktrees/<slug>/ or .worktrees/<slug>/) as prefix');
-  // Must have explicit instruction about project-root-relative artifact paths (generic rule — FIX J)
-  assert.match(cont, /(project.root|ORIG_ROOT|루트 기준|worktree.*접두|recorded.worktree)[\s\S]{0,400}artifact|artifact[\s\S]{0,400}(project.root|ORIG_ROOT|루트 기준|worktree.*접두|recorded.worktree)/i, 'must instruct project-root-relative artifact paths with recorded worktree prefix');
+  assert.match(cont, /artifact[^\n]*(deep-loop-workflow|워크플로우)[^\n]*핵심 불변식/i,
+    'continue must point to the workflow core instead of restating the detailed rule');
 });
 
 test('deep-loop-finish: proposal-only worktree cleanup + reconcile audit surface', () => {
@@ -640,16 +638,20 @@ test('deep-loop-finish: final-report Write uses path resolve --target run-dir', 
   assert.ok(!bareWikiArg, 'deep-wiki delegation must use the resolved run directory');
 });
 
-// FIX L: adapter read.path must be explicitly described as requiring TRANSFORMATION to worktree-prefixed form.
-test('deep-loop §2-7: adapter read.path must be explicitly transformed to worktree-prefixed path (FIX L)', () => {
-  const s = dlSkill();
-  // Must explicitly state adapter read.path is TRANSFORMED/PREFIXED with the recorded worktree path.
-  // Acceptable signals: 변환, TRANSFORM, transform, 접두(prefix), or worktree + prefix in close proximity to adapter read.path.
-  assert.match(
-    s,
-    /adapter[\s\S]{0,300}(read\.path|read path)[\s\S]{0,300}(변환|TRANSFORM|transform|접두|prefix)|(변환|TRANSFORM|transform|접두|prefix)[\s\S]{0,200}adapter[\s\S]{0,200}(read\.path|read path)/i,
-    'must explicitly instruct transformation of adapter read.path to worktree-prefixed form before passing to --artifacts'
-  );
+// FIX L retarget: the workflow core is the single detailed owner of artifact correction.
+test('workflow core alone explains adapter artifact transformation and kernel correction', () => {
+  const workflow = _rf(skillPath('deep-loop-workflow'), 'utf8');
+  const core = workflow.match(/## 핵심 불변식([\s\S]*?)(?:\n## |$)/)?.[1] || '';
+  assert.match(core, /project-root-relative|project root 기준 상대|프로젝트 루트 기준 상대/i);
+  assert.match(core, /maker[\s\S]{0,240}(recorded|기록된)[\s\S]{0,160}worktree[\s\S]{0,120}(prefix|접두)/i);
+  assert.match(core, /adapter[\s\S]{0,180}read\.path[\s\S]{0,180}(prefix|접두|변환)/i);
+  assert.match(core, /expected[\s\S]{0,160}submitted[\s\S]{0,160}(match|일치)/i);
+  assert.match(core, /EPISODE_ARTIFACT_(?:UNSAFE|ESCAPE)[\s\S]{0,180}(교정|correction|expected)/i);
+
+  const entrySection = dlSkill().match(/### 2-7\. 첫 번째 Episode 생성([\s\S]*?)## 단계 3:/)?.[1] || '';
+  const continueSection = _rf(skillPath('deep-loop-continue'), 'utf8').match(/## 1\.5\. Action-keyed Worktree 진입([\s\S]*?)## 2\./)?.[1] || '';
+  assert.doesNotMatch(entrySection, /adapter[^\n]*read\.path/i, 'entry must not duplicate adapter correction details');
+  assert.doesNotMatch(continueSection, /adapter[^\n]*read\.path/i, 'continue must not duplicate adapter correction details');
 });
 
 // FIX N: workstream new --worktree must record root-relative path, not $ORIG_ROOT absolute.
@@ -690,15 +692,14 @@ test('deep-loop-continue §1.5: worktree section has no manual project.root deco
   assert.doesNotMatch(resolverLine, MUTATING_SUB, 'read-only resolver line must not trip broad mutation vocabulary');
 });
 
-// FIX G: deep-loop SKILL.md episode new --artifacts example must use worktree-prefixed paths
-test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed paths', () => {
+// FIX G retarget: entry keeps one canonical example and a concise pointer, not a full second rule.
+test('deep-loop §2-7: artifact example is worktree-prefixed and points to workflow core', () => {
   const s = dlSkill();
-  // Must NOT have bare path/to/... in --artifacts
   assert.ok(!s.includes('"path/to/expected-output.md"'), 'bare path/to/expected-output.md must be replaced with worktree-prefixed path in episode new example');
-  // Must have worktree-prefixed expected-artifacts example (.claude/worktrees/ OR .worktrees/) — FIX J: generic convention
   assert.match(s, /--artifacts[\s\S]{0,200}(?:\.claude\/worktrees|\.worktrees)\//, '--artifacts example in episode new must use recorded worktree path (.claude/worktrees/<slug>/ or .worktrees/<slug>/) as prefix');
-  // Must carry a note that expected artifacts and submitted artifacts use same ORIG_ROOT-relative worktree-prefixed paths
-  assert.match(s, /(expected|episode new)[\s\S]{0,400}(ORIG_ROOT|worktree.*prefix|워크트리.*접두사|\.claude\/worktrees)[\s\S]{0,400}(episode record|submitted|동일)/, 'note that expected and submitted artifacts must use same ORIG_ROOT-relative worktree-prefixed paths');
+  const section = s.match(/### 2-7\. 첫 번째 Episode 생성([\s\S]*?)## 단계 3:/)?.[1] || '';
+  assert.match(section, /artifact[^\n]*(deep-loop-workflow|워크플로우)[^\n]*핵심 불변식/i,
+    'entry must point to the single workflow-core artifact rule');
 });
 
 // Task 8: Claude Desktop deeplink respawn — init opt-in offer + handoff/continue desktop branch wiring.

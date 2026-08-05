@@ -91,7 +91,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" path resolve --target workstream --w
 
 반환된 한 줄의 절대 경로를 그대로 사용한다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 도구의 working-directory 옵션에 전달한다. 이후 커널 명령도 descriptor-bound `--project-root`와 `--run-id`를 계속 명시한다.
 
-> **artifact 경로 규칙(project-root 기준 상대, 기록된 worktree 경로 접두):** `episode new`·`episode record` 의 artifact 인자는 반드시 project root 기준 상대 경로, **기록된 worktree 경로(루트 기준 상대) 접두** 형태로 지정한다 — `<recorded-worktree-relative-to-root>/path/to/file` (예: `.claude/worktrees/<ws-slug>/path/to/file` 또는 `.worktrees/<ws-slug>/path/to/file`). §1.5에서 cwd가 worktree 안으로 이동했더라도 containment 검증은 항상 project root 기준이므로, 이 규칙을 어기면 artifact proof가 실패한다.
+Artifact 상세 교정 규칙은 `deep-loop-workflow`의 `## 핵심 불변식`을 따른다.
 
 `max_parallel` 환경에서 여러 active workstream이 있어도, 항상 `action.workstream_id`가 지정하는 workstream의 worktree만 진입한다 — 임의 active workstream이 아님.
 
