@@ -68,6 +68,7 @@ import {
 } from './lib/runtime-executable.mjs';
 import { sessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
+import { resolveRunPath } from './lib/path-resolve.mjs';
 import {
   buildRecoveryResumeDescriptor,
   buildRootRecoveryResumeDescriptor,
@@ -228,7 +229,7 @@ function classifyKernelError(e) {
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
     return { code: 3, message };
   }
-  if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE)(?::|$)/.test(message)) {
+  if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE|PATH_TARGET_INVALID|WORKSTREAM_NOT_FOUND|RUN_DIR_ESCAPE|WORKSTREAM_WORKTREE_ESCAPE)(?::|$)/.test(message)) {
     return { code: 1, message };
   }
   if (/^CHECKPOINT_[A-Z_]+(?::|$)/.test(message)) {
@@ -257,6 +258,35 @@ const [, , sub, ...rest] = process.argv;
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
 // 2) 현재/지정 run이 있으면 reconciled snapshot + schema.validate
 const handlers = {
+  path: async (a) => {
+    const [verb, ...args] = a;
+    const allowed = new Set(['target', 'workstream', 'project-root', 'run-id']);
+    if (verb !== 'resolve' || !knownFlagVocabulary(args, allowed) || !exactFlagGrammar(args, allowed)) {
+      error('USAGE: path resolve has invalid grammar');
+      return 2;
+    }
+    const f = parseFlags(args);
+    const target = reqStr(f, 'target');
+    const projectRoot = reqStr(f, 'project-root');
+    const runId = reqStr(f, 'run-id');
+    if (!target || !projectRoot || !runId) {
+      error('USAGE: path resolve requires valued --target, --project-root, and --run-id');
+      return 2;
+    }
+    if (target !== 'run-dir' && target !== 'workstream') {
+      throw new Error(`PATH_TARGET_INVALID: ${target}`);
+    }
+    const workstreamId = reqStr(f, 'workstream');
+    if ((target === 'workstream' && !workstreamId)
+      || (target === 'run-dir' && f.workstream !== undefined)) {
+      error('USAGE: --workstream is required only for target workstream');
+      return 2;
+    }
+    process.stdout.write(`${resolveRunPath(projectRoot, runId, {
+      target, workstreamId: target === 'workstream' ? workstreamId : undefined,
+    })}\n`);
+    return 0;
+  },
   validate: async (a) => {
     const f = parseFlags(a);
     const errors = [];

@@ -34,25 +34,19 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 ## 단계 1: Final Report 작성
 
 > [!IMPORTANT]
-> cwd가 worktree 안일 때 상대 경로는 worktree 하위에 파일을 생성해 `finishRun`의 존재 확인을 실패시킨다. **반드시 `project.root`-앵커된 절대 경로를 사용한다.**
+> cwd가 worktree 안일 때 상대 경로는 잘못된 위치에 파일을 만든다. **반드시 커널이 반환한 absolute run-dir를 사용한다.**
 
-**먼저 project root를 상태에서 읽는다:**
-
-> `state get --field project.root`는 JSON-인코딩된 문자열(예: `"/repo"`)을 출력한다 — 따옴표를 제거해야 한다.
+먼저 read-only resolver로 run directory를 얻는다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field project.root --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" path resolve --target run-dir --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-반환 JSON 문자열을 `JSON.parse`로 해석해 따옴표가 제거된 절대 `project.root` 값을 얻는다. 셸 변수나 파이프라인은 사용하지 않는다.
-
-`<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 **절대 경로**로 final report를 작성한다:
+반환된 한 줄의 절대 경로를 `<resolved-run-dir>`로 사용해 final report를 작성한다:
 
 ```
-Write({ file_path: "<project-root>/.deep-loop/runs/<run_id>/final-report.md", content: report })
+Write({ file_path: "<resolved-run-dir>/final-report.md", content: report })
 ```
-
-여기서 `<project-root>`는 위에서 읽은 `project.root` 값(절대 경로)으로 대체한다.
 
 report 내용:
 - **목표 & 결과**: 달성된 goal 요약
@@ -144,11 +138,9 @@ Codex는 qualified `$deep-memory:deep-memory-harvest` invocation을 사용한다
 deep-wiki 플러그인이 설치된 경우 runtime에 맞게 위임한다. Claude는 다음 host invocation을 사용한다:
 
 ```javascript
-Skill({ skill: "deep-wiki:wiki-ingest", args: "<project-root>/.deep-loop/runs/<run_id>/final-report.md" })
+Skill({ skill: "deep-wiki:wiki-ingest", args: "<resolved-run-dir>/final-report.md" })
 ```
 
-Codex는 qualified `$deep-wiki:wiki-ingest`에 `"<project-root>/.deep-loop/runs/<run_id>/final-report.md"` 인자를 전달한다.
-
-`<project-root>`는 단계 1에서 읽은 `project.root` 절대 경로 값이다.
+Codex는 qualified `$deep-wiki:wiki-ingest`에 `"<resolved-run-dir>/final-report.md"` 인자를 전달한다.
 
 미감지 시 스킵하고 명시적으로 로그에 기록한다.

@@ -161,6 +161,7 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(!mutatingFenced('node x/deep-loop.mjs episode record --status done --owner $R'));   // --generation 누락
   assert.ok(!mutatingFenced('node x/deep-loop.mjs review record --verdict APPROVE --generation 1'));   // --owner 누락
   assert.ok(mutatingFenced('node x/deep-loop.mjs next-action --json'));   // read-only → fence 불필요
+  assert.ok(mutatingFenced('node x/deep-loop.mjs path resolve --target run-dir --project-root /repo --run-id R'));
   assert.ok(mutatingFenced('record the result via `episode record`'));    // 산문(플래그 없음) → 무시
   // Codex r4 sf-2: 셸 연속줄로 fence 를 분리해 회피하는 시도 차단.
   assert.ok(!mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field discovered_items --value "[]"'));
@@ -614,30 +615,29 @@ test('deep-loop-continue §1.5: await_result is in the worktree-entry set (not s
   assert.match(cont, /workstream_id[\s\S]{0,300}await_result|await_result[\s\S]{0,300}workstream_id/, 'await_result and workstream_id must be co-located in §1.5 gating text');
 });
 
-// FIX K: deep-loop-finish must write final-report to project.root-anchored absolute path.
-// Bare relative Write(".deep-loop/runs/...") breaks when cwd is inside a worktree.
-test('deep-loop-finish: final-report Write must be project.root-anchored (not bare relative)', () => {
+// FIX K replacement: final-report uses the kernel-resolved absolute run directory.
+test('deep-loop-finish: final-report Write uses path resolve --target run-dir', () => {
   const s = _rf(skillPath('deep-loop-finish'), 'utf8');
-  // Must instruct reading project.root from state before writing
-  assert.match(s, /state get[\s\S]{0,80}--field[\s\S]{0,40}project\.root|project\.root[\s\S]{0,40}--field[\s\S]{0,40}state get/,
-    'must read project.root from state (state get --field project.root) before writing final report');
+  assert.match(s, /path resolve --target run-dir.*--project-root "<canonical_project_root>".*--run-id <run_id>/,
+    'must resolve run-dir through the kernel');
   // Must NOT have a bare relative Write to .deep-loop/runs/.../final-report.md (without a project.root anchor).
   const bareWrite = s.split('\n').some(l =>
     /Write\s*\(/.test(l) &&
     /\.deep-loop\/runs\/[^"]*final-report\.md/.test(l) &&
-    !/(project\.root|<project-root>|\$\{?PROJECT_ROOT\}?|\$\{?ROOT\}?)/.test(l)
+    !/(resolved-run-dir|<run-dir>|\$\{?RUN_DIR\}?)/.test(l)
   );
-  assert.ok(!bareWrite, 'deep-loop-finish must not instruct a bare relative Write(".deep-loop/runs/...final-report.md"); must anchor to project.root');
-  // Must use project.root in the Write call or nearby absolute path pattern
-  assert.match(s, /(project\.root|<project-root>|\$PROJECT_ROOT|\$ROOT)[\s\S]{0,300}final-report\.md|final-report\.md[\s\S]{0,100}(project\.root|<project-root>|\$PROJECT_ROOT|\$ROOT)/,
-    'final-report.md Write must reference project.root or <project-root>-anchored absolute path');
+  assert.ok(!bareWrite, 'must not instruct a bare relative final-report write');
+  assert.match(s, /<resolved-run-dir>\/final-report\.md/);
+  const resolverLine = s.split('\n').find(line => /deep-loop\.mjs.*path resolve --target run-dir/.test(line)) || '';
+  assert.ok(resolverLine, 'resolver command is one physical line');
+  assert.doesNotMatch(resolverLine, MUTATING_SUB, 'read-only resolver line must not trip broad mutation vocabulary');
   // deep-wiki delegation args must also be anchored (not bare relative .deep-loop/...)
   const bareWikiArg = s.split('\n').some(l =>
     /wiki-ingest/.test(l) &&
     /args.*\.deep-loop\/runs/.test(l) &&
-    !/(project\.root|<project-root>|\$\{?PROJECT_ROOT\}?|\$\{?ROOT\}?)/.test(l)
+    !/(resolved-run-dir|<run-dir>|\$\{?RUN_DIR\}?)/.test(l)
   );
-  assert.ok(!bareWikiArg, 'deep-wiki wiki-ingest delegation must not use bare relative .deep-loop path; must anchor to project.root');
+  assert.ok(!bareWikiArg, 'deep-wiki delegation must use the resolved run directory');
 });
 
 // FIX L: adapter read.path must be explicitly described as requiring TRANSFORMATION to worktree-prefixed form.
@@ -672,25 +672,22 @@ test('deep-loop §2-6: workstream new records root-relative .claude/worktrees/<s
   );
 });
 
-// FIX O: state get --field project.root emits JSON-encoded string with quotes (e.g. "/repo").
-// Assigning that raw to a shell variable and using it as a path embeds literal quotes →
-// final-report path is wrong → finish --status completed fails final-report-missing.
-test('deep-loop-finish: project.root read must strip JSON quotes before use as filesystem path', () => {
+// FIX O replacement: manual project.root decoding is absent from path sections.
+test('deep-loop-finish: final-report section has no manual project.root decoding', () => {
   const s = _rf(skillPath('deep-loop-finish'), 'utf8');
-  // Must document JSON quote-stripping (JSON.parse, tr -d, or sed) near the project.root read
-  assert.match(s,
-    /project\.root[\s\S]{0,400}(JSON\.parse|tr\s+-d\s+['"]|sed\b[^\n]*s[^\n]*")/,
-    'deep-loop-finish must document JSON quote-stripping when reading project.root for filesystem path use (state get emits quoted JSON)'
-  );
+  const section = s.match(/## 단계 1: Final Report 작성([\s\S]*?)## 단계 1\.5:/)?.[1] || '';
+  assert.match(section, /path resolve --target run-dir/);
+  assert.doesNotMatch(section, /state get --field project\.root|JSON\.parse|tr\s+-d|\bsed\b/);
 });
 
-test('deep-loop-continue §1.5: project.root read must strip JSON quotes before filesystem path use', () => {
+test('deep-loop-continue §1.5: worktree section has no manual project.root decoding', () => {
   const s = _rf(skillPath('deep-loop-continue'), 'utf8');
-  // state get --field project.root emits JSON-encoded string with quotes; must document stripping
-  assert.match(s,
-    /project\.root[\s\S]{0,400}(JSON\.parse|tr\s+-d\s+['"]|sed\b[^\n]*s[^\n]*")/,
-    'deep-loop-continue §1.5 must document JSON quote-stripping when reading project.root for path absolutization'
-  );
+  const section = s.match(/## 1\.5\. Action-keyed Worktree 진입([\s\S]*?)## 2\./)?.[1] || '';
+  assert.match(section, /path resolve --target workstream/);
+  assert.doesNotMatch(section, /state get --field project\.root|JSON\.parse|tr\s+-d|\bsed\b/);
+  const resolverLine = section.split('\n').find(line => /deep-loop\.mjs.*path resolve --target workstream/.test(line)) || '';
+  assert.ok(resolverLine, 'resolver command is one physical line');
+  assert.doesNotMatch(resolverLine, MUTATING_SUB, 'read-only resolver line must not trip broad mutation vocabulary');
 });
 
 // FIX G: deep-loop SKILL.md episode new --artifacts example must use worktree-prefixed paths
