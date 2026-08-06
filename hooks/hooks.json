@@ -9,6 +9,14 @@
         ]
       }
     ],
+    "PostCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "node -e \"const{join}=require('node:path');const{pathToFileURL}=require('node:url');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(!r){console.error('deep-loop: plugin root unavailable')}else{import(pathToFileURL(join(r,'scripts','hooks-impl','postcompact-observe.mjs')).href).then(m=>m.main()).catch(()=>console.error('deep-loop: postcompact hook failed'))}\"" }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "compact",
