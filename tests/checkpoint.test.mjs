@@ -31,7 +31,13 @@ import {
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
-import { readState, runDir, withLock, writeState } from '../scripts/lib/state.mjs';
+import {
+  readState,
+  runDir,
+  withLock,
+  withReconciledMutationLock,
+  writeState,
+} from '../scripts/lib/state.mjs';
 import { contentHash, ulid, wrap } from '../scripts/lib/envelope.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
@@ -1246,6 +1252,101 @@ test('compact restore reconciles every isolated journal fault through one ordina
   }
 });
 
+test('generic mutations cannot cross a retained compact restore intent', () => {
+  for (const faultAt of ['restore:intent-written', 'event:appended', 'state:written']) {
+    const fixture = seedBound();
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      ...manualAdmission,
+      now: NOW_MS + 2000,
+      faultAt,
+    }), new RegExp(`TEST_FAULT:${faultAt}`), faultAt);
+    const before = durableInventory(fixture);
+
+    assert.throws(() => appendAnchored(fixture.root, fixture.runId, {
+      type: 'compact-restore-interleaving-test',
+      data: { fault_at: faultAt },
+      now: new Date(NOW_MS + 3000).toISOString(),
+    }, loop => { loop.discovered_items.push(faultAt); }), /COMPACT_RESTORE_INTENT_PENDING/, faultAt);
+    let callbackCalled = false;
+    assert.throws(() => withReconciledMutationLock(fixture.root, fixture.runId, () => {
+      callbackCalled = true;
+    }), /COMPACT_RESTORE_INTENT_PENDING/, `${faultAt}: fixed-shape gateway`);
+    assert.equal(callbackCalled, false, `${faultAt}: fixed-shape callback`);
+    assert.deepEqual(durableInventory(fixture), before, faultAt);
+
+    const restored = publicManualRestore(fixture, emitted, NOW_MS + 4000);
+    assert.equal(restored.phase, 'restored', faultAt);
+    const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
+      .split('\n').filter(Boolean).map(line => JSON.parse(line));
+    assert.equal(events.filter(event => event.type === 'compact-restored').length, 1, faultAt);
+    assert.equal(events.filter(event => event.type === 'compact-restore-interleaving-test').length, 0, faultAt);
+  }
+});
+
+test('post-cleanup compact restore retry remains exact after a later generic mutation', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+    faultAt: 'restore:intent-cleanup',
+  }), /TEST_FAULT:restore:intent-cleanup/);
+  assert.equal(
+    readdirSync(join(runDir(fixture.root, fixture.runId), 'compact-restore-intents')).length,
+    0,
+  );
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'compact-restore-post-cleanup-test',
+    data: { after_cleanup: true },
+    now: new Date(NOW_MS + 3000).toISOString(),
+  }, loop => { loop.discovered_items.push('after-compact-restore'); });
+  const beforeReplay = durableInventory(fixture);
+  const current = readState(fixture.root, fixture.runId).data;
+  const context = JSON.parse(readFileSync(
+    strictCheckpointPath(fixture.root, fixture.runId, emitted),
+    'utf8',
+  )).payload.context;
+  assert.equal(context.run_id, fixture.runId);
+  assert.equal(context.owner_run_id, fixture.fence.owner);
+  assert.equal(context.generation, fixture.fence.generation);
+  assert.equal(context.runtime, fixture.runtime);
+  assert.equal(context.project_root_digest, projectRootDigest(current.project.root));
+  assert.equal(context.project_binding_generation, current.project.binding_generation);
+  assert.equal(context.scope.workstream_id, current.session_chain.sessions.at(-1).scope.workstream_id);
+  assert.equal(context.workstream.id, current.workstreams[0].id);
+  assert.equal(context.current_episode.id, current.current_episode);
+
+  const replayed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 4000,
+  });
+  assert.equal(replayed.disposition, 'replayed');
+  assert.equal(replayed.replay, 'exact');
+  assert.deepEqual(durableInventory(fixture), beforeReplay);
+  const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
+    .split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.equal(events.filter(event => event.type === 'compact-restored').length, 1);
+  assert.equal(events.filter(event => event.type === 'compact-restore-post-cleanup-test').length, 1);
+});
+
 test('ordinary restore converges the exact compact hash-first state partial', () => {
   const fixture = seedBound();
   const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
@@ -1422,7 +1523,10 @@ test('retained restore intent binds admission source and proof before any recove
     contentHash(JSON.stringify(intent.payload.request_binding)),
     intent.payload.request_binding_sha256,
   );
-  prepareGenericPublication(fixture, 'retained-restore-wrong-binding');
+  assert.throws(
+    () => prepareGenericPublication(fixture, 'retained-restore-wrong-binding'),
+    /COMPACT_RESTORE_INTENT_PENDING/,
+  );
 
   for (const request of [
     { admission: 'postcompact-observation', source: 'external-controller' },
@@ -2090,14 +2194,12 @@ test('live restore intent pins its checkpoint and receipt pair until intent clea
     faultAt: 'restore:intent-written',
   }), /TEST_FAULT:restore:intent-written/);
 
-  for (let index = 0; index < 7; index += 1) {
-    emitCompactCheckpoint(fixture.root, fixture.runId, {
-      fence: fixture.fence,
-      runtime: fixture.runtime,
-      hostSessionEvidence: hostEvidence('claude-code', `pressure-${index}`),
-      now: NOW_MS + 10 + index,
-    });
-  }
+  assert.throws(() => emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'blocked-pressure'),
+    now: NOW_MS + 10,
+  }), /COMPACT_RESTORE_INTENT_PENDING/);
   assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, pinned)), true);
   assert.equal(existsSync(pinnedReceipt), true);
 
@@ -2109,12 +2211,14 @@ test('live restore intent pins its checkpoint and receipt pair until intent clea
     source: 'sessionstart',
     now: NOW_MS + 100,
   });
-  emitCompactCheckpoint(fixture.root, fixture.runId, {
-    fence: fixture.fence,
-    runtime: fixture.runtime,
-    hostSessionEvidence: hostEvidence('claude-code', 'after-cleanup'),
-    now: NOW_MS + 101,
-  });
+  for (let index = 0; index < 7; index += 1) {
+    emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `after-cleanup-${index}`),
+      now: NOW_MS + 101 + index,
+    });
+  }
   assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, pinned)), false);
   assert.equal(existsSync(pinnedReceipt), false);
 });

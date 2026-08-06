@@ -26,6 +26,10 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     'the isolated lifecycle must consume the standalone inline descriptor');
   assert.match(source, /cwd:\s*project/,
     'every public CLI call must execute from the isolated project cwd');
+  assert.match(source, /HOME:\s*isolatedHome/,
+    'plugin discovery must use an isolated home rather than the real user home');
+  assert.match(source, /Object\.entries\(detected\)[\s\S]{0,300}\.present/,
+    'the fixture must report the detector result instead of replacing keyed output with an empty list');
   assert.doesNotMatch(source, /ORCA_PANE_KEY|orca-loop|mcp__|claude\s+-p|codex\s+exec|deep-(?:work|review|wiki|memory)/i,
     'the isolated lifecycle may use only this plugin CLI');
   for (const runtime of ['claude', 'codex']) {
@@ -34,6 +38,7 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     assert.equal(value.protocol, 'standalone');
     assert.equal(value.orca_present, false);
     assert.deepEqual(value.detected_plugins, []);
+    assert.equal(value.terminal_escape, 'human-confirmed-abandon-without-independent-checker');
     assert.deepEqual(value.stages, [
       'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
       'terminal-boundary', 'handoff', 'resume', 'recovery', 'finish',

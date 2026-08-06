@@ -1224,17 +1224,20 @@ function publishOnce(root, runId, operationId, { faultAt = () => {} } = {}) {
   );
 }
 
-test('generic anchored publication proceeds without reading a live isolated compact intent', () => {
+test('generic anchored publication validates and blocks a live isolated compact intent', () => {
   const { root, runId, dir } = anchoredSeed();
   const privateDir = join(dir, 'compact-restore-intents');
   mkdirSync(privateDir);
   const privatePath = join(privateDir, '01KZ7H4M000000000000000000.prepared.json');
   writeFileSync(privatePath, 'private-intent-bytes');
-  publishOnce(root, runId, 'generic-beside-compact-intent');
+  assert.throws(
+    () => publishOnce(root, runId, 'generic-beside-compact-intent'),
+    /COMPACT_RESTORE_INTENT_INVALID/,
+  );
   assert.equal(readFileSync(privatePath, 'utf8'), 'private-intent-bytes');
   const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
-  assert.deepEqual(snapshot.data.discovered_items, ['generic-beside-compact-intent']);
-  assert.equal(snapshot.logLines.filter(event => event.type === 'anchored-test').length, 1);
+  assert.deepEqual(snapshot.data.discovered_items, []);
+  assert.equal(snapshot.logLines.filter(event => event.type === 'anchored-test').length, 0);
 });
 
 test('publication-mode appendAnchored replays artifacts, exact events, candidate loop, hash, and commit in order', () => {

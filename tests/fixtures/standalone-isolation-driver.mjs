@@ -10,11 +10,16 @@ if (!['claude', 'codex'].includes(runtime)) throw new Error('runtime must be cla
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
 const project = mkdtempSync(join(tmpdir(), `deep-loop-standalone-${runtime}-`));
+const isolatedHome = join(project, 'home');
+mkdirSync(isolatedHome);
 mkdirSync(join(project, '.claude', 'worktrees', 'standalone'), { recursive: true });
 const now = '2026-08-06T00:00:00.000Z';
 const childEnv = {
+  HOME: isolatedHome,
   PATH: '',
   TMPDIR: process.env.TMPDIR ?? '',
+  USERPROFILE: isolatedHome,
+  XDG_CONFIG_HOME: join(isolatedHome, '.config'),
 };
 
 function invoke(args, { input = null, label = args.join(' ') } = {}) {
@@ -29,6 +34,13 @@ function invoke(args, { input = null, label = args.join(' ') } = {}) {
 }
 
 const detected = invoke(['detect-plugins']);
+const detectedPlugins = Object.entries(detected)
+  .filter(([, value]) => value === true || value?.present === true)
+  .map(([name]) => name)
+  .sort();
+if (detectedPlugins.length !== 0) {
+  throw new Error(`standalone detector found plugins: ${detectedPlugins.join(',')}`);
+}
 const initialized = invoke([
   'init-run', '--runtime', runtime, '--goal', 'standalone isolation',
   '--protocol', 'standalone', '--continuation', 'workstream-session', '--now', now,
@@ -109,7 +121,8 @@ process.stdout.write(`${JSON.stringify({
   runtime,
   protocol: terminal.routing.protocol,
   orca_present: false,
-  detected_plugins: Array.isArray(detected) ? detected : (detected?.plugins ?? []),
+  detected_plugins: detectedPlugins,
+  terminal_escape: 'human-confirmed-abandon-without-independent-checker',
   stages: [
     'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
     'terminal-boundary', 'handoff', 'resume', 'recovery', 'finish',

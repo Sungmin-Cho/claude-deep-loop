@@ -67,6 +67,13 @@ import { isOpenScope, ownerSession } from './session-scope.mjs';
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 const COMPACT_PRUNE_FILE = /^([0-9a-f]{64})-compact-prune\.json$/;
 
+function assertNoCompactRestoreIntentLocked(root, runId, guard) {
+  const canonicalRunDir = (realpathSync.native || realpathSync)(runDir(root, runId));
+  if (findCompactRestoreIntentLocked(canonicalRunDir, runId, guard)) {
+    throw new Error('COMPACT_RESTORE_INTENT_PENDING');
+  }
+}
+
 function compactCheckpointDirectory(root, runId) {
   const dir = join(runDir(root, runId), 'checkpoints');
   if (!existsSync(dir)) return null;
@@ -857,6 +864,7 @@ export function withReconciledRootRecoveryLock(candidateRoot, runId, callback, o
 export function withReconciledMutationLock(root, runId, callback, options = {}) {
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
   return withLock(root, runId, guard => {
+    assertNoCompactRestoreIntentLocked(root, runId, guard);
     reconcileAnchoredPublicationLocked(root, runId, guard, options);
     const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
     if (existsSync(join(runDir(root, runId), 'transactions'))) {
@@ -909,6 +917,7 @@ export function withFencedReconciledMutationLock(root, runId, callback, {
 } = {}) {
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
   return withLock(root, runId, guard => {
+    assertNoCompactRestoreIntentLocked(root, runId, guard);
     const prepared = findPreparedPublicationLocked(runDir(root, runId), guard);
     if (prepared) {
       assertPreparedPublicationFence(prepared.manifest, fence, runtime);
@@ -1233,7 +1242,7 @@ function classifyHashFirstRestorePartial(root, runId, raw, intent) {
   return Object.freeze({ parsed });
 }
 
-function exactCursorReplay(loop, lines, context, request, baselineTurns) {
+function exactCursorReplay(loop, lines, context, request) {
   const session = ownerSession(loop);
   const cursor = session.compact_cursor;
   if (!cursor
@@ -1244,9 +1253,7 @@ function exactCursorReplay(loop, lines, context, request, baselineTurns) {
     || cursor.generation !== request.fence.generation
     || cursor.runtime !== request.runtime
     || cursor.workstream_id !== context.workstream.id
-    || cursor.episode_id !== context.current_episode.id
-    || cursor.baseline_turns !== baselineTurns
-    || JSON.stringify(loop.event_log_head) !== JSON.stringify(cursor.restore_event)) return null;
+    || cursor.episode_id !== context.current_episode.id) return null;
   const event = lines[cursor.restore_event.seq - 1];
   if (!event || event.type !== 'compact-restored'
     || event.ts !== cursor.restored_at
@@ -1380,7 +1387,7 @@ function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
     const head = verifyHeadLines(log.lines, loop.event_log_head);
     if (!head.ok) throw new Error(`LOG_TAMPERED: ${head.errors.join('; ')}`);
     const baselineTurns = affinity.session.turns;
-    const replay = exactCursorReplay(loop, log.lines, strict.context, request, baselineTurns);
+    const replay = exactCursorReplay(loop, log.lines, strict.context, request);
     if (replay) {
       assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
       return restoreDescriptor(request, replay, 'replayed');
@@ -1541,6 +1548,7 @@ export function verifyHead(root, runId, expected) {
 // behavior exactly — floor is strictly opt-in.
 export function appendAnchored(root, runId, { type, data, now }, mutate, preCheck, opts = {}) {
   return withLock(root, runId, guard => {
+    assertNoCompactRestoreIntentLocked(root, runId, guard);
     const rootRecovery = opts.rootRecovery === true;
     const publication = opts.publication ? materializePublication(opts.publication) : null;
     reconcileAnchoredPublicationLocked(root, runId, guard, {
