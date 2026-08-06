@@ -1291,6 +1291,53 @@ test('generic mutations cannot cross a retained compact restore intent', () => {
   }
 });
 
+test('public checkpoint emit preserves stale-fence precedence over a retained restore intent', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    ...manualAdmission,
+    now: NOW_MS + 2000,
+    faultAt: 'restore:intent-written',
+  }), /TEST_FAULT:restore:intent-written/);
+  const before = durableInventory(fixture);
+
+  for (const args of [
+    ['checkpoint', 'emit', '--runtime', fixture.runtime],
+    ['state', 'patch', '--field', 'discovered_items', '--value', '[]'],
+  ]) {
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'scripts', 'deep-loop.mjs'),
+      ...args,
+      '--owner', 'wrong-owner',
+      '--generation', String(fixture.fence.generation),
+      '--project-root', fixture.root,
+      '--run-id', fixture.runId,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 3, `${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /LEASE_FENCED: owner-mismatch/, args.join(' '));
+    assert.doesNotMatch(result.stderr, /COMPACT_RESTORE_INTENT_PENDING/, args.join(' '));
+  }
+
+  const authorized = spawnSync(process.execPath, [
+    join(process.cwd(), 'scripts', 'deep-loop.mjs'),
+    'state', 'patch', '--field', 'discovered_items', '--value', '[]',
+    '--owner', fixture.fence.owner,
+    '--generation', String(fixture.fence.generation),
+    '--project-root', fixture.root,
+    '--run-id', fixture.runId,
+  ], { encoding: 'utf8' });
+  assert.equal(authorized.status, 1, `${authorized.stdout}\n${authorized.stderr}`);
+  assert.match(authorized.stderr, /COMPACT_RESTORE_INTENT_PENDING/);
+  assert.deepEqual(durableInventory(fixture), before);
+});
+
 test('post-cleanup compact restore retry remains exact after a later generic mutation', () => {
   const fixture = seedBound();
   const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {

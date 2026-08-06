@@ -44,12 +44,15 @@ test('checkpoint fenced gateway authorizes verified prepared manifests before re
   const gateway = integritySource.slice(gatewayStart, gatewayEnd);
   const prepared = gateway.indexOf('findPreparedPublicationLocked');
   const manifestFence = gateway.indexOf('assertPreparedPublicationFence');
+  const currentFence = gateway.indexOf('assertEstablishedFence', manifestFence);
+  const compactIntent = gateway.indexOf('assertNoCompactRestoreIntentLocked');
   const reconcile = gateway.indexOf('reconcileAnchoredPublicationLocked');
   const strictSnapshot = gateway.indexOf('snapshotRaw', reconcile);
   const strictFence = gateway.indexOf('assertEstablishedFence', strictSnapshot);
   const retire = gateway.indexOf('retireCommittedPublicationLocked');
   const callback = gateway.indexOf('return callback');
-  assert.ok(prepared >= 0 && prepared < manifestFence && manifestFence < reconcile);
+  assert.ok(prepared >= 0 && prepared < manifestFence && manifestFence < currentFence);
+  assert.ok(currentFence < compactIntent && compactIntent < reconcile);
   assert.ok(reconcile < strictSnapshot && strictSnapshot < strictFence);
   assert.ok(strictFence < retire && retire < callback);
 

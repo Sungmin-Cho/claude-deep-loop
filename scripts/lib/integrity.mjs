@@ -74,6 +74,21 @@ function assertNoCompactRestoreIntentLocked(root, runId, guard) {
   }
 }
 
+function compactRestoreIntentCandidateLocked(root, runId, guard) {
+  const canonicalRunDir = (realpathSync.native || realpathSync)(runDir(root, runId));
+  guard.assertOwned(canonicalRunDir);
+  const dir = join(canonicalRunDir, 'compact-restore-intents');
+  if (!existsSync(dir)) return false;
+  let stat;
+  try { stat = lstatSync(dir); } catch { return true; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return true;
+  let candidate;
+  try { candidate = readdirSync(dir).some(name => name.endsWith('.prepared.json')); }
+  catch { return true; }
+  guard.assertOwned(canonicalRunDir);
+  return candidate;
+}
+
 function compactCheckpointDirectory(root, runId) {
   const dir = join(runDir(root, runId), 'checkpoints');
   if (!existsSync(dir)) return null;
@@ -917,7 +932,6 @@ export function withFencedReconciledMutationLock(root, runId, callback, {
 } = {}) {
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
   return withLock(root, runId, guard => {
-    assertNoCompactRestoreIntentLocked(root, runId, guard);
     const prepared = findPreparedPublicationLocked(runDir(root, runId), guard);
     if (prepared) {
       assertPreparedPublicationFence(prepared.manifest, fence, runtime);
@@ -928,6 +942,7 @@ export function withFencedReconciledMutationLock(root, runId, callback, {
       });
       assertEstablishedFence(current.data, fence, runtime);
     }
+    assertNoCompactRestoreIntentLocked(root, runId, guard);
     reconcileAnchoredPublicationLocked(root, runId, guard, options);
     const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
     assertEstablishedFence(snapshot.data, fence, runtime);
@@ -1548,9 +1563,32 @@ export function verifyHead(root, runId, expected) {
 // behavior exactly — floor is strictly opt-in.
 export function appendAnchored(root, runId, { type, data, now }, mutate, preCheck, opts = {}) {
   return withLock(root, runId, guard => {
-    assertNoCompactRestoreIntentLocked(root, runId, guard);
     const rootRecovery = opts.rootRecovery === true;
     const publication = opts.publication ? materializePublication(opts.publication) : null;
+    if (compactRestoreIntentCandidateLocked(root, runId, guard)) {
+      const raw = readRawRun(root, runId);
+      const authorized = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: false,
+      });
+      const authorizationLoop = structuredClone(authorized.data);
+      if (rootRecovery) {
+        const binding = classifyProjectRootBinding(root, authorizationLoop.project?.root);
+        if (binding.mismatch_class === 'fenced') {
+          throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
+        }
+        if (binding.mismatch_class !== 'unresolvable') {
+          throw new Error('PROJECT_ROOT_REBIND_NOT_ALLOWED: project root already matches');
+        }
+      } else {
+        assertProjectRootBinding(root, authorizationLoop);
+      }
+      if (preCheck) preCheck(authorizationLoop, { guard });
+      if (!rootRecovery
+        && (authorizationLoop.status === 'completed' || authorizationLoop.status === 'stopped')) {
+        throw new Error('RUN_TERMINAL: append');
+      }
+      assertNoCompactRestoreIntentLocked(root, runId, guard);
+    }
     reconcileAnchoredPublicationLocked(root, runId, guard, {
       faultAt: publication?.faultAt,
       forceUnlinkReplacement: publication?.forceUnlinkReplacement,
