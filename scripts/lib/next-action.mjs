@@ -37,6 +37,31 @@ function baselineForWorkstreamAdvice(loop, session) {
     : 0;
 }
 
+export function workstreamSessionAdviceCadence(loop, { unattended = false } = {}) {
+  if (loop.autonomy?.continuation_policy !== 'workstream-session' || unattended) {
+    return { advice: false, reason: null };
+  }
+  const session = ownerSession(loop);
+  const cap = loop.budget?.per_session_turn_cap;
+  const relativeTurns = currentSessionTurns(loop) - baselineForWorkstreamAdvice(loop, session);
+  return cap && relativeTurns >= cap
+    ? { advice: true, reason: 'per_session_turn_cap' }
+    : { advice: false, reason: null };
+}
+
+export function migratedPolicyCapOutcome(loop, { unattended = false } = {}) {
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    return { advice: false, handoff: false };
+  }
+  const cap = loop.budget?.per_session_turn_cap;
+  const capReached = cap && currentSessionTurns(loop) >= cap;
+  if (!capReached) return { advice: false, handoff: false };
+  if (loop.autonomy?.continuation_policy === 'compact-in-place' && !unattended) {
+    return { advice: true, handoff: false };
+  }
+  return { advice: false, handoff: true };
+}
+
 function boundaryAlreadyLinked(loop, parent, boundary) {
   if (!parent?.superseded_by) return false;
   const child = (loop.session_chain?.sessions || [])
@@ -192,17 +217,15 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
     );
   }
 
-  // 마일스톤: per_session_turn_cap 도달. compact-in-place attended는 액션을 대체하지 않고 advice만 부가한다
-  // (대체형 advisory는 rotate 없이는 카운터가 리셋되지 않아 매 tick advisory만 반환하는 liveness 결함 — 스펙 §4.4).
-  const cap = loop.budget?.per_session_turn_cap;
-  const capTurns = workstreamSession
-    ? currentSessionTurns(loop) - baselineForWorkstreamAdvice(loop, currentSession)
-    : currentSessionTurns(loop);
-  const capReached = cap && capTurns >= cap;
-  const inPlace = (workstreamSession || loop.autonomy?.continuation_policy === 'compact-in-place')
-    && (workstreamSession || !unattended);
-  if (capReached && !inPlace) return A(gate, { type: 'handoff', reason: 'per_session_turn_cap' }, '/deep-loop-handoff');
-  const withAdvice = (r) => (capReached && inPlace)
+  // Workstream sessions compact only as attended advice relative to their
+  // generation-bound cursor. Unattended ticks preserve the real action. The
+  // migrated policies keep their historical cap outcomes in a separate helper.
+  const workstreamCadence = workstreamSessionAdviceCadence(loop, { unattended });
+  const migratedCap = migratedPolicyCapOutcome(loop, { unattended });
+  if (migratedCap.handoff) {
+    return A(gate, { type: 'handoff', reason: 'per_session_turn_cap' }, '/deep-loop-handoff');
+  }
+  const withAdvice = (r) => (workstreamCadence.advice || migratedCap.advice)
     ? { ...r, action: { ...r.action, advice: 'compact', advice_reason: 'per_session_turn_cap' } }
     : r;
 

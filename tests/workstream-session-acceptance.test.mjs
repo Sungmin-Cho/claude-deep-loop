@@ -337,6 +337,32 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(continuation.action.episode_id, makerA);
     assert.notEqual(continuation.action.type, 'handoff');
 
+    const capped = readKernelState(root, runId).data;
+    const cappedOwner = capped.session_chain.sessions
+      .find(session => session.run_id === capped.session_chain.lease.owner_run_id);
+    cappedOwner.turns = (cappedOwner.compact_cursor?.baseline_turns ?? 0)
+      + capped.budget.per_session_turn_cap;
+    writeState(root, runId, capped);
+    for (const autoHandoff of [true, false]) {
+      const unattendedState = readKernelState(root, runId).data;
+      unattendedState.autonomy.auto_handoff = autoHandoff;
+      writeState(root, runId, unattendedState);
+      const unattendedContinuation = jsonResult(cli(root, [
+        'next-action',
+        '--unattended',
+        '--json',
+        '--now', FIXED_NOW,
+        '--run-id', runId,
+      ]), `unattended Workstream A auto_handoff=${autoHandoff}`);
+      assert.equal(unattendedContinuation.action.episode_id, makerA);
+      assert.notEqual(unattendedContinuation.action.type, 'handoff');
+      assert.equal(Object.hasOwn(unattendedContinuation.action, 'advice'), false);
+      assert.equal(Object.hasOwn(unattendedContinuation.action, 'advice_reason'), false);
+    }
+    const restoredAutonomy = readKernelState(root, runId).data;
+    restoredAutonomy.autonomy.auto_handoff = true;
+    writeState(root, runId, restoredAutonomy);
+
     // Approval is a human-gated public mutation. Missing confirmation must be
     // a byte-preserving usage rejection, and therefore cannot authorize the
     // attended respawn exercised below.
