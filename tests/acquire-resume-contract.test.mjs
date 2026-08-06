@@ -1656,7 +1656,9 @@ test('SLICE-003 affinity recovery preserves F14 rejection identities after consu
 });
 
 test('SLICE-003 recovery CLI missing and malformed attempts are mutation-free exit 2 and 1', () => {
-  for (const [attemptArgs, expected] of [[[], 2], [['--attempt-id', 'bad!'], 1]]) {
+  for (const [attemptArgs, expected] of [
+    [[], 2], [['--attempt-id', ''], 2], [['--attempt-id', 'bad!'], 1],
+  ]) {
     const f = seedAffinityReservation();
     const before = anchoredBytes(f.root, f.runId);
     const result = runAcquireCli(f.root, f.runId, ['recovery', 'acquire',
@@ -1773,7 +1775,9 @@ test('SLICE-003 root recovery preserves F14 proof rejection after consumption', 
 });
 
 test('SLICE-003 root recovery CLI missing and malformed attempts are mutation-free exit 2 and 1', () => {
-  for (const [attemptArgs, expected] of [[[], 2], [['--attempt-id', 'bad!'], 1]]) {
+  for (const [attemptArgs, expected] of [
+    [[], 2], [['--attempt-id', ''], 2], [['--attempt-id', 'bad!'], 1],
+  ]) {
     const f = seedRelocatedRootReservation();
     const before = readStateForRootRecovery(f.root, f.runId).data;
     const child = before.session_chain.sessions.find(s => s.run_id === f.recovered.replacement_session_id);
