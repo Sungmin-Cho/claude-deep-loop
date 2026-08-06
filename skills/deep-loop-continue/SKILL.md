@@ -37,6 +37,54 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 
 `<owner_run_id> = lease.owner_run_id`, `<generation> = lease.generation`. 여기서 `lease`는 방금 읽은 `session_chain.lease`다. 즉 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 매 tick 새로 읽고, `<run_id>`는 절대 재바인딩하지 않는다.
 
+## 0.25. Restored compact capsule gate
+
+이 `SessionStart(compact)` comprehension tick에 compact capsule wire가
+공급되었다면, 어떤 mutating CLI보다 먼저 이
+gate를 실행한다. Stage A는 §0의 lease 명령보다도 먼저 순수 입력만 검사한다.
+wire가 2048 UTF-8 bytes를 초과하거나 missing, truncated, malformed, oversized
+JSON이면 `/deep-loop-status`를 안내하고 즉시 stop한다. `JSON.parse` 후 다음
+exact top-level key set만 허용한다:
+
+`marker`, `version`, `injected_by`, `capsule`.
+
+각 값은 `marker:"deep-loop-compact-capsule-v1"`, `version:1`,
+`injected_by:"sessionstart"`이어야 한다. `capsule`은 exact key set
+`kind`, `phase`, `run_id`, `checkpoint_key`, `context_sha256`,
+`pre_restore_loop_hash`, `owner_run_id`, `generation`, `runtime`,
+`workstream_id`, `episode_id`, `provider_evidence`, `admission`,
+`restore_event`, `restore_command`만 가지며 `kind`은
+`deep-loop-compact-capsule`, `phase`는 반드시 `restored`여야 한다.
+`provider_evidence`도 exact boolean keys `recorded`, `supplied`, `matched`만
+허용한다. 어느 key/type/enum/length 검사라도 실패하면 stop하며
+`session-profile set` must not run; 다른 mutation도 실행하면 안 된다.
+
+Stage A 통과 뒤 §0의 fresh lease를 읽고, 이어서 다음 read-only state를 모두
+읽는다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.sessions --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field event_log_head --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field current_episode --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+current lease owner의 `session_chain.sessions` row와 그 `compact_cursor`를 찾아
+capsule의 `run_id`, `owner_run_id`, `generation`, `runtime`,
+`workstream_id`, `episode_id`, `checkpoint_key`, `context_sha256`,
+`pre_restore_loop_hash`, `provider_evidence`, committed `admission`,
+`restore_event`와 exact-deep-equal 비교한다. owner session의 run id는
+lease owner와 같아야 하고, cursor의 owner/generation/runtime도 fresh lease와
+일치해야 한다. cursor `restore_event`는 current `event_log_head`와 같아야
+하며, Workstream은 open/non-terminal이고 current episode가 그 Workstream에
+속해야 한다.
+
+불일치하면 다른 restore를 추측하지 말고 `/deep-loop-status`를 안내한 뒤
+stop한다. model/effort are not part of the immutable capsule identity. 따라서
+모든 immutable 검증이 성공한 뒤에만 §0.5 profile refresh를 조건에 따라
+정확히 한 번 실행하고, 그 다음 §1의 fresh routing tick으로 진행한다.
+
 ## 0.5. 세션 model/effort refresh
 
 §0에서 lease를 확보한 직후, 게이트/디스패치 이전에 현재 세션의
@@ -195,25 +243,6 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --owner <o
 
 self-report는 best-effort 보정일 뿐이다. 커널이 각 business mutation마다
 최소 floor를 계상하고 wallclock hard bound를 적용한다.
-
-## 3.5. Post-compact comprehension check
-
-직전 `SessionStart(compact)` capsule을 받은 tick이면, capsule의
-`run_id`/`generation`을 아래 lease 결과와 대조한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-capsule의 `episode`/`next_action`도 아래 current episode와 `next-action` 결과에 대조한다. 즉 스펙 §4.3의 `run_id`/`episode`/`next_action`/`generation` 4개 필드를 모두 확인한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field current_episode --project-root "<canonical_project_root>" --run-id <run_id>
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-불일치하면 checkpoint restore를 다시 추측하지 않는다. `/deep-loop-status`로
-진단을 요청하고 현재 conversation에서 멈춘다.
 
 ## 4. Kernel action 이후 continuity
 

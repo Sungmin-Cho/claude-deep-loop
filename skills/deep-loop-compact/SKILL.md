@@ -66,7 +66,8 @@ session, or marks a Workstream terminal.
 Before any evidence-free checkpoint inspection, evaluate the trusted
 SessionStart host context. If trusted host context explicitly reports
 `provider-evidence-mismatch` or
-`checkpoint-unavailable-with-trusted-evidence`, do not retry without trusted evidence.
+`checkpoint-unavailable-with-trusted-evidence`, or carries the marker
+`deep-loop-compact-preserve-pause-only`, do not retry without trusted evidence.
 Do not inspect for a checkpoint. Freshly read the lease and owner-session
 runtime:
 
@@ -114,16 +115,43 @@ Automatic SessionStart, controller, retry, and fallback paths must never add
 `--confirm-manual-compact` or select `human-attested`. Direct-human restore
 must never select the observation admission.
 
-On success, continue in the same owner session. Claude invokes
-`/deep-loop-continue`; Codex invokes `$deep-loop:deep-loop-continue`.
+### Direct dispatch boundary
+
+If the restore command returns a committed result or an exact replay, construct
+one restored compact capsule from the received canonical capsule and the kernel
+result. Preserve the exact top-level wire and immutable checkpoint fields, set
+`phase` to `restored`, and replace only `admission`, `provider_evidence`, and
+`restore_event` with the kernel result's original committed audit values. Do not
+capture or add routing advice.
+
+Directly invoke the existing runtime-qualified continue skill exactly once in
+this same model turn and same owner session, passing that canonical restored
+capsule as input:
+
+- Claude: invoke `/deep-loop-continue` exactly once.
+- Codex: invoke `$deep-loop:deep-loop-continue` exactly once.
+
+This is an actual skill dispatch, not a printed command or a request for a later
+turn. Stop the compact skill after the invoked continue tick returns. Do not
+pre-read `next-action --json`; `deep-loop-continue` alone owns fresh routing.
 
 For a stale, corrupt, foreign, or missing checkpoint without a trusted
-evidence rejection, freshly re-read `session_chain.lease`,
-`session_chain.sessions`, the owner scope, current Workstream, and current
-episode. Those fresh values must prove the same owner, generation, and open
-bound Workstream affinity before state-derived continuation is allowed.
-Specifically require an open bound Workstream affinity in the same owner
-session. Then delegate to the same runtime-specific continue command above.
+evidence rejection, do not retry restore. Freshly re-read all four state views:
+The fresh proof must establish the same owner and open bound Workstream affinity
+before any capsule-free dispatch.
+
+```text
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.sessions --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field current_episode --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+Those fresh values must prove the same owner and generation, a containing owner
+session, an open, non-terminal bound Workstream, and a current episode belonging
+to that Workstream. Only with every proof present, directly invoke one
+runtime-qualified, capsule-free continue tick exactly once in the same model turn.
+This fallback must not construct a restored capsule or select `human-attested`.
 Otherwise execute the public fenced preserve-pause mutation:
 
 ```text

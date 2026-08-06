@@ -1068,6 +1068,72 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+(?:finish|workstream terminal)/);
 });
 
+test('compact restore directly dispatches exactly one qualified continue tick after reason-keyed admission', () => {
+  const body = readFileSync(skillPath('deep-loop-compact'), 'utf8');
+  const restore = body.match(/## Restore([\s\S]*)/i)?.[1] ?? '';
+  const rejection = restore.indexOf('deep-loop-compact-preserve-pause-only');
+  const inspect = restore.indexOf('checkpoint inspect --json');
+  const observation = restore.indexOf('--admission postcompact-observation');
+  const manual = restore.indexOf('--admission human-attested');
+  const direct = restore.indexOf('Direct dispatch boundary');
+  const fallback = restore.indexOf('For a stale, corrupt, foreign, or missing checkpoint');
+
+  assert.ok(rejection >= 0 && rejection < inspect,
+    'trusted rejection marker must route before evidence-free inspect');
+  assert.ok(inspect >= 0 && inspect < observation && observation < manual && manual < direct,
+    'inspect and mutually exclusive admissions must precede the direct dispatch boundary');
+  assert.match(restore, /Direct dispatch boundary[\s\S]{0,900}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
+  assert.match(restore, /same model turn/i);
+  assert.doesNotMatch(restore, /On success, continue[\s\S]{0,120}(?:invokes|print)/i,
+    'a print-only or deferred continuation is not a dispatch');
+  assert.doesNotMatch(restore.slice(0, direct), /next-action --json/,
+    'restore must not pre-read routing before direct continue dispatch');
+  assert.match(restore, /Automatic SessionStart[\s\S]{0,300}must never[\s\S]{0,180}human-attested/i);
+
+  const fallbackBody = restore.slice(fallback);
+  for (const field of [
+    'session_chain.lease',
+    'session_chain.sessions',
+    'workstreams',
+    'current_episode',
+  ]) assert.match(fallbackBody, new RegExp(`state get --field ${field.replace('.', '\\.')}`));
+  assert.match(fallbackBody, /open, non-terminal bound Workstream/i);
+  assert.match(fallbackBody, /capsule-free[\s\S]{0,240}exactly once/i);
+});
+
+test('continue validates the restored 2048-byte capsule against cursor and event head before mutation', () => {
+  const body = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  const capsuleGate = body.indexOf('## 0.25. Restored compact capsule gate');
+  const profile = body.indexOf('## 0.5.');
+  assert.ok(capsuleGate >= 0 && capsuleGate < profile,
+    'restored capsule gate must precede session-profile mutation');
+  const gate = body.slice(capsuleGate, profile);
+
+  assert.match(gate, /2048 UTF-8 bytes/);
+  assert.match(gate, /JSON\.parse/);
+  assert.match(gate, /exact (?:top-level )?key/i);
+  assert.match(gate, /deep-loop-compact-capsule-v1/);
+  assert.match(gate, /phase[^\n]*restored/);
+  for (const field of [
+    'session_chain.lease',
+    'session_chain.sessions',
+    'event_log_head',
+    'workstreams',
+    'current_episode',
+    'compact_cursor',
+    'checkpoint_key',
+    'context_sha256',
+    'pre_restore_loop_hash',
+    'provider_evidence',
+    'admission',
+    'restore_event',
+  ]) assert.match(gate, new RegExp(field.replace('.', '\\.')));
+  assert.match(gate, /restore_event[\s\S]{0,180}event_log_head/);
+  assert.match(gate, /\/deep-loop-status[\s\S]{0,180}stop/i);
+  assert.doesNotMatch(gate, /next_action/,
+    'the restored capsule is immutable identity, not captured routing advice');
+});
+
 test('status skill reads the gate decision and durable counters from their real sources', () => {
   const md = readFileSync(skillPath('deep-loop-status'), 'utf8');
   assert.match(md, /comprehension status/);
