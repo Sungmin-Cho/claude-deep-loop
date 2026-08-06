@@ -60,6 +60,9 @@ The existing object remains Node-only and declares both hook event types. `Sessi
       ".deep-loop/runs/<run-id>/event-log.jsonl",
       ".deep-loop/runs/<run-id>/handoffs/<ts>-next-session.md",
       ".deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact.json",
+      ".deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact-observation.json",
+      ".deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact-prune.json",
+      ".deep-loop/runs/<run-id>/compact-restore-intents/<operation-id>.prepared.json",
       ".deep-loop/runs/<run-id>/transactions/<operation-id>/prepared.json",
       ".deep-loop/runs/<run-id>/transactions/<operation-id>/committed.json",
       ".deep-loop/runs/<run-id>/recoveries/<child-run-id>-affinity-recovery.json",
@@ -83,7 +86,7 @@ The existing object remains Node-only and declares both hook event types. `Sessi
       ".deep-dashboard/harnessability-report.json"
     ]
   },
-  "hooks_active": ["PreCompact", "SessionStart"],
+  "hooks_active": ["PreCompact", "PostCompact", "SessionStart"],
   "x-session-start-sources":["compact"]
 }
 ```
@@ -91,6 +94,7 @@ The existing object remains Node-only and declares both hook event types. `Sessi
 The hook inventory means:
 
 - `PreCompact`: under `workstream-session`, an open affinity emits a checkpoint; a closed boundary (or any other absence of open affinity) returns `no-affinity`. Migrated policies alone retain the legacy pre-compact handoff path.
+- `PostCompact`: bounded, fenced `checkpoint observe` ingress only; its receipt corroborates compaction and never overrides evidence mismatch.
 - `SessionStart`: restore/context injection only when its source/matcher is `compact`.
 
 Because `hooks_active` is non-empty, do not add `hooks_intentionally_empty_reason`. Registration adds discoverability only; deep-loop continues to run standalone and the SHA bump does not prove publication.
