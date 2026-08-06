@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { patch, readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { newEpisode } from '../scripts/lib/episode.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { setSessionProfile } from '../scripts/lib/session-profile.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
@@ -789,6 +792,96 @@ function activate(fixture, overrides = {}) {
     ...overrides,
   });
 }
+
+function activationFence(fixture) {
+  return { owner: fixture.owner, generation: fixture.generation };
+}
+
+test('SLICE-005 leaseCheck fences only business intent while activation is pending', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  const fence = activationFence(f);
+  assert.deepEqual(leaseCheck(data, fence), { ok: false, reason: 'ACTIVATION_PENDING' });
+  assert.deepEqual(leaseCheck(data, { ...fence, intent: 'business' }), {
+    ok: false, reason: 'ACTIVATION_PENDING',
+  });
+  for (const intent of ['lease', 'accounting', 'recover', 'resume', 'breaker-reset']) {
+    assert.deepEqual(leaseCheck(data, { ...fence, intent }), { ok: true, reason: 'ok' });
+  }
+});
+
+test('SLICE-005 activation-pending state patch rejects without anchored mutation', () => {
+  const f = seedActivationPending();
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.throws(() => patch(f.root, f.runId, 'discovered_items', ['pending-write'], {
+    fence: activationFence(f),
+  }), /LEASE_FENCED: ACTIVATION_PENDING/);
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-005 activation-pending newEpisode rejects without state or request mutation', () => {
+  const f = seedActivationPending();
+  const before = activationDurableBytes(f.root, f.runId);
+  const episodesDir = join(runDir(f.root, f.runId), 'episodes');
+  assert.throws(() => newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'slice-005',
+    fence: activationFence(f),
+  }), /LEASE_FENCED: ACTIVATION_PENDING/);
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+  assert.equal(existsSync(episodesDir), false);
+});
+
+test('SLICE-005 activation-pending newWorkstream rejects without anchored mutation', () => {
+  const f = seedActivationPending();
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.throws(() => newWorkstream(f.root, f.runId, {
+    title: 'Pending workstream', branch: 'pending-workstream',
+    worktree: '.claude/worktrees/pending-workstream', fence: activationFence(f),
+  }), /LEASE_FENCED: ACTIVATION_PENDING/);
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-005 pending session-profile lease write succeeds but the next business write rejects', () => {
+  const f = seedActivationPending();
+  assert.deepEqual(setSessionProfile(f.root, f.runId, {
+    model: 'gpt-5.6-sol', expect: activationFence(f),
+  }), { ok: true, changed: true });
+  const afterLeaseWrite = activationDurableBytes(f.root, f.runId);
+  assert.throws(() => patch(f.root, f.runId, 'discovered_items', ['still-pending'], {
+    fence: activationFence(f),
+  }), /LEASE_FENCED: ACTIVATION_PENDING/);
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), afterLeaseWrite);
+});
+
+test('SLICE-005 activated lease permits state patch', () => {
+  const f = seedActivationPending();
+  assert.deepEqual(activate(f), { ok: true, reason: 'activated' });
+  patch(f.root, f.runId, 'discovered_items', ['activated-write'], {
+    fence: activationFence(f),
+  });
+  assert.deepEqual(readState(f.root, f.runId).data.discovered_items, ['activated-write']);
+});
+
+test('SLICE-005 activated lease permits newEpisode', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const result = newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'slice-005',
+    fence: activationFence(f),
+  });
+  assert.equal(readState(f.root, f.runId).data.current_episode, result.id);
+  assert.equal(existsSync(result.requestPath), true);
+});
+
+test('SLICE-005 activated lease permits newWorkstream', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const result = newWorkstream(f.root, f.runId, {
+    title: 'Activated workstream', branch: 'activated-workstream',
+    worktree: '.claude/worktrees/activated-workstream', fence: activationFence(f),
+  });
+  assert.equal(readState(f.root, f.runId).data.workstreams.at(-1).id, result.id);
+});
 
 test('SLICE-004 first activation commits the exact seven-key receipt and clears the deadline', () => {
   const f = seedActivationPending();

@@ -11,7 +11,8 @@ import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.m
 import { inspectCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, reserveHandoff } from '../scripts/lib/lease.mjs';
+import { reserveHandoff } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import {

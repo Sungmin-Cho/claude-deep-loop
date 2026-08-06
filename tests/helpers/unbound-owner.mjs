@@ -9,7 +9,7 @@ import { newWorkstream, recordWorkstreamTerminal } from '../../scripts/lib/works
 import { newEpisode, recordEpisode } from '../../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../../scripts/lib/review.mjs';
 import { emitHandoff } from '../../scripts/lib/handoff.mjs';
-import { acquireLease } from '../../scripts/lib/lease.mjs';
+import { acquireLease } from './acquire-and-activate.mjs';
 import { readState } from '../../scripts/lib/state.mjs';
 
 const NOW = Date.parse('2026-07-25T00:00:00.000Z');

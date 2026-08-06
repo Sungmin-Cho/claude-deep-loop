@@ -14,7 +14,7 @@ import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import * as finishModule from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';

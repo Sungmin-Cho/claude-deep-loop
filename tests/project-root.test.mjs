@@ -44,7 +44,7 @@ import {
 } from '../scripts/lib/budget.mjs';
 import { resetBreaker } from '../scripts/lib/breaker.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 

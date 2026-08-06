@@ -21,6 +21,7 @@ import {
   restoreCompactCheckpoint,
   selectCheckpoint as selectCheckpointFromSet,
 } from '../scripts/lib/checkpoint.mjs';
+import { activateAcquiredLease } from './helpers/acquire-and-activate.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
@@ -980,7 +981,7 @@ test('root relocation stales old compact checkpoints by root epoch, generation, 
   const child = reserved.session_chain.sessions.find(
     session => session.run_id === recovered.replacement_session_id,
   );
-  acquireRootRecovery(candidateRoot, fixture.runId, {
+  const acquisitionOptions = {
     attemptId: 'ROOTCHECKPOINT0001',
     capsuleRel: child.recovery_rel,
     owner: child.run_id,
@@ -989,7 +990,9 @@ test('root relocation stales old compact checkpoints by root epoch, generation, 
     runtime: 'claude',
     now: NOW_MS + 7_000,
     clock: () => NOW_MS + 7_000,
-  });
+  };
+  const rootAcquired = acquireRootRecovery(candidateRoot, fixture.runId, acquisitionOptions);
+  activateAcquiredLease(candidateRoot, fixture.runId, acquisitionOptions, rootAcquired);
   assert.deepEqual(inspectCompactCheckpoint(candidateRoot, fixture.runId, {
     hostSessionEvidence: hostEvidence(),
     now: NOW_MS + 8_000,

@@ -23,7 +23,7 @@ import { driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headles
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { readState, writeState, pauseRun, patch } from '../scripts/lib/state.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
-import { acquireLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 

@@ -171,6 +171,14 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
     && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
     return { ok: false, reason: 'RUN_PAUSED' };
   }
+  // A successful acquire publishes ownership before the replacement session proves that it started.
+  // Until activateLease clears this deadline, only kernel lease/accounting/recovery traffic may write;
+  // ordinary business mutations must fail closed without changing the anchored state.
+  if (intent === 'business'
+    && lease.activation_deadline_at !== null
+    && lease.activation_deadline_at !== undefined) {
+    return { ok: false, reason: 'ACTIVATION_PENDING' };
+  }
   return { ok: true, reason: 'ok' };
 }
 

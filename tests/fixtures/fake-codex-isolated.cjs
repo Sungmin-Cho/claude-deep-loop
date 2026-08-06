@@ -152,6 +152,27 @@ function main() {
       process.exitCode = 9;
       return;
     }
+    const activated = spawnSync(process.execPath, [
+      control.kernelPath,
+      'lease', 'activate',
+      '--project-root', process.env.DEEP_LOOP_PROJECT_ROOT,
+      '--run-id', process.env.DEEP_LOOP_RUN_ID,
+      '--owner', process.env.DEEP_LOOP_OWNER,
+      '--generation', process.env.DEEP_LOOP_GENERATION,
+      '--runtime', 'codex',
+      '--attempt-id', 'FAKECODEXATTEMPT01',
+      '--activation-token', 'FakeCodexActivationToken_01',
+    ], {
+      cwd: process.env.DEEP_LOOP_PROJECT_ROOT,
+      env: process.env,
+      encoding: 'utf8',
+      shell: false,
+    });
+    if (activated.status !== 0) {
+      process.stderr.write(`lease-activate-failed:${activated.status}:${activated.stderr}`);
+      process.exitCode = 10;
+      return;
+    }
     emitTerminal(11, 13);
     return;
   }

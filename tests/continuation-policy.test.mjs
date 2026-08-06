@@ -11,7 +11,7 @@ import { validate } from '../scripts/lib/schema.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 

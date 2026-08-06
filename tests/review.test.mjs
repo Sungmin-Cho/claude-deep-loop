@@ -11,7 +11,8 @@ import {
   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
   recordReviewOutcome, unsatisfiedReviewPoints,
 } from '../scripts/lib/review.mjs';
-import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
+import { releaseLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';

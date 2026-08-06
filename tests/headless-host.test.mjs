@@ -7,7 +7,8 @@ import { driveHeadless as driveHeadlessImpl, driveHeadlessRun as driveHeadlessRu
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
+import { advanceHandoffPhase } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';

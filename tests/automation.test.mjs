@@ -11,7 +11,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
-import { acquireLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
