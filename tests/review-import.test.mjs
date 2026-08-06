@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  renameSync, writeFileSync,
+  renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -14,6 +14,9 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { recordCost } from '../scripts/lib/budget.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
+import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
 import {
@@ -187,6 +190,102 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
   assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), /REVIEW_ALREADY_RECORDED/);
 });
 
+test('successful review import leaves its committed journal for the next cost mutation to retire', () => {
+  const f = fixture();
+  const result = importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  });
+  const operationDir = join(
+    runDir(f.root, f.runId), 'transactions', `review-import-${result.report_sha256}`,
+  );
+  assert.equal(existsSync(join(operationDir, 'committed.json')), true);
+  const reportAbs = join(f.root, result.report);
+  const reportBytes = readFileSync(reportAbs);
+  assert.equal(sha256(reportBytes), result.report_sha256);
+
+  const before = readState(f.root, f.runId).data;
+  const beforeEvents = eventLog(f.root, f.runId);
+  const beforeReviewOutcomes = beforeEvents.filter(event => event.type === 'review-outcome').length;
+  const beforeCosts = beforeEvents.filter(event => event.type === 'cost').length;
+  recordCost(f.root, f.runId, {
+    turns: before.budget.spent + 2,
+    tokens: before.budget.tokens_spent + 41,
+    fence: f.fence,
+  });
+
+  assert.equal(existsSync(operationDir), false);
+  const after = readState(f.root, f.runId).data;
+  const afterEvents = eventLog(f.root, f.runId);
+  assert.equal(afterEvents.filter(event => event.type === 'review-outcome').length, beforeReviewOutcomes);
+  assert.equal(afterEvents.filter(event => event.type === 'cost').length, beforeCosts + 1);
+  const cost = afterEvents.at(-1);
+  assert.equal(cost.type, 'cost');
+  assert.deepEqual(cost.data, {
+    turns: 2,
+    tokens: 41,
+    reported_turns: before.budget.spent + 2,
+    reported_tokens: before.budget.tokens_spent + 41,
+    owner: f.runId,
+    generation: 1,
+  });
+  assert.deepEqual(after.event_log_head, { seq: cost.seq, checksum: cost.checksum });
+  assert.deepEqual(verifyLog(f.root, f.runId), { ok: true, errors: [] });
+  assert.deepEqual(verifyHead(f.root, f.runId, after.event_log_head), { ok: true, errors: [] });
+  assert.equal(after.budget.spent, before.budget.spent + 2);
+  assert.equal(after.budget.tokens_spent, before.budget.tokens_spent + 41);
+  assert.deepEqual(readFileSync(reportAbs), reportBytes);
+  assert.equal(sha256(readFileSync(reportAbs)), result.report_sha256);
+  const checker = after.episodes.find(episode => episode.id === f.checkerId);
+  assert.equal(checker.status, 'approved');
+  assert.equal(checker.review_source, 'imported-stdin');
+});
+
+test('successful review import journal retires through stopped finish exactly once', () => {
+  const f = fixture();
+  const result = importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  });
+  const operationDir = join(
+    runDir(f.root, f.runId), 'transactions', `review-import-${result.report_sha256}`,
+  );
+  assert.equal(existsSync(join(operationDir, 'committed.json')), true);
+  const reportAbs = join(f.root, result.report);
+  const reportBytes = readFileSync(reportAbs);
+  const beforeEvents = eventLog(f.root, f.runId);
+
+  assert.deepEqual(finishRun(f.root, f.runId, {
+    status: 'stopped',
+    proof: { human_reason: 'test stop after imported review' },
+    confirm: true,
+    fence: f.fence,
+    now: FIXED_NOW,
+  }), { ok: true, status: 'stopped' });
+
+  assert.equal(existsSync(operationDir), false);
+  const after = readState(f.root, f.runId).data;
+  const afterEvents = eventLog(f.root, f.runId);
+  assert.equal(after.status, 'stopped');
+  assert.equal(afterEvents.filter(event => event.type === 'review-outcome').length, 1);
+  assert.equal(afterEvents.filter(event => event.type === 'finish').length, 1);
+  assert.equal(afterEvents.length, beforeEvents.length + 2);
+  assert.deepEqual(verifyLog(f.root, f.runId), { ok: true, errors: [] });
+  assert.deepEqual(verifyHead(f.root, f.runId, after.event_log_head), { ok: true, errors: [] });
+  assert.deepEqual(readFileSync(reportAbs), reportBytes);
+  assert.equal(sha256(readFileSync(reportAbs)), result.report_sha256);
+
+  const loopBytes = readFileSync(join(runDir(f.root, f.runId), 'loop.json'));
+  const logBytes = readFileSync(join(runDir(f.root, f.runId), 'event-log.jsonl'));
+  assert.throws(() => finishRun(f.root, f.runId, {
+    status: 'stopped',
+    proof: { human_reason: 'duplicate stop' },
+    confirm: true,
+    fence: f.fence,
+    now: FIXED_NOW,
+  }), /LEASE_FENCED: RUN_TERMINAL/);
+  assert.deepEqual(readFileSync(join(runDir(f.root, f.runId), 'loop.json')), loopBytes);
+  assert.deepEqual(readFileSync(join(runDir(f.root, f.runId), 'event-log.jsonl')), logBytes);
+});
+
 test('import accepts only the checker plugin as canonical reviewer_id', () => {
   const subagent = fixture({ detected: { 'deep-review': false } });
   assert.equal(subagent.input.reviewer_id, 'subagent-checker');
@@ -257,10 +356,15 @@ test('import rejects file-symlink escapes from the reviewed worktree', (t) => {
   const worktree = '.claude/worktrees/w'; mkdirSync(join(root, worktree), { recursive: true });
   const ws = newWorkstream(root, runId, { title: 'w', branch: 'b', worktree, fence }).id;
   const artifactRel = `${worktree}/link.txt`;
-  if (!createFileSymlinkOrSkip(t, external, join(root, artifactRel))) return;
+  const artifactPath = join(root, artifactRel);
+  writeFileSync(artifactPath, 'contained proof');
   const makerId = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: [artifactRel], fence }).id;
   recordEpisode(root, runId, makerId, { status: 'in_progress', fence });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
+  // P1-c rejects an external symlink at maker settlement now. Replace the already-settled contained proof so this
+  // review boundary continues to exercise its independent post-settlement TOCTOU/escape revalidation.
+  unlinkSync(artifactPath);
+  if (!createFileSymlinkOrSkip(t, external, artifactPath)) return;
   const checkerId = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence }).checkerEpisodeId;
   assert.throws(() => claimIndependentReview(root, runId, {
     episodeId: checkerId, fence, attemptIdFactory: () => 'attempt-01',

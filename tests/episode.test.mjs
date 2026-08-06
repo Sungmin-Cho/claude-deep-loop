@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { ack, computeDebt } from '../scripts/lib/comprehension.mjs';
+import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 const ATTENDED = {};
 const EPISODE_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
@@ -29,6 +30,14 @@ function seed() {
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
 function freshRun() { const { root, runId } = seed(); return { root, runId, fence: fence(runId) }; }
+function durableEpisodeBytes(root, runId) {
+  const dir = runDir(root, runId);
+  return {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    log: readFileSync(join(dir, 'event-log.jsonl')),
+  };
+}
 
 test('C: the done transition clears a pre-emptive human ack credit', () => {
   const { root, runId, fence } = freshRun();
@@ -141,17 +150,56 @@ test('newEpisode with path-traversal plugin name produces safe id and contained 
 });
 
 // Codex r2 🟡: newEpisode 에 절대 경로나 '..' 세그먼트가 있는 expectedArtifacts 는 거부.
-test('newEpisode throws EPISODE_ARTIFACT_UNSAFE for absolute or path-traversal expectedArtifacts', () => {
+test('newEpisode reports workstream-aware correction for portable unsafe expected artifacts before bytes', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  assert.throws(
-    () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['/etc/passwd'], fence: f }),
-    /EPISODE_ARTIFACT_UNSAFE/
-  );
-  assert.throws(
-    () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['../../x'], fence: f }),
-    /EPISODE_ARTIFACT_UNSAFE/
-  );
+  const ws = newWorkstream(root, runId, {
+    title: 'impl', branch: 'impl', worktree: '.claude/worktrees/impl', fence: f,
+  }).id;
+  const before = durableEpisodeBytes(root, runId);
+  const unsafe = [
+    '/tmp/out',
+    'C:\\tmp\\out',
+    '\\\\server\\share\\out',
+    '\\\\?\\C:\\tmp\\out',
+    'safe\\..\\out',
+    'safe/../out',
+  ];
+  for (const artifact of unsafe) {
+    assert.throws(
+      () => newEpisode(root, runId, {
+        plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+        workstream: ws, expectedArtifacts: [artifact], fence: f,
+      }),
+      error => error.message === `EPISODE_ARTIFACT_UNSAFE: ${artifact} (expected root-relative, worktree-prefixed: .claude/worktrees/impl/<path>)`,
+      artifact,
+    );
+    assert.deepEqual(durableEpisodeBytes(root, runId), before);
+  }
+  assert.doesNotThrow(() => reconcileBudget(root, runId));
+  assert.doesNotThrow(() => newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['historical-root-relative.txt'], fence: f,
+  }));
+});
+
+test('newEpisode keeps null-workstream, historical root-relative, and worktree-prefixed paths compatible', () => {
+  const { root, runId, fence: f } = freshRun();
+  const ws = newWorkstream(root, runId, {
+    title: 'compat', branch: 'compat', worktree: '.worktrees/compat', fence: f,
+  }).id;
+  assert.doesNotThrow(() => newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    expectedArtifacts: ['root-level.txt'], fence: f,
+  }));
+  assert.doesNotThrow(() => newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['historical-root-level.txt'], fence: f,
+  }));
+  assert.doesNotThrow(() => newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['.worktrees/compat/out.txt'], fence: f,
+  }));
 });
 
 // Codex r2 🟡: recordEpisode done 에서 artifacts 가 expected_artifacts 를 커버하지 않으면 EPISODE_ARTIFACTS_INCOMPLETE.
@@ -217,6 +265,78 @@ test('recordEpisode done throws EPISODE_ARTIFACT_ESCAPE for path-traversal in su
     }),
     /EPISODE_ARTIFACT/,
   );
+});
+
+test('recordEpisode reports workstream-aware correction for portable unsafe submitted artifacts', () => {
+  const { root, runId, fence: f } = freshRun();
+  const worktree = '.claude/worktrees/submitted';
+  mkdirSync(join(root, worktree), { recursive: true });
+  writeFileSync(join(root, worktree, 'out.txt'), 'proof');
+  const ws = newWorkstream(root, runId, {
+    title: 'submitted', branch: 'submitted', worktree, fence: f,
+  }).id;
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: [`${worktree}/out.txt`], fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
+  const unsafe = ['/tmp/out', 'D:\\tmp\\out', '\\\\server\\share\\out', '\\\\?\\D:\\tmp\\out', 'safe\\..\\out'];
+  for (const artifact of unsafe) {
+    assert.throws(
+      () => recordEpisode(root, runId, id, {
+        status: 'done', artifacts: [`${worktree}/out.txt`, artifact], fence: f,
+      }),
+      error => error.message === `EPISODE_ARTIFACT_ESCAPE: ${artifact} (expected root-relative, worktree-prefixed: ${worktree}/<path>)`,
+      artifact,
+    );
+  }
+});
+
+test('terminal submitted proof rejects an external symlink before bytes but accepts a contained symlink', t => {
+  const { root, runId, fence: f } = freshRun();
+  const worktree = '.claude/worktrees/symlink-proof';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const externalRoot = mkdtempSync(join(tmpdir(), 'dl-external-artifact-'));
+  const external = join(externalRoot, 'outside.txt');
+  const artifact = `${worktree}/proof.txt`;
+  const link = join(root, artifact);
+  writeFileSync(external, 'outside');
+  if (!createFileSymlinkOrSkip(t, external, link)) return;
+  const ws = newWorkstream(root, runId, {
+    title: 'symlink-proof', branch: 'symlink-proof', worktree, fence: f,
+  }).id;
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation',
+    workstream: ws, expectedArtifacts: [artifact], fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
+  const before = durableEpisodeBytes(root, runId);
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'done', artifacts: [artifact], fence: f }),
+    error => error.message === `EPISODE_ARTIFACT_ESCAPE: ${artifact} (expected root-relative, worktree-prefixed: ${worktree}/<path>)`,
+  );
+  assert.deepEqual(durableEpisodeBytes(root, runId), before);
+  assert.doesNotThrow(() => reconcileBudget(root, runId));
+
+  unlinkSync(link);
+  const contained = join(root, worktree, 'contained.txt');
+  writeFileSync(contained, 'inside');
+  if (!createFileSymlinkOrSkip(t, contained, link)) return;
+  recordEpisode(root, runId, id, { status: 'done', artifacts: [artifact], fence: f });
+  assert.equal(readState(root, runId).data.episodes.find(item => item.id === id).status, 'done');
+});
+
+test('episode CLI preserves invalid-value exit and artifact error class', () => {
+  const { root, runId, fence: f } = freshRun();
+  const ws = newWorkstream(root, runId, {
+    title: 'cli-artifact', branch: 'cli-artifact', worktree: '.claude/worktrees/cli-artifact', fence: f,
+  }).id;
+  const result = runEpisodeCli(root, runId, [
+    'episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl',
+    '--point', 'implementation', '--workstream', ws, '--artifacts', '["/tmp/out"]',
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /EPISODE_ARTIFACT_UNSAFE: \/tmp\/out/);
 });
 
 // Codex impl r7 🔴: malformed non-terminal inputs (null artifacts/proof) must fail BEFORE appendAnchored,

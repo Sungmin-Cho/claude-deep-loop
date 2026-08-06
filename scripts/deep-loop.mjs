@@ -68,6 +68,7 @@ import {
 } from './lib/runtime-executable.mjs';
 import { sessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
+import { resolveRunPath } from './lib/path-resolve.mjs';
 import {
   buildRecoveryResumeDescriptor,
   buildRootRecoveryResumeDescriptor,
@@ -96,6 +97,38 @@ function parseFlags(argv) {
     f[body] = v;
   }
   return f;
+}
+
+function parseSessionProfileFlags(f) {
+  const supplied = f['session-profile'] !== undefined;
+  if (supplied && (f.model !== undefined || f.effort !== undefined)) {
+    return { error: 'USAGE: --session-profile cannot be combined with --model/--effort', code: 2 };
+  }
+  if (f['session-profile'] === true || f['session-profile'] === '') {
+    return { error: 'USAGE: --session-profile requires non-empty JSON', code: 2 };
+  }
+  if (!supplied) {
+    return {
+      value: {
+        ...(f.model !== undefined ? { model: String(f.model) } : {}),
+        ...(f.effort !== undefined ? { effort: String(f.effort) } : {}),
+      },
+      source: 'legacy',
+    };
+  }
+  let value;
+  try { value = JSON.parse(f['session-profile']); }
+  catch { return { error: 'INVALID_SESSION_PROFILE: malformed JSON', code: 1 }; }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { error: 'INVALID_SESSION_PROFILE: expected object', code: 1 };
+  }
+  if (Object.keys(value).some(key => !['model', 'effort'].includes(key))) {
+    return { error: 'INVALID_SESSION_PROFILE: unknown key', code: 1 };
+  }
+  if (Object.values(value).some(item => typeof item !== 'string' || item.length === 0)) {
+    return { error: 'INVALID_SESSION_PROFILE: values must be non-empty strings', code: 1 };
+  }
+  return { value, source: 'json' };
 }
 
 function exactFlagGrammar(argv, allowed) {
@@ -228,7 +261,7 @@ function classifyKernelError(e) {
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
     return { code: 3, message };
   }
-  if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE)(?::|$)/.test(message)) {
+  if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE|PATH_TARGET_INVALID|WORKSTREAM_NOT_FOUND|RUN_DIR_ESCAPE|WORKSTREAM_WORKTREE_ESCAPE)(?::|$)/.test(message)) {
     return { code: 1, message };
   }
   if (/^CHECKPOINT_[A-Z_]+(?::|$)/.test(message)) {
@@ -257,6 +290,35 @@ const [, , sub, ...rest] = process.argv;
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
 // 2) 현재/지정 run이 있으면 reconciled snapshot + schema.validate
 const handlers = {
+  path: async (a) => {
+    const [verb, ...args] = a;
+    const allowed = new Set(['target', 'workstream', 'project-root', 'run-id']);
+    if (verb !== 'resolve' || !knownFlagVocabulary(args, allowed) || !exactFlagGrammar(args, allowed)) {
+      error('USAGE: path resolve has invalid grammar');
+      return 2;
+    }
+    const f = parseFlags(args);
+    const target = reqStr(f, 'target');
+    const projectRoot = reqStr(f, 'project-root');
+    const runId = reqStr(f, 'run-id');
+    if (!target || !projectRoot || !runId) {
+      error('USAGE: path resolve requires valued --target, --project-root, and --run-id');
+      return 2;
+    }
+    if (target !== 'run-dir' && target !== 'workstream') {
+      throw new Error(`PATH_TARGET_INVALID: ${target}`);
+    }
+    const workstreamId = reqStr(f, 'workstream');
+    if ((target === 'workstream' && !workstreamId)
+      || (target === 'run-dir' && f.workstream !== undefined)) {
+      error('USAGE: --workstream is required only for target workstream');
+      return 2;
+    }
+    process.stdout.write(`${resolveRunPath(projectRoot, runId, {
+      target, workstreamId: target === 'workstream' ? workstreamId : undefined,
+    })}\n`);
+    return 0;
+  },
   validate: async (a) => {
     const f = parseFlags(a);
     const errors = [];
@@ -490,10 +552,14 @@ const handlers = {
     const root = rootOf(f);
     const runtime = reqStr(f, 'runtime');
     if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
-    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
+    if (f['session-profile'] === undefined && (f.model === true || f.effort === true)) {
+      error('USAGE: --model/--effort require a value'); return 2;
+    }
+    const profile = parseSessionProfileFlags(f);
+    if (profile.error) { error(profile.error); return profile.code; }
     if (f.continuation === true) { error('USAGE: --continuation <workstream-session>'); return 2; }
-    const model = f.model !== undefined ? String(f.model) : null;
-    const effort = f.effort !== undefined ? String(f.effort) : null;
+    const model = profile.value.model ?? null;
+    const effort = profile.value.effort ?? null;
     try {
       const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null, now: new Date(parseNow(f)) });
       json({ run_id: runId }); return 0;
@@ -1507,14 +1573,22 @@ const handlers = {
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
     // A value-less --model/--effort (parseFlags → true) is a malformed invocation, NOT an omission —
     // reject as usage (exit 2) so it can never silently drop the field while writing the other.
-    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
+    if (f['session-profile'] === undefined && (f.model === true || f.effort === true)) {
+      error('USAGE: --model/--effort require a value'); return 2;
+    }
+    const profile = parseSessionProfileFlags(f);
+    if (profile.error) { error(profile.error); return profile.code; }
+    const model = profile.value.model;
+    const effort = profile.value.effort;
+    if (profile.source === 'legacy' && model === undefined && effort === undefined) {
+      error('NOTHING_TO_SET'); return 2;
+    }
     requireLease(root, runId, f, 'lease');   // releasing-safe outer fence (exit 3)
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
-    const model = f.model !== undefined ? String(f.model) : undefined;
-    const effort = f.effort !== undefined ? String(f.effort) : undefined;
-    if (model === undefined && effort === undefined) { error('NOTHING_TO_SET'); return 2; }
     try {
-      const r = setSessionProfile(root, runId, { model, effort, expect, now: parseNow(f) });
+      const r = setSessionProfile(root, runId, {
+        model, effort, expect, now: parseNow(f), allowEmpty: profile.source === 'json',
+      });
       json(r); return 0;
     } catch (e) {
       const msg = String(e?.message || e);

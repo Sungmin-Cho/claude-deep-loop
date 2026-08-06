@@ -1,5 +1,5 @@
-import { mkdirSync, existsSync } from 'node:fs';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { mkdirSync, existsSync, realpathSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { atomicWrite } from './envelope.mjs';
@@ -7,12 +7,24 @@ import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { assertScopeAllows, bindMakerScope } from './session-scope.mjs';
+import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
 const TERMINAL = RECORDABLE_TERMINAL;                            // 하위 호환 — done 가드/검증 등 기존 참조 유지
 const ALL_TERMINAL = [...RECORDABLE_TERMINAL, 'abandoned'];     // 4개 전체 터미널 (abandonEpisode 가드 포함)
 const WORKSTREAM_TERMINAL = new Set(['ready', 'merged', 'abandoned']);
+
+function artifactExpectation(loop, workstreamId) {
+  const prefix = loop.workstreams.find(item => item.id === workstreamId)?.worktree;
+  return prefix
+    ? `expected root-relative, worktree-prefixed: ${prefix}/<path>`
+    : 'expected root-relative path without absolute or .. segments';
+}
+
+function artifactError(code, artifact, loop, workstreamId) {
+  return new Error(`${code}: ${artifact} (${artifactExpectation(loop, workstreamId)})`);
+}
 
 function requireNonterminalWorkstream(loop, workstreamId) {
   const workstream = loop.workstreams.find(item => item.id === workstreamId);
@@ -71,10 +83,6 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
   // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
   if (!Array.isArray(expectedArtifacts) || !expectedArtifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: expectedArtifacts must be an array of strings');
-  // Codex r2 🟡: expectedArtifacts 경로 안전성 검증 — 절대 경로 및 '..' 세그먼트 사전 차단.
-  for (const a of expectedArtifacts) {
-    if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
-  }
   let id, requestPath, requestRel, dir;
   const safePlugin = slugify(plugin) || 'plugin';
   appendAnchored(root, runId, { type: 'episode-new', data: {
@@ -126,6 +134,11 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
         const targetIsDone = role === 'checker' && targetMaker
           && loop.episodes.find(e => e.id === targetMaker)?.status === 'done';
         assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker || targetIsDone });
+      }
+    }
+    for (const artifact of expectedArtifacts) {
+      if (!normalizePortableRelativePath(artifact)) {
+        throw artifactError('EPISODE_ARTIFACT_UNSAFE', artifact, loop, scopeTarget);
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });
@@ -263,20 +276,29 @@ export function recordEpisode(root, runId, episodeId, {
     if (TERMINAL.includes(status)) {
       if (status === 'done') {
         const expected = (ep.expected_artifacts || []);
-        // Codex r3 🟡: validate submitted artifacts paths BEFORE coverage check (FIX 4)
-        const rootResolved = resolve(root);
-        for (const a of artifacts) {
-          if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
-          const full = resolve(root, a);
-          if (!full.startsWith(rootResolved + sep)) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+        const rootResolved = realpathSync(resolve(root));
+        for (const artifact of artifacts) {
+          const normalized = normalizePortableRelativePath(artifact);
+          if (!normalized) throw artifactError('EPISODE_ARTIFACT_ESCAPE', artifact, loop, scopeTarget);
+          const full = resolve(root, normalized);
+          if (existsSync(full)) {
+            let canonical;
+            try { canonical = realpathSync(full); }
+            catch { throw artifactError('EPISODE_ARTIFACT_ESCAPE', artifact, loop, scopeTarget); }
+            if (!pathWithin(rootResolved, canonical)) {
+              throw artifactError('EPISODE_ARTIFACT_ESCAPE', artifact, loop, scopeTarget);
+            }
+          }
         }
-        // Codex r2 🟡: 각 expected artifact 경로 안전성 재검증 + root 내 포함 확인.
-        for (const a of expected) {
-          if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
-          const full = resolve(root, a);
-          if (!full.startsWith(rootResolved + sep)) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+        for (const artifact of expected) {
+          if (!normalizePortableRelativePath(artifact)) {
+            throw artifactError('EPISODE_ARTIFACT_ESCAPE', artifact, loop, scopeTarget);
+          }
         }
-        const missing = expected.filter(a => !existsSync(join(root, a)));
+        const missing = expected.filter(artifact => {
+          const normalized = normalizePortableRelativePath(artifact);
+          return !normalized || !existsSync(resolve(root, normalized));
+        });
         if (expected.length === 0 || missing.length) {
           throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} done requires existing artifacts (missing: ${missing.join(',') || 'none-declared'})`);
         }

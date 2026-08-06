@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureLatestInsightsSet, latestInsights } from './insights.mjs';
-import { captureReconciledRunSnapshot, withReconciledMutationLock } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -721,9 +721,9 @@ export function importReviewOutcome(root, runId, options = {}, internal = {}) {
     runtime,
     snapshot,
   });
-  // Successful publication no longer needs its retry marker: retire it before returning so a
-  // caller's subsequent fenced mutation cannot race a still-visible committed predecessor.
-  withReconciledMutationLock(root, runId, () => {});
+  // Keep the committed publication journal for the next canonical mutation gateway to reconcile
+  // and retire under its own lock. A second cleanup lock here can outlive the bounded importer
+  // after the proof has already committed, leaving a dead-owner lock that masks successful review.
   return result;
 }
 
