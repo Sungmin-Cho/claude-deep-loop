@@ -16,7 +16,9 @@ import {
   runDir,
   findRoot,
 } from './lib/state.mjs';
-import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
+import {
+  leaseCheck, acquireLease, activateLease, releaseLease, sameBoundaryEvent,
+} from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
@@ -849,6 +851,45 @@ const handlers = {
         || r.reason === 'RUNTIME_FENCED'
         || r.reason === 'RECOVERY_ACQUIRE_REQUIRED'
       )) ? 3 : 0;
+    }
+    if (verb === 'activate') {
+      const owner = strArg(f, 'owner');
+      const generation = intArg(f, 'generation');
+      const runtime = reqStr(f, 'runtime');
+      if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+      const attemptId = reqStr(f, 'attempt-id');
+      if (!attemptId) {
+        error('USAGE: --attempt-id <8-128 chars [A-Za-z0-9_-]> is required');
+        return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+        error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
+        return 1;
+      }
+      const activationToken = reqStr(f, 'activation-token');
+      if (!activationToken) {
+        error('USAGE: --activation-token <8-128 chars [A-Za-z0-9_-]> is required');
+        return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(activationToken)) {
+        error('INVALID_ACTIVATION_TOKEN: must match ^[A-Za-z0-9_-]{8,128}$');
+        return 1;
+      }
+      try {
+        json(activateLease(root, runId, {
+          owner,
+          generation,
+          runtime,
+          attemptId,
+          activationToken,
+          now: parseExplicitNow(f),
+        }));
+        return 0;
+      } catch (e) {
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(String(e?.message || e)); return 1;
+      }
     }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;

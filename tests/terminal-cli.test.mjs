@@ -8,7 +8,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
@@ -701,4 +701,105 @@ test('semantic public import graph admits no raw state reader or lock consumer o
       assert.deepEqual(raw, [], `${relative(process.cwd(), path)}: raw state bindings`);
     }
   }
+});
+
+function seedActivationCli(runtime = 'claude') {
+  const f = seedTerminal('running', undefined, runtime);
+  const released = run(f.root, [
+    'lease', 'release', '--owner', f.owner, '--generation', String(f.gen), '--run-id', f.runId,
+  ]);
+  assert.equal(released.status, 0, released.stdout + released.stderr);
+  const owner = 'CLIACTIVATIONOWNER';
+  const acquired = run(f.root, [
+    'lease', 'acquire', '--owner', owner, '--generation', '1', '--runtime', runtime,
+    '--attempt-id', 'CLIACTIVATIONATTEMPT', '--run-id', f.runId,
+  ]);
+  assert.equal(acquired.status, 0, acquired.stdout + acquired.stderr);
+  assert.equal(JSON.parse(acquired.stdout).proceed, true);
+  return { ...f, owner, gen: 2, attemptId: 'CLIACTIVATIONATTEMPT' };
+}
+
+function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime = 'claude') {
+  return run(f.root, [
+    'lease', 'activate', '--owner', owner, '--generation', String(generation),
+    '--runtime', runtime, '--run-id', f.runId, ...extra,
+  ]);
+}
+
+test('SLICE-004 CLI lease activate records --now and returns activated', () => {
+  const f = seedActivationCli();
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliActivationToken_01',
+    '--now', '2026-08-06T08:09:10.000Z',
+  ]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, reason: 'activated' });
+  const state = readState(f.root, f.runId).data;
+  assert.equal(state.session_chain.lease.activation.activated_at, '2026-08-06T08:09:10.000Z');
+  assert.equal(state.session_chain.lease.activation_deadline_at, null);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
+});
+
+test('SLICE-004 CLI omitted or empty activation attempt is usage exit 2 without mutation', () => {
+  for (const attemptArgs of [[], ['--attempt-id', '']]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = activateCli(f, [
+      ...attemptArgs, '--activation-token', 'CliActivationToken_02',
+    ]);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
+test('SLICE-004 CLI malformed activation attempt is invalid-value exit 1 without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', 'bad!', '--activation-token', 'CliActivationToken_03',
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /INVALID_ATTEMPT_ID/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI omitted or empty activation token is usage exit 2 without mutation', () => {
+  for (const tokenArgs of [[], ['--activation-token', '']]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = activateCli(f, [
+      '--attempt-id', f.attemptId, ...tokenArgs,
+    ]);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
+test('SLICE-004 CLI malformed activation token is invalid-value exit 1 without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'bad!',
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /INVALID_ACTIVATION_TOKEN/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI runtime fence precedes owner and generation fences', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const runtime = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliActivationToken_04',
+  ], 'WRONG', 999, 'codex');
+  assert.equal(runtime.status, 3, runtime.stdout + runtime.stderr);
+  assert.match(runtime.stderr, /RUNTIME_FENCED/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+
+  const owner = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliActivationToken_04',
+  ], 'WRONG', f.gen, 'claude');
+  assert.equal(owner.status, 3, owner.stdout + owner.stderr);
+  assert.match(owner.stderr, /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
 });

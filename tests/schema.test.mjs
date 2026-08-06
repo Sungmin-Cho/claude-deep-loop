@@ -104,10 +104,12 @@ test('activation receipt accepts the exact seven-key shape', () => {
 });
 
 test('activation receipt rejects a missing required key', () => {
-  const loop = minimalValid();
-  loop.session_chain.lease.activation = validActivationReceipt();
-  delete loop.session_chain.lease.activation.attempt_id;
-  assert.equal(validate(loop).ok, false);
+  for (const key of Object.keys(validActivationReceipt())) {
+    const loop = minimalValid();
+    loop.session_chain.lease.activation = validActivationReceipt();
+    delete loop.session_chain.lease.activation[key];
+    assert.equal(validate(loop).ok, false, key);
+  }
 });
 
 test('activation receipt rejects an extra key', () => {

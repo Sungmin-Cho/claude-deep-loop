@@ -20,7 +20,7 @@ import {
 } from '../scripts/lib/state.mjs';
 import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
+import { acquireLease, activateLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { acquireRecovery, recoverBoundary, supersedeAffinity } from '../scripts/lib/recover.mjs';
 import { acquireRootRecovery, recoverRelocatedRoot } from '../scripts/lib/project-root-recovery.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
@@ -1782,4 +1782,57 @@ test('SLICE-003 root recovery CLI missing and malformed attempts are mutation-fr
     assert.equal(result.status, expected, result.stdout + result.stderr);
     assert.deepEqual(readStateForRootRecovery(f.root, f.runId).data, before);
   }
+});
+
+test('SLICE-004 F12 two pre-t1 replayers produce one activation winner and one token loser', () => {
+  const f = seedReleased();
+  const owner = 'F12ACTIVATIONOWNER';
+  const attemptId = 'F12ACTIVATIONATTEMPT';
+  const firstAcquire = acquireLease(f.root, f.runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    now: Date.parse(T2), clock: () => Date.parse(T2),
+  });
+  const secondAcquire = acquireLease(f.root, f.runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    now: Date.parse(T2), clock: () => Date.parse(T2),
+  });
+  assert.deepEqual([firstAcquire.proceed, firstAcquire.replayed], [true, false]);
+  assert.deepEqual([secondAcquire.proceed, secondAcquire.replayed], [true, true]);
+
+  const winner = activateLease(f.root, f.runId, {
+    owner, generation: 2, runtime: 'claude', attemptId,
+    activationToken: 'F12WinnerToken_01', now: Date.parse(T2) + 1,
+  });
+  const beforeLoser = anchoredBytes(f.root, f.runId);
+  const loser = activateLease(f.root, f.runId, {
+    owner, generation: 2, runtime: 'claude', attemptId,
+    activationToken: 'F12LoserToken_002', now: Date.parse(T2) + 2,
+  });
+  assert.deepEqual(winner, { ok: true, reason: 'activated' });
+  assert.deepEqual(loser, { ok: false, reason: 'activation-token-mismatch' });
+  assert.deepEqual(anchoredBytes(f.root, f.runId), beforeLoser);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
+  assert.ok(lease(f.root, f.runId).activation);
+});
+
+test('SLICE-004 F7 different replacement attempts yield at most one proceeding continuation', () => {
+  const f = seedReleased();
+  const owner = 'F7REPLACEMENTOWNER';
+  const outcomes = [
+    acquireLease(f.root, f.runId, {
+      owner, expectGeneration: 1, runtime: 'claude', attemptId: 'F7FIRSTATTEMPT01',
+      clock: () => Date.parse(T2),
+    }),
+    acquireLease(f.root, f.runId, {
+      owner, expectGeneration: 1, runtime: 'claude', attemptId: 'F7SECONDATTEMPT2',
+    }),
+    acquireLease(f.root, f.runId, {
+      owner, expectGeneration: 1, runtime: 'claude', attemptId: 'F7THIRDATTEMPT03',
+    }),
+  ];
+  assert.equal(outcomes.filter(result => result.proceed === true).length, 1);
+  assert.deepEqual(outcomes.slice(1).map(result => [result.reason, result.proceed, result.replayed]), [
+    ['already-owned', false, false],
+    ['already-owned', false, false],
+  ]);
 });

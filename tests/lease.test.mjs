@@ -13,6 +13,8 @@ import {
 } from '../scripts/lib/lease.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
+import * as leaseModule from '../scripts/lib/lease.mjs';
+import { validate } from '../scripts/lib/schema.mjs';
 
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -27,6 +29,10 @@ function writeHashValidState(root, runId, data) {
   writeFileSync(join(dir, 'loop.json'), raw);
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
+
+test('SLICE-004 exposes activateLease as the dedicated activation mutation', () => {
+  assert.equal(typeof leaseModule.activateLease, 'function');
+});
 
 // T2a — (d) lib 수준 응답 계약. spec §3.1/§3.2, docs/superpowers/specs/2026-07-27-acquire-resume-contract.md
 test('T2a acquireLease distinguishes proceeding from idempotent responses and anchors one receipt', () => {
@@ -742,3 +748,219 @@ for (const [label, attemptId] of [
     );
   });
 }
+
+const ACTIVATION_ATTEMPT = 'ACTIVATIONATTEMPT01';
+const ACTIVATION_TOKEN = 'ActivationToken_01';
+const ACTIVATED_AT = Date.parse('2026-08-06T06:07:08.000Z');
+
+function seedActivationPending(runtime = 'claude') {
+  const fixture = seed(runtime);
+  assert.deepEqual(releaseLease(fixture.root, fixture.runId, {
+    owner: fixture.runId, generation: 1,
+  }), { ok: true, reason: 'released' });
+  const owner = 'ACTIVATIONOWNER01';
+  const acquired = acquireLease(fixture.root, fixture.runId, {
+    owner, expectGeneration: 1, runtime, attemptId: ACTIVATION_ATTEMPT,
+    now: Date.parse('2026-08-06T06:00:00.000Z'),
+    clock: () => Date.parse('2026-08-06T06:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  return { ...fixture, owner, generation: 2 };
+}
+
+function activationDurableBytes(root, runId) {
+  const dir = runDir(root, runId);
+  const eventPath = join(dir, 'event-log.jsonl');
+  return {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    events: existsSync(eventPath) ? readFileSync(eventPath) : null,
+  };
+}
+
+function activate(fixture, overrides = {}) {
+  return leaseModule.activateLease(fixture.root, fixture.runId, {
+    owner: fixture.owner,
+    generation: fixture.generation,
+    runtime: 'claude',
+    attemptId: ACTIVATION_ATTEMPT,
+    activationToken: ACTIVATION_TOKEN,
+    now: ACTIVATED_AT,
+    ...overrides,
+  });
+}
+
+test('SLICE-004 first activation commits the exact seven-key receipt and clears the deadline', () => {
+  const f = seedActivationPending();
+  assert.deepEqual(activate(f), { ok: true, reason: 'activated' });
+  const current = readState(f.root, f.runId).data.session_chain.lease;
+  assert.deepEqual(current.activation, {
+    owner_run_id: f.owner,
+    generation: 2,
+    from_generation: 1,
+    to_generation: 2,
+    attempt_id: ACTIVATION_ATTEMPT,
+    activation_token_digest: contentHash(ACTIVATION_TOKEN),
+    activated_at: '2026-08-06T06:07:08.000Z',
+  });
+  assert.equal(current.activation_deadline_at, null);
+});
+
+test('SLICE-004 activation event data is strictly equal to the committed receipt', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const receipt = readState(f.root, f.runId).data.session_chain.lease.activation;
+  const events = readLines(f.root, f.runId).filter(event => event.type === 'lease-activated');
+  assert.equal(events.length, 1);
+  assert.deepStrictEqual(events[0].data, receipt);
+  assert.deepEqual(Object.keys(events[0].data).sort(), [
+    'activated_at', 'activation_token_digest', 'attempt_id', 'from_generation',
+    'generation', 'owner_run_id', 'to_generation',
+  ]);
+});
+
+test('SLICE-004 the actually committed activation receipt fails exact-shape schema mutations', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const state = readState(f.root, f.runId).data;
+  assert.equal(validate(state).ok, true, validate(state).errors.join('; '));
+  for (const mutate of [
+    receipt => { delete receipt.owner_run_id; },
+    receipt => { receipt.extra = true; },
+    receipt => { receipt.generation = '2'; },
+    receipt => { receipt.activation_token_digest = 'A'.repeat(64); },
+  ]) {
+    const candidate = structuredClone(state);
+    mutate(candidate.session_chain.lease.activation);
+    assert.equal(validate(candidate).ok, false);
+  }
+});
+
+test('SLICE-004 same token is idempotent and appends no second event', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.deepEqual(activate(f, { now: ACTIVATED_AT + 10_000 }), {
+    ok: true, reason: 'already-activated',
+  });
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
+});
+
+test('SLICE-004 a different token loses first-wins without mutation', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.deepEqual(activate(f, { activationToken: 'DifferentToken_02' }), {
+    ok: false, reason: 'activation-token-mismatch',
+  });
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 an attempt mismatch is structured and mutation-free', () => {
+  const f = seedActivationPending();
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.deepEqual(activate(f, { attemptId: 'OTHERATTEMPT0001' }), {
+    ok: false, reason: 'attempt-mismatch',
+  });
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 paused status outranks activation state and is mutation-free', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.status = 'paused';
+  data.pause_reason = 'human-hold';
+  writeState(f.root, f.runId, data);
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.deepEqual(activate(f), { ok: false, reason: 'RUN_PAUSED' });
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 terminal status returns RUN_TERMINAL without mutation', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.status = 'completed';
+  writeState(f.root, f.runId, data);
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.deepEqual(activate(f), { ok: false, reason: 'RUN_TERMINAL' });
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 runtime mismatch precedes owner and generation fences', () => {
+  const f = seedActivationPending();
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.throws(() => activate(f, {
+    runtime: 'codex', owner: 'WRONG', generation: 999,
+  }), /RUNTIME_FENCED/);
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 matching runtime preserves owner then generation LEASE_FENCED failures', () => {
+  const f = seedActivationPending();
+  assert.throws(() => activate(f, { owner: 'WRONG' }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => activate(f, { generation: 999 }), /LEASE_FENCED: generation-mismatch/);
+});
+
+test('SLICE-004 first consume rejects a nonactive lease as not activation pending', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.state = 'released';
+  writeState(f.root, f.runId, data);
+  assert.deepEqual(activate(f), { ok: false, reason: 'not-activation-pending' });
+});
+
+test('SLICE-004 first consume rejects a nonacquired handoff phase as not activation pending', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.handoff_phase = 'idle';
+  writeState(f.root, f.runId, data);
+  assert.deepEqual(activate(f), { ok: false, reason: 'not-activation-pending' });
+});
+
+test('SLICE-004 first consume rejects a null deadline as not activation pending', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = null;
+  writeState(f.root, f.runId, data);
+  assert.deepEqual(activate(f), { ok: false, reason: 'not-activation-pending' });
+});
+
+test('SLICE-004 existing same-token activation bypasses later phase checks', () => {
+  const f = seedActivationPending();
+  activate(f);
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.state = 'released';
+  data.session_chain.lease.handoff_phase = 'idle';
+  writeState(f.root, f.runId, data);
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.deepEqual(activate(f), { ok: true, reason: 'already-activated' });
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 invalid library attempt ids fail before lock entry', () => {
+  const f = seedActivationPending();
+  mkdirSync(join(runDir(f.root, f.runId), '.lock'));
+  for (const attemptId of [undefined, null, '', 'bad!', 'short7']) {
+    assert.throws(() => activate(f, { attemptId }), /^Error: INVALID_ATTEMPT_ID$/);
+  }
+});
+
+test('SLICE-004 invalid library activation tokens fail before lock entry', () => {
+  const f = seedActivationPending();
+  mkdirSync(join(runDir(f.root, f.runId), '.lock'));
+  for (const activationToken of [undefined, null, '', 'bad!', 'short7', 'x'.repeat(129)]) {
+    assert.throws(() => activate(f, { activationToken }), /^Error: INVALID_ACTIVATION_TOKEN$/);
+  }
+});
+
+test('SLICE-004 activation makes same-attempt acquire fall through to already-owned', () => {
+  const f = seedActivationPending();
+  activate(f);
+  assert.deepEqual(acquireLease(f.root, f.runId, {
+    owner: f.owner, expectGeneration: 1, runtime: 'claude', attemptId: ACTIVATION_ATTEMPT,
+  }), {
+    ok: true, generation: 2, reason: 'already-owned',
+    proceed: false, consumed: null, replayed: false,
+  });
+});

@@ -21,6 +21,13 @@ import { appendAnchored } from './integrity.mjs';
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
 const LEGACY_ACTIVATION_DEADLINE_SEC = 900;
+const ACTIVATE_HALT = 'ACTIVATE_HALT';
+
+function activateHalt(payload) {
+  const error = new Error(ACTIVATE_HALT);
+  error.payload = payload;
+  return error;
+}
 
 function lockedTime(now, clock, context) {
   const value = now === undefined
@@ -447,6 +454,97 @@ export function acquireLease(root, runId, {
   } catch (e) {
     if (e?.message !== ACQUIRE_HALT) throw e;   // ← 이 줄이 없으면 fail-stop 과 펜스가 함께 삼켜진다
     return e.payload;
+  }
+  return outcome;
+}
+
+export function activateLease(root, runId, {
+  owner,
+  generation,
+  runtime,
+  attemptId,
+  activationToken,
+  now,
+  clock = Date.now,
+  __testFaultAt,
+} = {}) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
+  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+    throw new Error('INVALID_ATTEMPT_ID');
+  }
+  if (typeof activationToken !== 'string'
+    || !/^[A-Za-z0-9_-]{8,128}$/.test(activationToken)) {
+    throw new Error('INVALID_ACTIVATION_TOKEN');
+  }
+
+  const tokenDigest = contentHash(activationToken);
+  const receiptData = {};
+  let outcome = null;
+  const preCheck = (data) => {
+    const runtimeResult = runtimeFence(data, runtime);
+    if (!runtimeResult.ok) {
+      throw new Error(
+        `RUNTIME_FENCED: expected=${runtimeResult.expected} actual=${runtimeResult.actual}`,
+      );
+    }
+    const lease = data.session_chain.lease;
+    if (lease.owner_run_id !== owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== generation) throw new Error('LEASE_FENCED: generation-mismatch');
+
+    if (data.status === 'paused') {
+      throw activateHalt({ ok: false, reason: 'RUN_PAUSED' });
+    }
+    if (data.status === 'completed' || data.status === 'stopped') {
+      throw activateHalt({ ok: false, reason: 'RUN_TERMINAL' });
+    }
+
+    const acquisition = lease.acquisition_receipt;
+    if (!acquisition
+      || acquisition.attempt_id !== attemptId
+      || acquisition.to_generation !== generation) {
+      throw activateHalt({ ok: false, reason: 'attempt-mismatch' });
+    }
+
+    if (lease.activation !== undefined) {
+      throw activateHalt(lease.activation.activation_token_digest === tokenDigest
+        ? { ok: true, reason: 'already-activated' }
+        : { ok: false, reason: 'activation-token-mismatch' });
+    }
+
+    if (lease.state !== 'active'
+      || lease.handoff_phase !== 'acquired'
+      || lease.activation_deadline_at === null
+      || lease.activation_deadline_at === undefined) {
+      throw activateHalt({ ok: false, reason: 'not-activation-pending' });
+    }
+
+    const lockedNow = lockedTime(now, clock, 'lease activation');
+    Object.assign(receiptData, {
+      owner_run_id: owner,
+      generation,
+      from_generation: acquisition.from_generation,
+      to_generation: acquisition.to_generation,
+      attempt_id: attemptId,
+      activation_token_digest: tokenDigest,
+      activated_at: new Date(lockedNow).toISOString(),
+    });
+  };
+
+  const mutate = (data) => {
+    data.session_chain.lease.activation = structuredClone(receiptData);
+    data.session_chain.lease.activation_deadline_at = null;
+    outcome = { ok: true, reason: 'activated' };
+  };
+
+  try {
+    appendAnchored(root, runId, {
+      type: 'lease-activated',
+      data: receiptData,
+      now,
+    }, mutate, preCheck, __testFaultAt ? { faultAt: __testFaultAt } : {});
+  } catch (error) {
+    if (error?.message !== ACTIVATE_HALT) throw error;
+    return error.payload;
   }
   return outcome;
 }
