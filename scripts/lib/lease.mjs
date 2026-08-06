@@ -20,6 +20,7 @@ import { appendAnchored } from './integrity.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
+const LEGACY_ACTIVATION_DEADLINE_SEC = 900;
 
 function lockedTime(now, clock, context) {
   const value = now === undefined
@@ -34,6 +35,15 @@ function lockedTime(now, clock, context) {
 
 function lockedSafetyTime(clock, context) {
   return lockedTime(undefined, clock, context);
+}
+
+function activationDeadlineSeconds(data) {
+  const value = data.session_chain.activation_deadline_sec;
+  if (value === undefined) return LEGACY_ACTIVATION_DEADLINE_SEC;
+  if (!Number.isSafeInteger(value) || value < 60 || value > 86400) {
+    throw new Error('INVALID_ACTIVATION_DEADLINE_CONFIG');
+  }
+  return value;
 }
 
 function classifiedAcquireFailure(generation, reason, kernelExitCode) {
@@ -273,6 +283,7 @@ export function acquireLease(root, runId, {
       }
       const safetyNow = lockedSafetyTime(clock, 'boundary recovery acquire safety');
       const lockedNow = lockedTime(now, () => safetyNow, 'boundary recovery acquire');
+      const activationDeadlineSec = activationDeadlineSeconds(data);
       const safety = recoverySafetyReason(data, safetyNow);
       if (safety) {
         throw acquireHalt(contractFields({
@@ -285,8 +296,9 @@ export function acquireLease(root, runId, {
       plan = {
         kind: 'boundary-recovery',
         iso: new Date(lockedNow).toISOString(),
+        activationDeadlineSec,
         activationDeadlineIso: new Date(
-          safetyNow + data.session_chain.activation_deadline_sec * 1_000,
+          safetyNow + activationDeadlineSec * 1_000,
         ).toISOString(),
       };
       return;
@@ -305,6 +317,7 @@ export function acquireLease(root, runId, {
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const safetyNow = lockedSafetyTime(clock, 'lease acquire safety');
     const lockedNow = lockedTime(now, () => safetyNow, 'lease acquire');
+    const activationDeadlineSec = activationDeadlineSeconds(data);
     const expired = lease.expires_at && lockedNow > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) {
@@ -318,8 +331,9 @@ export function acquireLease(root, runId, {
     plan = {
       kind: 'takeover',
       iso: new Date(lockedNow).toISOString(),
+      activationDeadlineSec,
       activationDeadlineIso: new Date(
-        safetyNow + data.session_chain.activation_deadline_sec * 1_000,
+        safetyNow + activationDeadlineSec * 1_000,
       ).toISOString(),
     };
   };
@@ -327,7 +341,10 @@ export function acquireLease(root, runId, {
   // 소유권 CAS + descriptor 소비 + unpause + 영수증 — 전부 이 트랜잭션 안에서 같은 fresh loop 위에.
   const mutate = (data) => {
     const lease = data.session_chain.lease;   // 소유권 CAS **직전** 값 — 영수증의 원천(§3.1)
-    const { iso, activationDeadlineIso } = plan;
+    const { iso, activationDeadlineSec, activationDeadlineIso } = plan;
+    if (data.session_chain.activation_deadline_sec === undefined) {
+      data.session_chain.activation_deadline_sec = activationDeadlineSec;
+    }
     if (plan.kind === 'boundary-recovery') {
       const child = data.session_chain.sessions.find(session => session.run_id === owner);
       const receipt = buildAcquisitionReceipt({

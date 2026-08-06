@@ -65,6 +65,39 @@ test('T2a acquireLease distinguishes proceeding from idempotent responses and an
   assert.equal(receipt.attempt_id, 'T2AATTEMPT01');
 });
 
+test('SLICE-002 first post-upgrade acquire protects a schema-valid legacy run with the 900s default', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  delete data.session_chain.activation_deadline_sec;
+  delete data.session_chain.lease.activation_deadline_at;
+  writeState(root, runId, data); // writeState validation proves this exact legacy absence is schema-valid.
+
+  assert.equal(Object.hasOwn(readState(root, runId).data.session_chain, 'activation_deadline_sec'), false);
+  assert.equal(Object.hasOwn(readState(root, runId).data.session_chain.lease, 'activation_deadline_at'), false);
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+
+  const safetyNow = Date.parse('2026-08-06T01:02:03.000Z');
+  const acquired = acquireLease(root, runId, {
+    owner: 'LEGACYPOSTUPGRADEOWNER',
+    expectGeneration: 1,
+    runtime: 'claude',
+    attemptId: 'LEGACYUPGRADEATTEMPT01',
+    now: Date.parse('2001-01-01T00:00:00.000Z'),
+    clock: () => safetyNow,
+  });
+  assert.equal(acquired.proceed, true);
+  assert.equal(acquired.generation, 2);
+
+  const after = readState(root, runId).data;
+  assert.equal(after.session_chain.activation_deadline_sec, 900);
+  assert.equal(
+    after.session_chain.lease.activation_deadline_at,
+    new Date(safetyNow + 900_000).toISOString(),
+  );
+});
+
 test('T2a a consumed reservation carries the boundary receipt and echoes it as consumed', () => {
   const { root, runId } = seed();
   const now0 = Date.parse('2026-06-24T00:00:00.000Z');
