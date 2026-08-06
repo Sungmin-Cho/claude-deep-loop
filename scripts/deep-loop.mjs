@@ -298,8 +298,17 @@ const handlers = {
     const [verb, ...rest] = a;
     if (verb === 'recovery') {
       const [subverb, ...acquireArgs] = rest;
+      const allowed = new Set([
+        'capsule', 'owner', 'generation', 'binding-generation', 'runtime',
+        'candidate-project-root', 'run-id', 'now', 'attempt-id',
+      ]);
+      if (subverb !== 'acquire'
+        || !knownFlagVocabulary(acquireArgs, allowed)
+        || !exactFlagGrammar(acquireArgs, allowed)) {
+        error('USAGE: root recovery acquire has invalid grammar');
+        return 2;
+      }
       const f = parseFlags(acquireArgs);
-      if (subverb !== 'acquire') { error('USAGE: root recovery acquire'); return 2; }
       const candidateRoot = reqStr(f, 'candidate-project-root');
       const runId = reqStr(f, 'run-id');
       const capsuleRel = reqStr(f, 'capsule');
@@ -307,11 +316,17 @@ const handlers = {
       const runtime = reqStr(f, 'runtime');
       const generation = reqStr(f, 'generation');
       const bindingGeneration = reqStr(f, 'binding-generation');
+      const attemptId = reqStr(f, 'attempt-id');
       if (!candidateRoot || !runId || !capsuleRel || !owner || !runtime
+        || !attemptId
         || !/^[1-9]\d*$/.test(generation || '')
         || !/^[1-9]\d*$/.test(bindingGeneration || '')) {
         error('USAGE: root recovery acquire requires capsule, owner, generations, runtime, root, and run id');
         return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+        error('INVALID_ATTEMPT_ID');
+        return 1;
       }
       try {
         json(acquireRootRecovery(candidateRoot, runId, {
@@ -320,6 +335,7 @@ const handlers = {
           expectGeneration: Number(generation),
           bindingGeneration: Number(bindingGeneration),
           runtime,
+          attemptId,
           now: parseExplicitNow(f),
         }));
         return 0;
@@ -667,7 +683,7 @@ const handlers = {
           bindingGeneration: data.project.binding_generation,
         });
         process.stdout.write([
-          descriptor.resumeInvocation,
+          `${descriptor.resumeInvocation} --attempt-id ${child.root_recovery_operation_id}`,
           `Recovery: kind=project-root capsule=${child.recovery_rel}`,
           `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
           'Status: exact root recovery child acquisition is required',
@@ -695,7 +711,7 @@ const handlers = {
         generation: lease.generation,
       });
       process.stdout.write([
-        descriptor.resumeInvocation,
+        `${descriptor.resumeInvocation} --attempt-id ${lease.recovery_discriminator ?? lease.handoff_idempotency_key}`,
         `Recovery: kind=${child.recovery_kind} capsule=${child.recovery_rel}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
         'Status: exact recovery child acquisition is required',
@@ -1177,7 +1193,7 @@ const handlers = {
   recovery: async (a) => {
     const [verb, ...rest] = a;
     const allowed = new Set([
-      'capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now',
+      'capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now', 'attempt-id',
     ]);
     if (verb !== 'acquire'
       || !knownFlagVocabulary(rest, allowed)
@@ -1186,7 +1202,7 @@ const handlers = {
       return 2;
     }
     const f = parseFlags(rest);
-    if (['capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now']
+    if (['capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now', 'attempt-id']
       .some(name => f[name] === true)) {
       error('USAGE: recovery acquire option requires a value');
       return 2;
@@ -1195,11 +1211,17 @@ const handlers = {
     const owner = reqStr(f, 'owner');
     const runtime = reqStr(f, 'runtime');
     const generationValue = reqStr(f, 'generation');
+    const attemptId = reqStr(f, 'attempt-id');
     if (!capsuleRel || !owner || !runtime
+      || !attemptId
       || !/^[1-9]\d*$/.test(generationValue || '')
       || !Number.isSafeInteger(Number(generationValue))) {
       error('USAGE: recovery acquire requires capsule, owner, positive generation, and runtime');
       return 2;
+    }
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+      error('INVALID_ATTEMPT_ID');
+      return 1;
     }
     const root = rootOf(f);
     const runId = runIdOf(root, f);
@@ -1210,6 +1232,7 @@ const handlers = {
         owner,
         expectGeneration: Number(generationValue),
         runtime,
+        attemptId,
         now: parseExplicitNow(f),
       });
       json(result);

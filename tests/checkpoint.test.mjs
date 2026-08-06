@@ -981,6 +981,7 @@ test('root relocation stales old compact checkpoints by root epoch, generation, 
     session => session.run_id === recovered.replacement_session_id,
   );
   acquireRootRecovery(candidateRoot, fixture.runId, {
+    attemptId: 'ROOTCHECKPOINT0001',
     capsuleRel: child.recovery_rel,
     owner: child.run_id,
     expectGeneration: reserved.session_chain.lease.generation,

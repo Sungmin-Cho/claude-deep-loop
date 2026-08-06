@@ -31,6 +31,8 @@ const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
 const T0 = '2026-07-27T00:00:00.000Z';
 const T1 = '2026-07-27T00:10:00.000Z';
 const T2 = '2026-07-27T00:20:00.000Z';
+const RECOVERY_ATTEMPT = 'RECOVERYATTEMPT01';
+const ROOT_RECOVERY_ATTEMPT = 'ROOTRECOVERYATTEMPT01';
 const FIXTURE = join(REPO_ROOT, 'tests', 'fixtures', 'acquire-resume-conformance.json');
 
 function fence(runId, generation = 1) {
@@ -194,9 +196,10 @@ test('T1 the Status line advertises replay only when the receipt actually carrie
   assert.match(shownWithNonce.stdout, /Status: consumed/);
   assert.match(shownWithNonce.stdout, /같은 attempt_id 재호출은 replay/);
 
-  // recovery 소비는 `--attempt-id` 를 받을 수 없으므로(§3.6.4) 그 절이 붙으면 거짓이 된다.
+  // SLICE-003 이후 recovery 소비도 필수 attempt를 영수증에 결속하므로 replay 안내가 참이다.
   const recovery = seedAffinityReservation();
   assert.equal(acquireRecovery(recovery.root, recovery.runId, {
+    attemptId: RECOVERY_ATTEMPT,
     capsuleRel: recovery.recovery.recovery_rel,
     owner: recovery.recovery.child_run_id,
     expectGeneration: 1,
@@ -204,11 +207,11 @@ test('T1 the Status line advertises replay only when the receipt actually carrie
     now: Date.parse(T2),
     clock: () => Date.parse(T2),
   }).proceed, true);
-  assert.equal(lease(recovery.root, recovery.runId).acquisition_receipt.attempt_id, null);
+  assert.equal(lease(recovery.root, recovery.runId).acquisition_receipt.attempt_id, RECOVERY_ATTEMPT);
   const shownRecovery = runReadCli(recovery.root, recovery.runId, ['resume-command']);
   assert.match(shownRecovery.stdout, /Recovery: consumed/);
   assert.match(shownRecovery.stdout, /Status: consumed/);
-  assert.doesNotMatch(shownRecovery.stdout, /같은 attempt_id 재호출은 replay/);
+  assert.match(shownRecovery.stdout, /같은 attempt_id 재호출은 replay/);
 
   // 라운드 8 W2: 절은 replay 가 **실제로 도달 가능**할 때만 붙어야 한다. 사람이 개시한 preserve-pause 는
   // lease 를 건드리지 않아 acquired 분기가 계속 발화하지만 replay 조건 2(`status === 'running'`)가
@@ -1052,6 +1055,7 @@ function seedAffinityReservation() {
 test('T9 affinity recovery path: response shape, receipt, duplicate fence-throw, exit', () => {
   const f = seedAffinityReservation();
   const acquired = acquireRecovery(f.root, f.runId, {
+    attemptId: RECOVERY_ATTEMPT,
     capsuleRel: f.recovery.recovery_rel,
     owner: f.recovery.child_run_id,
     expectGeneration: 1,
@@ -1067,11 +1071,12 @@ test('T9 affinity recovery path: response shape, receipt, duplicate fence-throw,
   assert.equal(acquired.consumed.handoff_rel, null);
   const receipt = lease(f.root, f.runId).acquisition_receipt;
   assert.equal(receipt.takeover_kind, 'affinity-supersession');
-  assert.equal(receipt.attempt_id, null);
+  assert.equal(receipt.attempt_id, RECOVERY_ATTEMPT);
   assert.match(runReadCli(f.root, f.runId, ['resume-command']).stdout, /Recovery: consumed/);
 
   // duplicate는 멱등이 아니라 fence-throw (§3.5)
   assert.throws(() => acquireRecovery(f.root, f.runId, {
+    attemptId: 'RECOVERYATTEMPT02',
     capsuleRel: f.recovery.recovery_rel,
     owner: f.recovery.child_run_id,
     expectGeneration: 1,
@@ -1126,6 +1131,7 @@ test('T9 root recovery path: reason acquired, proceed true, receipt without an e
   );
   const eventsBefore = readLines(f.root, f.runId).length;
   const acquired = acquireRootRecovery(f.root, f.runId, {
+    attemptId: ROOT_RECOVERY_ATTEMPT,
     capsuleRel: child.recovery_rel,
     owner: child.run_id,
     expectGeneration: before.session_chain.lease.generation,
@@ -1143,11 +1149,12 @@ test('T9 root recovery path: reason acquired, proceed true, receipt without an e
   assert.equal(readLines(f.root, f.runId).length, eventsBefore, 'root recovery records no event');
   const receipt = lease(f.root, f.runId).acquisition_receipt;
   assert.equal(receipt.takeover_kind, 'project-root');
-  assert.equal(receipt.attempt_id, null);
+  assert.equal(receipt.attempt_id, ROOT_RECOVERY_ATTEMPT);
   assert.equal(typeof receipt.reservation_key, 'string');
 
   // duplicate는 예약이 소비로 지워졌으므로 fence-throw (§3.5)
   assert.throws(() => acquireRootRecovery(f.root, f.runId, {
+    attemptId: 'ROOTRECOVERYATTEMPT02',
     capsuleRel: child.recovery_rel,
     owner: child.run_id,
     expectGeneration: before.session_chain.lease.generation,
@@ -1207,6 +1214,7 @@ test('T11 the affinity capsule is validated inside the lock through the preCheck
   const capsule = join(runDir(f.root, f.runId), f.recovery.recovery_rel);
   writeFileSync(capsule, `${readFileSync(capsule, 'utf8')}\n`);
   assert.throws(() => acquireRecovery(f.root, f.runId, {
+    attemptId: RECOVERY_ATTEMPT,
     capsuleRel: f.recovery.recovery_rel,
     owner: f.recovery.child_run_id,
     expectGeneration: 1,
@@ -1225,6 +1233,7 @@ test('T11 the affinity in-lock read detects a capsule tampered after reconciliat
   const f = seedAffinityReservation();
   const capsule = join(runDir(f.root, f.runId), f.recovery.recovery_rel);
   assert.throws(() => acquireRecovery(f.root, f.runId, {
+    attemptId: RECOVERY_ATTEMPT,
     capsuleRel: f.recovery.recovery_rel,
     owner: f.recovery.child_run_id,
     expectGeneration: 1,
@@ -1590,4 +1599,135 @@ test('T6 a second boundary emit publishes an emit-invariant launcher text (Windo
       && !existsSync(join(transactions, entry, 'committed.json')))
     : [];
   assert.deepEqual(stranded, []);
+});
+
+// ── SLICE-003: recovery/root-recovery nonce, replay, and safety deadline ─────
+function rootAcquireCli(root, runId, child, generation, bindingGeneration, extra = []) {
+  return spawnSync(process.execPath, [
+    CLI, 'root', 'recovery', 'acquire', '--capsule', child.recovery_rel,
+    '--owner', child.run_id, '--generation', String(generation),
+    '--binding-generation', String(bindingGeneration), '--runtime', 'claude',
+    '--candidate-project-root', root, '--run-id', runId, ...extra,
+  ], { cwd: REPO_ROOT, encoding: 'utf8' });
+}
+
+test('SLICE-003 affinity recovery lost acknowledgement replays before the generation fence', () => {
+  const f = seedAffinityReservation();
+  const reservationKey = lease(f.root, f.runId).recovery_discriminator;
+  const args = { attemptId: RECOVERY_ATTEMPT, capsuleRel: f.recovery.recovery_rel,
+    owner: f.recovery.child_run_id, expectGeneration: 1, runtime: 'claude',
+    now: Date.parse(T2), clock: () => Date.parse(T2) };
+  const first = acquireRecovery(f.root, f.runId, args);
+  const replay = acquireRecovery(f.root, f.runId, args);
+  assert.deepEqual([first.proceed, first.replayed], [true, false]);
+  assert.deepEqual([replay.proceed, replay.replayed], [true, true]);
+  assert.deepEqual(replay.consumed, first.consumed);
+  const current = lease(f.root, f.runId);
+  assert.equal(current.acquisition_receipt.attempt_id, RECOVERY_ATTEMPT);
+  assert.equal(current.acquisition_receipt.reservation_key, reservationKey);
+  assert.equal(current.activation_deadline_at, '2026-07-27T00:35:00.000Z');
+  assert.equal(leaseAcquiredEvents(f.root, f.runId).at(-1).data.attempt_id, RECOVERY_ATTEMPT);
+});
+
+test('SLICE-003 affinity recovery deadline uses safety clock, not public timestamps', () => {
+  for (const now of [Date.parse(T0), Date.parse(T2) + 86_400_000]) {
+    const f = seedAffinityReservation();
+    acquireRecovery(f.root, f.runId, { attemptId: `${RECOVERY_ATTEMPT}${now === Date.parse(T0) ? 'PAST' : 'FUTURE'}`,
+      capsuleRel: f.recovery.recovery_rel, owner: f.recovery.child_run_id,
+      expectGeneration: 1, runtime: 'claude', now, clock: () => Date.parse(T2) });
+    const state = readState(f.root, f.runId).data;
+    assert.equal(state.session_chain.activation_deadline_sec, 900);
+    assert.equal(state.session_chain.lease.acquired_at, new Date(now).toISOString());
+    assert.equal(state.session_chain.lease.activation_deadline_at, '2026-07-27T00:35:00.000Z');
+  }
+});
+
+test('SLICE-003 affinity recovery preserves F14 rejection identities after consumption', () => {
+  const f = seedAffinityReservation();
+  const base = { capsuleRel: f.recovery.recovery_rel, owner: f.recovery.child_run_id,
+    runtime: 'claude', now: Date.parse(T2), clock: () => Date.parse(T2) };
+  acquireRecovery(f.root, f.runId, { ...base, attemptId: RECOVERY_ATTEMPT, expectGeneration: 1 });
+  assert.throws(() => acquireRecovery(f.root, f.runId, {
+    ...base, attemptId: 'RECOVERYATTEMPT02', expectGeneration: 1,
+  }), /LEASE_FENCED: generation-mismatch/);
+  assert.throws(() => acquireRecovery(f.root, f.runId, {
+    ...base, attemptId: 'RECOVERYATTEMPT03', expectGeneration: 2,
+  }), /RECOVERY_ACQUIRE_STATUS_INVALID/);
+});
+
+test('SLICE-003 recovery CLI missing and malformed attempts are mutation-free exit 2 and 1', () => {
+  for (const [attemptArgs, expected] of [[[], 2], [['--attempt-id', 'bad!'], 1]]) {
+    const f = seedAffinityReservation();
+    const before = anchoredBytes(f.root, f.runId);
+    const result = runAcquireCli(f.root, f.runId, ['recovery', 'acquire',
+      '--capsule', f.recovery.recovery_rel, '--owner', f.recovery.child_run_id,
+      '--generation', '1', '--runtime', 'claude', ...attemptArgs]);
+    assert.equal(result.status, expected, result.stdout + result.stderr);
+    assert.deepEqual(anchoredBytes(f.root, f.runId), before);
+  }
+});
+
+test('SLICE-003 root recovery lost acknowledgement replays before exact receipt validation', () => {
+  const f = seedRelocatedRootReservation();
+  const before = readStateForRootRecovery(f.root, f.runId).data;
+  const child = before.session_chain.sessions.find(s => s.run_id === f.recovered.replacement_session_id);
+  const args = { attemptId: ROOT_RECOVERY_ATTEMPT, capsuleRel: child.recovery_rel,
+    owner: child.run_id, expectGeneration: before.session_chain.lease.generation,
+    bindingGeneration: before.project.binding_generation, runtime: 'claude',
+    now: Date.parse(T2), clock: () => Date.parse(T2) };
+  const first = acquireRootRecovery(f.root, f.runId, args);
+  const replay = acquireRootRecovery(f.root, f.runId, args);
+  assert.deepEqual([first.proceed, first.replayed], [true, false]);
+  assert.deepEqual([replay.proceed, replay.replayed], [true, true]);
+  assert.deepEqual(replay.consumed, first.consumed);
+  const current = lease(f.root, f.runId);
+  assert.equal(current.acquisition_receipt.attempt_id, ROOT_RECOVERY_ATTEMPT);
+  assert.equal(current.acquisition_receipt.reservation_key, child.root_recovery_operation_id);
+  assert.equal(current.activation_deadline_at, '2026-07-27T00:35:00.000Z');
+});
+
+test('SLICE-003 root recovery deadline uses safety clock, not public timestamps', () => {
+  for (const now of [Date.parse(T0), Date.parse(T2) + 86_400_000]) {
+    const f = seedRelocatedRootReservation();
+    const before = readStateForRootRecovery(f.root, f.runId).data;
+    const child = before.session_chain.sessions.find(s => s.run_id === f.recovered.replacement_session_id);
+    acquireRootRecovery(f.root, f.runId, {
+      attemptId: `${ROOT_RECOVERY_ATTEMPT}${now === Date.parse(T0) ? 'PAST' : 'FUTURE'}`,
+      capsuleRel: child.recovery_rel, owner: child.run_id,
+      expectGeneration: before.session_chain.lease.generation,
+      bindingGeneration: before.project.binding_generation, runtime: 'claude',
+      now, clock: () => Date.parse(T2),
+    });
+    const state = readStateForRootRecovery(f.root, f.runId).data;
+    assert.equal(state.session_chain.activation_deadline_sec, 900);
+    assert.equal(state.session_chain.lease.acquired_at, new Date(now).toISOString());
+    assert.equal(state.session_chain.lease.activation_deadline_at, '2026-07-27T00:35:00.000Z');
+  }
+});
+
+test('SLICE-003 root recovery preserves F14 proof rejection after consumption', () => {
+  const f = seedRelocatedRootReservation();
+  const before = readStateForRootRecovery(f.root, f.runId).data;
+  const child = before.session_chain.sessions.find(s => s.run_id === f.recovered.replacement_session_id);
+  const base = { capsuleRel: child.recovery_rel, owner: child.run_id,
+    bindingGeneration: before.project.binding_generation, runtime: 'claude',
+    now: Date.parse(T2), clock: () => Date.parse(T2) };
+  acquireRootRecovery(f.root, f.runId, { ...base, attemptId: ROOT_RECOVERY_ATTEMPT,
+    expectGeneration: before.session_chain.lease.generation });
+  assert.throws(() => acquireRootRecovery(f.root, f.runId, {
+    ...base, attemptId: 'ROOTRECOVERYATTEMPT02',
+    expectGeneration: before.session_chain.lease.generation + 1,
+  }), /ROOT_OPERATION_PROOF_INVALID/);
+});
+
+test('SLICE-003 root recovery CLI missing and malformed attempts are mutation-free exit 2 and 1', () => {
+  for (const [attemptArgs, expected] of [[[], 2], [['--attempt-id', 'bad!'], 1]]) {
+    const f = seedRelocatedRootReservation();
+    const before = readStateForRootRecovery(f.root, f.runId).data;
+    const child = before.session_chain.sessions.find(s => s.run_id === f.recovered.replacement_session_id);
+    const result = rootAcquireCli(f.root, f.runId, child,
+      before.session_chain.lease.generation, before.project.binding_generation, attemptArgs);
+    assert.equal(result.status, expected, result.stdout + result.stderr);
+    assert.deepEqual(readStateForRootRecovery(f.root, f.runId).data, before);
+  }
 });

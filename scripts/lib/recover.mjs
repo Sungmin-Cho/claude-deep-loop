@@ -44,6 +44,7 @@ import { buildRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
 const RECOVERY_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
 const NONTERMINAL_WORKSTREAM = new Set(['planned', 'in_progress', 'in_review', 'parked']);
 const MAX_CAPSULE_BYTES = 256 * 1024;
+const LEGACY_ACTIVATION_DEADLINE_SEC = 900;
 
 function exactBoundaryIdentity(value) {
   return value != null
@@ -81,6 +82,15 @@ function lockedSafetyTime(clock, context) {
     typeof clock === 'function' ? clock() : Number.NaN,
     context,
   );
+}
+
+function activationDeadlineSeconds(loop) {
+  const value = loop.session_chain.activation_deadline_sec;
+  if (value === undefined) return LEGACY_ACTIVATION_DEADLINE_SEC;
+  if (!Number.isSafeInteger(value) || value < 60 || value > 86400) {
+    throw new Error('INVALID_ACTIVATION_DEADLINE_CONFIG');
+  }
+  return value;
 }
 
 function operationTime(now, safetyNow, context) {
@@ -408,6 +418,7 @@ export function supersedeAffinity(root, runId, {
     recoveryRel,
     generation: loop.session_chain.lease.generation,
   });
+  const acquireCommand = `${descriptor.acquireInvocation} --attempt-id ${operationId}`;
   const capsuleNow = now === undefined ? loop.updated_at : now;
   const capsule = capsuleEnvelope({
     artifactKind: 'affinity-recovery',
@@ -432,7 +443,7 @@ export function supersedeAffinity(root, runId, {
       reason,
       current_episode: loop.current_episode ?? null,
       episodes: boundedEpisodeContext(loop, affinity.workstream.id),
-      resume_command: descriptor.acquireInvocation,
+      resume_command: acquireCommand,
     },
   });
   const recoverySha256 = contentHash(capsule);
@@ -524,7 +535,7 @@ export function supersedeAffinity(root, runId, {
     child_run_id: childRunId,
     recovery_rel: recoveryRel,
     recovery_sha256: recoverySha256,
-    resume_command: descriptor.acquireInvocation,
+    resume_command: acquireCommand,
   };
 }
 
@@ -712,6 +723,7 @@ export function recoverBoundary(root, runId, {
     recoveryRel,
     generation: loop.session_chain.lease.generation,
   });
+  const acquireCommand = `${descriptor.acquireInvocation} --attempt-id ${operationId}`;
   const capsuleNow = now === undefined ? loop.updated_at : now;
   const capsule = capsuleEnvelope({
     artifactKind: 'boundary-recovery',
@@ -733,7 +745,7 @@ export function recoverBoundary(root, runId, {
       project_root_digest: rootDigest,
       project_binding_generation: loop.project.binding_generation,
       parent_loop_hash: snapshot.hash,
-      resume_command: descriptor.acquireInvocation,
+      resume_command: acquireCommand,
     },
   });
   const recoverySha256 = contentHash(capsule);
@@ -867,7 +879,7 @@ export function recoverBoundary(root, runId, {
     boundary_event: { ...source.boundaryEvent },
     recovery_rel: recoveryRel,
     recovery_sha256: recoverySha256,
-    resume_command: descriptor.acquireInvocation,
+    resume_command: acquireCommand,
   };
 }
 
@@ -1031,6 +1043,8 @@ function clearRecoveryLease(lease, owner, generation, iso) {
     resume_policy: null,
   };
   for (const key of [
+    'activation',
+    'expiry_receipt',
     'recovery_rel',
     'recovery_sha256',
     'recovery_discriminator',
@@ -1052,8 +1066,12 @@ export function acquireRecovery(root, runId, {
   runtime,
   now,
   clock = Date.now,
+  attemptId = null,
   __testPreCheckSeam,
 } = {}) {
+  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+    throw new Error('INVALID_ATTEMPT_ID');
+  }
   if (typeof capsuleRel !== 'string' || capsuleRel.length === 0
     || typeof owner !== 'string' || owner.length === 0
     || !Number.isSafeInteger(expectGeneration) || expectGeneration < 1
@@ -1069,6 +1087,21 @@ export function acquireRecovery(root, runId, {
     const runtimeResult = runtimeFence(loop, runtime);
     if (!runtimeResult.ok) throw new Error('RUNTIME_FENCED: recovery runtime mismatch');
     const lease = loop.session_chain?.lease || {};
+    const replayReceipt = lease.acquisition_receipt;
+    if (loop.status === 'running'
+      && lease.owner_run_id === owner
+      && lease.state === 'active'
+      && replayReceipt?.takeover_kind === 'affinity-supersession'
+      && replayReceipt.child_run_id === owner
+      && replayReceipt.attempt_id === attemptId
+      && replayReceipt.from_generation === expectGeneration
+      && replayReceipt.to_generation === lease.generation
+      && lease.activation_deadline_at != null) {
+      throw acquireHalt(contractFields(
+        { ok: true, generation: lease.generation, reason: 'acquired' },
+        { consumed: consumedFromReceipt(replayReceipt), replayed: true },
+      ));
+    }
     if (lease.generation !== expectGeneration) {
       throw new Error('LEASE_FENCED: generation-mismatch');
     }
@@ -1105,7 +1138,12 @@ export function acquireRecovery(root, runId, {
         preserved: true,
       }));
     }
-    plan = { iso: canonicalNow(lockedNow, 'recovery acquire') };
+    const activationDeadlineSec = activationDeadlineSeconds(loop);
+    plan = {
+      iso: canonicalNow(lockedNow, 'recovery acquire'),
+      activationDeadlineSec,
+      activationDeadlineIso: new Date(safetyNow + activationDeadlineSec * 1_000).toISOString(),
+    };
   };
 
   const mutate = (loop) => {
@@ -1123,10 +1161,13 @@ export function acquireRecovery(root, runId, {
       fromGeneration: expectGeneration,
       toGeneration: expectGeneration + 1,
       at: plan.iso,
-      // §3.6.4: 이 경로는 `--attempt-id` 를 받지도 기록하지도 않는다.
-      attemptId: null,
+      attemptId,
     });
+    if (loop.session_chain.activation_deadline_sec === undefined) {
+      loop.session_chain.activation_deadline_sec = plan.activationDeadlineSec;
+    }
     loop.session_chain.lease = clearRecoveryLease(lease, owner, expectGeneration + 1, plan.iso);
+    loop.session_chain.lease.activation_deadline_at = plan.activationDeadlineIso;
     loop.session_chain.lease.acquisition_receipt = receipt;
     loop.status = 'running';
     loop.pause_reason = null;
@@ -1146,7 +1187,7 @@ export function acquireRecovery(root, runId, {
         owner,
         from_generation: expectGeneration,
         to_generation: expectGeneration + 1,
-        attempt_id: null,
+        attempt_id: attemptId,
       },
       now,
     }, mutate, preCheck, appendOptions);

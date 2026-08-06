@@ -698,6 +698,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
   });
   const budgetBefore = durableBytes(budgetFixture.root, budgetFixture.runId);
   const blocked = acquireRecovery(budgetFixture.root, budgetFixture.runId, {
+    attemptId: 'AFFINITYBUDGETBLOCK01',
     capsuleRel: budgetRecovery.recovery_rel,
     owner: budgetRecovery.child_run_id,
     expectGeneration: 1,
@@ -723,6 +724,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
     now: NOW + (2 * 86_400_000),
   }), { ok: true, status: 'paused' });
   const budgetAcquired = acquireRecovery(budgetFixture.root, budgetFixture.runId, {
+    attemptId: 'AFFINITYBUDGETBLOCK01',
     capsuleRel: budgetRecovery.recovery_rel,
     owner: budgetRecovery.child_run_id,
     expectGeneration: 1,
@@ -751,6 +753,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
   writeFileSync(capsulePath, `${readFileSync(capsulePath, 'utf8')}\n`);
   const stateBeforeMismatch = durableBytes(tamperFixture.root, tamperFixture.runId);
   assert.throws(() => acquireRecovery(tamperFixture.root, tamperFixture.runId, {
+    attemptId: 'AFFINITYTAMPER0001',
     capsuleRel: tamperRecovery.recovery_rel,
     owner: tamperRecovery.child_run_id,
     expectGeneration: 1,
@@ -771,6 +774,7 @@ test('affinity acquire breaker failure preserves the reservation through reset a
   tripBreaker(fixture.root, fixture.runId, 'operator-latched-breaker');
   const before = durableBytes(fixture.root, fixture.runId);
   assert.deepEqual(acquireRecovery(fixture.root, fixture.runId, {
+    attemptId: 'AFFINITYBREAKER001',
     capsuleRel: recovery.recovery_rel,
     owner: recovery.child_run_id,
     expectGeneration: 1,
@@ -790,6 +794,7 @@ test('affinity acquire breaker failure preserves the reservation through reset a
     fence: { owner: fixture.runId, generation: 1, intent: 'breaker-reset' },
   }), { ok: true, status: 'paused' });
   const breakerAcquired = acquireRecovery(fixture.root, fixture.runId, {
+    attemptId: 'AFFINITYBREAKER001',
     capsuleRel: recovery.recovery_rel,
     owner: recovery.child_run_id,
     expectGeneration: 1,
@@ -1231,6 +1236,7 @@ test('affinity recovery acquire rejects stale public --now after real wallclock 
     '--owner', recovery.child_run_id,
     '--generation', '1',
     '--runtime', 'claude',
+    '--attempt-id', recovery.operation_id ?? readState(fixture.root, fixture.runId).data.session_chain.lease.recovery_discriminator,
   ], staleNow);
   assert.equal(acquired.status, 1, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {

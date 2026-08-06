@@ -1174,6 +1174,7 @@ test('Task 13 root recovery acquire is the sole fresh-process takeover path', as
     '--generation', String(before.session_chain.lease.generation),
     '--binding-generation', String(before.project.binding_generation),
     '--runtime', 'codex',
+    '--attempt-id', child.root_recovery_operation_id,
     '--candidate-project-root', moved.candidateRoot,
     '--run-id', moved.runId,
   ], freshRoot('dl-root-acquire-cwd-'));
@@ -1628,6 +1629,7 @@ test('Round1 acceptance RED: acquisition gates preserve the exact root reservati
     const snapshot = durableSnapshot(moved.candidateRoot, moved.runId);
     assert.throws(
       () => acquireRootRecovery(moved.candidateRoot, moved.runId, {
+        attemptId: 'ROOTRECOVERYREJECT01',
         capsuleRel: child.recovery_rel,
         owner: child.run_id,
         expectGeneration: before.session_chain.lease.generation,
