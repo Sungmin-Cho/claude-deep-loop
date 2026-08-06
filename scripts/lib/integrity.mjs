@@ -878,10 +878,23 @@ export function withReconciledRootRecoveryLock(candidateRoot, runId, callback, o
 
 export function withReconciledMutationLock(root, runId, callback, options = {}) {
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
+  const { authorize, ...reconcileOptions } = options;
+  if (authorize !== undefined && typeof authorize !== 'function') {
+    throw new Error('MUTATION_AUTHORIZER_INVALID');
+  }
   return withLock(root, runId, guard => {
+    if (authorize && compactRestoreIntentCandidateLocked(root, runId, guard)) {
+      const raw = readRawRun(root, runId);
+      const authorized = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: false,
+      });
+      assertProjectRootBinding(root, authorized.data);
+      authorize(guard, { data: structuredClone(authorized.data) });
+    }
     assertNoCompactRestoreIntentLocked(root, runId, guard);
-    reconcileAnchoredPublicationLocked(root, runId, guard, options);
+    reconcileAnchoredPublicationLocked(root, runId, guard, reconcileOptions);
     const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    if (authorize) authorize(guard, { ...snapshot, data: structuredClone(snapshot.data) });
     if (existsSync(join(runDir(root, runId), 'transactions'))) {
       retireCommittedPublicationLocked(runDir(root, runId), guard);
     }

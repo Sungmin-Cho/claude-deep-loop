@@ -71,6 +71,26 @@ test('checkpoint fenced gateway authorizes verified prepared manifests before re
   }
 });
 
+test('generic mutation authorizer preserves fence precedence over compact intent and reconciliation', () => {
+  const source = readFileSync(join(
+    dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'integrity.mjs',
+  ), 'utf8');
+  const start = source.indexOf('export function withReconciledMutationLock');
+  const end = source.indexOf('\nfunction validatedFenceRequest', start);
+  assert.ok(start >= 0 && end > start);
+  const gateway = source.slice(start, end);
+  const candidate = gateway.indexOf('compactRestoreIntentCandidateLocked');
+  const earlyAuthorize = gateway.indexOf('authorize(guard');
+  const intent = gateway.indexOf('assertNoCompactRestoreIntentLocked');
+  const reconcile = gateway.indexOf('reconcileAnchoredPublicationLocked');
+  const snapshot = gateway.indexOf('snapshotRaw', reconcile);
+  const strictAuthorize = gateway.indexOf('authorize(guard', earlyAuthorize + 1);
+  const callback = gateway.indexOf('return callback');
+  assert.ok(candidate >= 0 && candidate < earlyAuthorize && earlyAuthorize < intent);
+  assert.ok(intent < reconcile && reconcile < snapshot && snapshot < strictAuthorize);
+  assert.ok(strictAuthorize < callback);
+});
+
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   mkdirSync(runDir(root, 'R'), { recursive: true });

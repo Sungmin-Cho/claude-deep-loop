@@ -1311,6 +1311,7 @@ test('public checkpoint emit preserves stale-fence precedence over a retained re
   for (const args of [
     ['checkpoint', 'emit', '--runtime', fixture.runtime],
     ['state', 'patch', '--field', 'discovered_items', '--value', '[]'],
+    ['breaker', 'reset', '--confirm'],
   ]) {
     const result = spawnSync(process.execPath, [
       join(process.cwd(), 'scripts', 'deep-loop.mjs'),
