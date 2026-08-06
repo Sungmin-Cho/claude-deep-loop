@@ -6,6 +6,7 @@ export const STRICT_SCHEMA_VERSION = '2.0';
 export const STRICT_CONTEXT_DOMAIN = 'deep-loop-compact-checkpoint-v2';
 export const STRICT_FILE = /^([0-9a-f]{64})-compact\.json$/;
 const MAX_CHECKPOINT_BYTES = 256 * 1024;
+const MAX_COMPACT_PRUNE_BYTES = 16 * 1024;
 
 const TOP_KEYS = Object.freeze(['schema_version', 'envelope', 'payload']);
 const ENVELOPE_KEYS = Object.freeze([
@@ -102,6 +103,40 @@ export function validateStrictSelf(env, { runId, key }) {
     throw new Error('CHECKPOINT_INVALID');
   }
   return env.payload.context;
+}
+
+export function validateCompactPruneBytes(bytes, { runId, key }) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_COMPACT_PRUNE_BYTES) {
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+  let env;
+  try { env = JSON.parse(bytes.toString('utf8')); }
+  catch { throw new Error('COMPACT_PRUNE_INVALID'); }
+  const checkpointRel = `checkpoints/${key}-compact.json`;
+  const observationRel = `checkpoints/${key}-compact-observation.json`;
+  if (!exactKeys(env, TOP_KEYS)
+    || env.schema_version !== '1.0'
+    || !exactKeys(env.envelope, ENVELOPE_KEYS)
+    || env.envelope.producer !== 'deep-loop'
+    || env.envelope.artifact_kind !== 'compact-prune'
+    || !exactKeys(env.envelope.schema, ['name', 'version'])
+    || env.envelope.schema.name !== 'compact-prune'
+    || env.envelope.schema.version !== '1.0'
+    || env.envelope.run_id !== runId
+    || env.envelope.parent_run_id !== null
+    || !canonicalIso(env.envelope.generated_at)
+    || !exactKeys(env.envelope.git, [])
+    || !exactKeys(env.envelope.provenance, ['source_artifacts', 'tool_versions'])
+    || JSON.stringify(env.envelope.provenance.source_artifacts)
+      !== JSON.stringify([checkpointRel, observationRel])
+    || !exactKeys(env.envelope.provenance.tool_versions, [])
+    || !exactKeys(env.payload, ['checkpoint_key', 'context_sha256', 'receipt_sha256'])
+    || env.payload.checkpoint_key !== key
+    || !(env.payload.context_sha256 === null || sha256(env.payload.context_sha256))
+    || !(env.payload.receipt_sha256 === null || sha256(env.payload.receipt_sha256))) {
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+  return env.payload;
 }
 
 export function validateStrictBytes(bytes, {

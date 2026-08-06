@@ -19,7 +19,7 @@ const childEnv = {
 
 function invoke(args, { input = null, label = args.join(' ') } = {}) {
   const result = spawnSync(process.execPath, [CLI, ...args, '--project-root', project], {
-    encoding: 'utf8', env: childEnv, input, maxBuffer: 2_097_152,
+    cwd: project, encoding: 'utf8', env: childEnv, input, maxBuffer: 2_097_152,
   });
   if (result.status !== 0) {
     throw new Error(`${label}: exit=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
@@ -35,6 +35,17 @@ const initialized = invoke([
 ]);
 const runId = initialized.run_id;
 const fence1 = ['--owner', runId, '--generation', '1', '--run-id', runId];
+const adapter = invoke([
+  'adapter', 'resolve', '--protocol', 'standalone', '--task', 'standalone isolation',
+  '--tier', 'recommend', '--run-id', runId,
+]);
+if (adapter.guard?.ok !== true
+  || adapter.dispatch.kind !== 'inline'
+  || adapter.dispatch.role !== 'maker'
+  || adapter.dispatch.explicit_fallback !== true
+  || adapter.dispatch.skill !== null) {
+  throw new Error('standalone inline dispatch descriptor was not consumable');
+}
 const workstream = invoke([
   'workstream', 'new', '--title', 'Standalone isolation', '--branch', `standalone-${runtime}`,
   '--worktree', '.claude/worktrees/standalone', '--now', now, ...fence1,
@@ -81,7 +92,7 @@ const handoff = invoke([
 ]);
 const resume = spawnSync(process.execPath, [
   CLI, 'resume-command', '--run-id', runId, '--project-root', project,
-], { encoding: 'utf8', env: childEnv, maxBuffer: 2_097_152 });
+], { cwd: project, encoding: 'utf8', env: childEnv, maxBuffer: 2_097_152 });
 if (resume.status !== 0 || resume.stdout.trim() === '') throw new Error(`resume-command: ${resume.stderr}`);
 const acquired = invoke([
   'lease', 'acquire', '--owner', handoff.childRunId, '--generation', '1',
@@ -100,7 +111,7 @@ process.stdout.write(`${JSON.stringify({
   orca_present: false,
   detected_plugins: Array.isArray(detected) ? detected : (detected?.plugins ?? []),
   stages: [
-    'init', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
+    'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
     'terminal-boundary', 'handoff', 'resume', 'recovery', 'finish',
   ],
   terminal_status: terminal.status,

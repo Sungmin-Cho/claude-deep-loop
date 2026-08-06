@@ -166,7 +166,21 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" adapter resolve --protocol <protocol
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --status in_progress --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-sibling descriptor는 runtime별로 라우팅한다. Claude는 `Skill({ skill: dispatch.skill, args: dispatch.args })`, Codex는 qualified `$<dispatch.skill>`에 `dispatch.args`를 전달한다. 완료 후:
+`dispatch.kind`를 production routing authority로 소비한다.
+
+- `dispatch.kind === 'inline'`이면 `dispatch.explicit_fallback === true`,
+  `dispatch.role === 'maker'`, `dispatch.skill === null`을 모두 요구한다. 현재
+  owner LLM이 §1.5의 worktree 안에서 `dispatch.args` brief를 직접 도구로
+  수행한다. sibling skill, Orca, MCP, host executable을 찾지 않으며 null
+  `dispatch.skill`을 호출하지 않는다. 이 분기는 maker 실행만 허용하고 checker
+  독립성 규칙을 변경하지 않는다.
+- `dispatch.kind === 'skill'`이면 `dispatch.skill`이 non-empty string인지
+  확인한 뒤 Claude는 `Skill({ skill: dispatch.skill, args: dispatch.args })`,
+  Codex는 qualified `$<dispatch.skill>`에 `dispatch.args`를 전달한다.
+- 그 밖의 kind 또는 위 shape 불일치는 `needs-human:adapter-descriptor-invalid`로
+  중단하고 maker 완료 proof를 기록하지 않는다.
+
+완료 후:
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --status done --artifacts '[".claude/worktrees/<ws-slug>/path/to/artifact"]' --proof '{}' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```

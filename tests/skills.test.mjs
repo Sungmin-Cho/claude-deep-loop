@@ -1226,6 +1226,12 @@ test('continue SKILL: compact advice uses native same-conversation preparation',
   assert.match(md, /native `\/compact`/);
   assert.match(md, /same conversation|같은 conversation/i);
 });
+test('continue SKILL: standalone maker consumes inline descriptors without a null skill dispatch', () => {
+  const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
+  assert.match(md, /dispatch\.kind === 'inline'[\s\S]{0,500}(?:direct|직접)[\s\S]{0,240}(?:tool|도구)/i);
+  assert.match(md, /dispatch\.kind === 'skill'[\s\S]{0,500}dispatch\.skill/);
+  assert.match(md, /inline[\s\S]{0,500}dispatch\.skill[\s\S]{0,160}(?:null|호출하지|must not)/i);
+});
 test('continue SKILL: handoff uses exact kernel terminal boundary only', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
   assert.match(md, /action\.type === 'handoff'/);

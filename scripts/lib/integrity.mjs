@@ -47,6 +47,7 @@ import {
   normalizeProviderEvidence,
   providerEvidenceProjection,
   readStableRegular,
+  validateCompactPruneBytes,
   validateStrictBytes,
   validateStrictSelf,
 } from './checkpoint-validation.mjs';
@@ -91,10 +92,50 @@ export function reconcileCompactPruneTombstonesLocked(
     if (!match || (checkpointKey !== undefined && match[1] !== checkpointKey)) continue;
     guard.assertOwned(runDir(root, runId));
     const key = match[1];
+    const tombstonePath = join(dir, name);
+    let payload;
+    try {
+      payload = validateCompactPruneBytes(
+        readStableRegular(tombstonePath, 'COMPACT_PRUNE_INVALID').bytes,
+        { runId, key },
+      );
+      const checkpointPath = join(dir, `${key}-compact.json`);
+      if (existsSync(checkpointPath)) {
+        const checkpointBytes = readStableRegular(checkpointPath, 'COMPACT_PRUNE_INVALID').bytes;
+        let checkpoint;
+        try { checkpoint = JSON.parse(checkpointBytes.toString('utf8')); }
+        catch { checkpoint = null; }
+        if (checkpoint === null) {
+          if (payload.context_sha256 !== null) throw new Error('COMPACT_PRUNE_INVALID');
+        } else {
+          let context;
+          try { context = validateStrictSelf(checkpoint, { runId, key }); }
+          catch {
+            if (payload.context_sha256 !== null) throw new Error('COMPACT_PRUNE_INVALID');
+            context = null;
+          }
+          if (context !== null && checkpoint.payload.context_sha256 !== payload.context_sha256) {
+            throw new Error('COMPACT_PRUNE_INVALID');
+          }
+        }
+      }
+      const observationPath = join(dir, `${key}-compact-observation.json`);
+      if (existsSync(observationPath)) {
+        const observationBytes = readStableRegular(observationPath, 'COMPACT_PRUNE_INVALID').bytes;
+        if (payload.receipt_sha256 === null
+          || contentHash(observationBytes) !== payload.receipt_sha256) {
+          throw new Error('COMPACT_PRUNE_INVALID');
+        }
+      }
+    } catch (error) {
+      if (error?.message === 'COMPACT_PRUNE_INVALID') throw error;
+      throw new Error('COMPACT_PRUNE_INVALID');
+    }
+    guard.renew();
     for (const path of [
       join(dir, `${key}-compact-observation.json`),
       join(dir, `${key}-compact.json`),
-      join(dir, name),
+      tombstonePath,
     ]) {
       if (!existsSync(path) && path !== join(dir, name)) continue;
       rmSync(path, { force: true });

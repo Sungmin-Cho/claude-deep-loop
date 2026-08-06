@@ -1876,6 +1876,49 @@ test('pair pruning exposes four crash seams and reconciles tombstones while live
   }
 });
 
+test('compact prune reconciliation validates M3 identity and both surviving pair bindings before unlink', () => {
+  for (const [label, mutate] of [
+    ['run binding', value => { value.envelope.run_id = 'foreign-run'; }],
+    ['source binding', value => { value.envelope.provenance.source_artifacts.reverse(); }],
+    ['checkpoint binding', value => { value.payload.context_sha256 = '0'.repeat(64); }],
+    ['receipt binding', value => { value.payload.receipt_sha256 = 'f'.repeat(64); }],
+  ]) {
+    const fixture = seedBound();
+    const emitted = [];
+    for (let index = 0; index < 5; index += 1) {
+      emitted.push(__testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+        fence: fixture.fence,
+        runtime: fixture.runtime,
+        hostSessionEvidence: hostEvidence('claude-code', `validated-prune-${label}-${index}`),
+        now: NOW_MS + index + 1,
+      }));
+    }
+    seedCompactObservation(fixture, emitted[0]);
+    assert.throws(() => __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `validated-prune-${label}-trigger`),
+      now: NOW_MS + 100,
+      faultAt: seam => { if (seam === 'prune:tombstone-written') throw new Error(seam); },
+    }), /prune:tombstone-written/);
+    const tombstone = join(
+      checkpointDirOf(fixture.root, fixture.runId),
+      `${emitted[0].checkpoint_key}-compact-prune.json`,
+    );
+    const value = JSON.parse(readFileSync(tombstone, 'utf8'));
+    mutate(value);
+    writeFileSync(tombstone, JSON.stringify(value, null, 2));
+    const before = durableInventory(fixture);
+
+    assert.throws(() => emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 200,
+    }), /COMPACT_PRUNE_INVALID/, label);
+    assert.deepEqual(durableInventory(fixture), before, label);
+  }
+});
+
 test('direct restore retry converges a crashed prune tombstone under the restore transaction lock', () => {
   for (const seam of [
     'prune:tombstone-written',
@@ -1989,9 +2032,9 @@ test('restore rechecks prune ineligibility after a competing writer held the tra
   });
 
   assert.equal(code, 1, `${stdout}\n${stderr}`);
-  assert.match(stderr, /CHECKPOINT_INELIGIBLE/);
-  assert.equal(existsSync(tombstone), false);
-  assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, emitted)), false);
+  assert.match(stderr, /COMPACT_PRUNE_INVALID/);
+  assert.equal(existsSync(tombstone), true);
+  assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, emitted)), true);
 });
 
 test('live restore intent pins its checkpoint and receipt pair until intent cleanup', () => {

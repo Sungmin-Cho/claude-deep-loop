@@ -20,6 +20,12 @@ function run(runtime) {
 test('standalone isolation completes for claude and codex without Orca or siblings', () => {
   const source = readFileSync(DRIVER, 'utf8');
   assert.match(source, /PATH:\s*''/);
+  assert.match(source, /'adapter',\s*'resolve'/,
+    'the isolated lifecycle must resolve the production maker descriptor');
+  assert.match(source, /dispatch\.kind\s*!==\s*'inline'/,
+    'the isolated lifecycle must consume the standalone inline descriptor');
+  assert.match(source, /cwd:\s*project/,
+    'every public CLI call must execute from the isolated project cwd');
   assert.doesNotMatch(source, /ORCA_PANE_KEY|orca-loop|mcp__|claude\s+-p|codex\s+exec|deep-(?:work|review|wiki|memory)/i,
     'the isolated lifecycle may use only this plugin CLI');
   for (const runtime of ['claude', 'codex']) {
@@ -29,7 +35,7 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     assert.equal(value.orca_present, false);
     assert.deepEqual(value.detected_plugins, []);
     assert.deepEqual(value.stages, [
-      'init', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
+      'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
       'terminal-boundary', 'handoff', 'resume', 'recovery', 'finish',
     ]);
     assert.equal(value.terminal_status, 'stopped');
