@@ -55,11 +55,11 @@
       "id": "wrapper-first",
       "comment": "wrapper의 위임-전 사전 acquire는 오용이다(§3.4). 오용자의 preserve-pause 의무 이행 자체를 결과가 assert되는 step으로 포함한다 — 이행하지 않는 wrapper는 final에서 실패한다.",
       "steps": [
-        { "op": "cli", "actor": "wrapper", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "actor": "wrapper", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KWRAPPERATTEMPT00000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true } } },
         { "op": "cli", "actor": "wrapper", "argv": ["pause", "--owner", "$CHILD", "--generation", "2", "--reason", "acquire-misuse", "--mode", "preserve", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "status": "paused" } } },
-        { "op": "cli", "actor": "delegated-session", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "2", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "actor": "delegated-session", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "2", "--runtime", "claude", "--attempt-id", "01KDELEGATEDATTEMPT000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
           "comment": "같은-owner 멱등은 paused에서도 성립하되 proceed:false — 위임 세션은 승격하지 않고 멈춘다(§3.4)" }
       ],
@@ -68,9 +68,9 @@
     {
       "id": "duplicate",
       "steps": [
-        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KDUPLICATEFIRST000000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true } } },
-        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KDUPLICATESECOND00000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
           "comment": "정확히 1회만 proceed:true — harness는 이 ordering에서 proceed:true 응답이 1건임을 추가로 센다" }
       ],
@@ -79,12 +79,12 @@
     {
       "id": "stale-invocation",
       "steps": [
-        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KSTALEFIRST0000000000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "reason": "acquired", "proceed": true } } },
-        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "$CHILD", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KSTALESECOND000000000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": true, "reason": "already-owned", "proceed": false } },
           "comment": "같은 owner + 옛 generation: 같은-owner 멱등이 generation 검사보다 선행(§1.3) — 계약으로 고정" },
-        { "op": "cli", "argv": ["lease", "acquire", "--owner", "01KUNRELATEDOWNER0000000000", "--generation", "1", "--runtime", "claude", "--now", "$T2"],
+        { "op": "cli", "argv": ["lease", "acquire", "--owner", "01KUNRELATEDOWNER0000000000", "--generation", "1", "--runtime", "claude", "--attempt-id", "01KUNRELATEDATTEMPT0000000", "--now", "$T2"],
           "expect": { "exit": 0, "json": { "ok": false, "reason": "generation-mismatch", "proceed": false } } }
       ],
       "final": { "status": "running", "owner_run_id": "$CHILD", "generation": 2, "handoff_phase": "acquired" }

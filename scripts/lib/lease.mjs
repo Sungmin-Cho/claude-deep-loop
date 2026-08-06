@@ -168,6 +168,7 @@ function replayedAcquisition(data, { expectGeneration, attempt }) {
   if (receipt.attempt_id !== attempt) return null;                         // 조건 5
   if (receipt.to_generation !== lease.generation) return null;             // 조건 6
   if (receipt.from_generation !== expectGeneration) return null;           // 조건 7
+  if (lease.activation_deadline_at === null || lease.activation_deadline_at === undefined) return null; // 조건 8
   return contractFields(
     { ok: true, generation: lease.generation, reason: 'acquired' },
     { consumed: consumedFromReceipt(receipt), replayed: true },
@@ -195,7 +196,10 @@ export function acquireLease(root, runId, {
   __testFaultAt,
 }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
-  const attempt = attemptId ?? null;
+  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+    throw new Error('INVALID_ATTEMPT_ID');
+  }
+  const attempt = attemptId;
   let plan = null;      // preCheck 이 세우고 mutate 가 집행한다 — 같은 lock, 같은 fresh loop
   let outcome = null;   // 진행 성공 응답 — mutate 가 채운다
   const appendOptions = {};
@@ -207,7 +211,8 @@ export function acquireLease(root, runId, {
     // runtimeFence 가 만든 객체를 그대로 복원한다 — `generation`도 `kernel_exit_code`도 없는 유일한 형태다.
     if (!runtimeResult.ok) throw acquireHalt(contractFields(runtimeResult));
     const lease = data.session_chain.lease;
-    // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
+    // 같은 owner 가 이미 active 면 멱등 (active 에는 stale-takeover expiry deadline 이 없다;
+    // activation_deadline_at 은 별도의 activation safety timer다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {
       // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
       // 위장 금지 — resume이 소유권 경계에서 명확히 거부되어야 한다.
@@ -277,7 +282,13 @@ export function acquireLease(root, runId, {
           preserved: true,
         }));
       }
-      plan = { kind: 'boundary-recovery', iso: new Date(lockedNow).toISOString() };
+      plan = {
+        kind: 'boundary-recovery',
+        iso: new Date(lockedNow).toISOString(),
+        activationDeadlineIso: new Date(
+          safetyNow + data.session_chain.activation_deadline_sec * 1_000,
+        ).toISOString(),
+      };
       return;
     }
     const topologyError = boundaryHandoffTopologyError(data);
@@ -292,7 +303,8 @@ export function acquireLease(root, runId, {
       throw acquireHalt(contractFields({ ok: false, generation: lease.generation, reason: 'child-not-reserved' }));
     }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
-    const lockedNow = lockedTime(now, clock, 'lease acquire');
+    const safetyNow = lockedSafetyTime(clock, 'lease acquire safety');
+    const lockedNow = lockedTime(now, () => safetyNow, 'lease acquire');
     const expired = lease.expires_at && lockedNow > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) {
@@ -303,13 +315,19 @@ export function acquireLease(root, runId, {
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       throw acquireHalt(contractFields({ ok: false, generation: lease.generation, reason: 'child-not-reserved' }));
     }
-    plan = { kind: 'takeover', iso: new Date(lockedNow).toISOString() };
+    plan = {
+      kind: 'takeover',
+      iso: new Date(lockedNow).toISOString(),
+      activationDeadlineIso: new Date(
+        safetyNow + data.session_chain.activation_deadline_sec * 1_000,
+      ).toISOString(),
+    };
   };
 
   // 소유권 CAS + descriptor 소비 + unpause + 영수증 — 전부 이 트랜잭션 안에서 같은 fresh loop 위에.
   const mutate = (data) => {
     const lease = data.session_chain.lease;   // 소유권 CAS **직전** 값 — 영수증의 원천(§3.1)
-    const { iso } = plan;
+    const { iso, activationDeadlineIso } = plan;
     if (plan.kind === 'boundary-recovery') {
       const child = data.session_chain.sessions.find(session => session.run_id === owner);
       const receipt = buildAcquisitionReceipt({
@@ -327,6 +345,9 @@ export function acquireLease(root, runId, {
         attemptId: attempt,
       });
       data.session_chain.lease = clearRecoveryLease(lease, owner, expectGeneration + 1, iso);
+      delete data.session_chain.lease.activation;
+      delete data.session_chain.lease.expiry_receipt;
+      data.session_chain.lease.activation_deadline_at = activationDeadlineIso;
       data.session_chain.lease.acquisition_receipt = receipt;
       data.status = 'running';
       data.pause_reason = null;
@@ -364,11 +385,13 @@ export function acquireLease(root, runId, {
       handoff_boundary_event: _boundaryEvent,
       handoff_project_binding_generation: _bindingGeneration,
       handoff_project_root_digest: _rootDigest,
+      activation: _activation,
+      expiry_receipt: _expiryReceipt,
       ...leaseAfterBoundary
     } = lease;
     data.session_chain.lease = {
       ...leaseAfterBoundary, owner_run_id: owner, generation: expectGeneration + 1,
-      acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
+      acquired_at: iso, expires_at: null, activation_deadline_at: activationDeadlineIso,
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
       handoff_trigger: null, takeover_kind: null,
       acquisition_receipt: receipt,

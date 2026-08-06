@@ -318,6 +318,7 @@ function movedRunWithProcessReceipt({
   let settlementFence = { owner: runId, generation: 1, intent: 'accounting' };
   if (terminal) {
     assert.equal(acquireLease(originalRoot, runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: handoff.childRunId,
       expectGeneration: 1,
       runtime: 'codex',
@@ -1158,6 +1159,7 @@ test('Task 13 root recovery acquire is the sole fresh-process takeover path', as
     '--owner', child.run_id,
     '--generation', String(before.session_chain.lease.generation),
     '--runtime', 'codex',
+    '--attempt-id', 'PROJECTROOTATTEMPT01',
     '--project-root', moved.candidateRoot,
     '--run-id', moved.runId,
   ]);

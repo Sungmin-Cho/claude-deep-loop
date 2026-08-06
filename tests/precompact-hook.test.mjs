@@ -380,6 +380,7 @@ test('compact-in-place attended acquired → checkpointed after rotation, byte-i
   });
   assert.equal(emitted.ok, true);
   const acquired = acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: Date.parse('2026-06-24T00:02:00Z'),
   });
   assert.equal(acquired.reason, 'acquired');

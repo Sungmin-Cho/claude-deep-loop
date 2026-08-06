@@ -969,6 +969,7 @@ test('Codex preflight receipts settle read/write exactly once and survive a late
   const beforeLog = readFileSync(logPath, 'utf8');
   releaseLease(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1 });
   assert.equal(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: 'RECOVERY-OWNER', expectGeneration: 1, runtime: 'codex',
     now: Date.parse('2026-07-12T00:01:00Z'),
   }).ok, true);
@@ -1353,6 +1354,7 @@ function makerProcessReceiptFixture({ acquire = false } = {}) {
   assert.equal(handoff.ok, true);
   if (acquire) {
     assert.equal(acquireLease(root, runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: handoff.childRunId,
       expectGeneration: 1,
       runtime: 'codex',
@@ -1425,6 +1427,7 @@ test('maker process receipt retry remains an exact no-op after late acquisition'
   assert.equal(initialProcessCosts[0].data.generation, 1);
 
   assert.equal(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: fixture.handoff.childRunId,
     expectGeneration: 1,
     runtime: 'codex',
@@ -1469,6 +1472,7 @@ test('maker process receipt retry remains exact after a backdated late acquisiti
   );
   assert.equal(processCost.data.owner, fixture.runId);
   assert.equal(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: fixture.handoff.childRunId,
     expectGeneration: 1,
     runtime: 'codex',
@@ -2043,6 +2047,7 @@ test('an exact checker receipt remains a write-free no-op after lease advance an
   });
   assert.equal(handoff.ok, true);
   assert.equal(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: handoff.childRunId,
     expectGeneration: 1,
     runtime: 'codex',
@@ -2220,7 +2225,7 @@ test('#3(Fix1): a later session budget record does not absorb an earlier session
   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR);
   // advance the lease: release gen 1, a child acquires (gen 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
+  acquireLease(root, runId, { attemptId: 'MIGRATEDATTEMPT01', owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
   // gen 2 reports 5 turns — its own tick floor is 0, so it must NOT absorb the gen-1 floors
   recordCost(root, runId, { turns: 5, tokens: 0, fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR + 5, 'gen-1 floors survive; gen-2 report adds max(5, 0)=5 on top');
@@ -2271,6 +2276,7 @@ function terminalCodexChildRun() {
     };
   });
   assert.equal(acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: childRunId, expectGeneration: 1, runtime: 'codex',
     now: Date.parse('2026-07-11T00:01:00Z'),
   }).ok, true);

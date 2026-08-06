@@ -140,6 +140,7 @@ function main() {
       '--owner', process.env.DEEP_LOOP_OWNER,
       '--expect-generation', expectedGeneration,
       '--runtime', 'codex',
+      '--attempt-id', 'FAKECODEXATTEMPT01',
     ], {
       cwd: process.env.DEEP_LOOP_PROJECT_ROOT,
       env: process.env,

@@ -534,6 +534,7 @@ test('authentic legacy milestone cursor: terminal transition records string iden
   assert.deepEqual(nextAction(afterEmit, { now: NOW }).gate.unconsumed_milestones, []);
 
   const acquired = acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW.getTime() + 1,
   });
   assert.ok(acquired.ok);
@@ -574,6 +575,7 @@ test('authentic legacy milestone cursor: pre-compact handoff consumes string tra
   assert.deepEqual(afterEmit.session_chain.consumed_milestones, [terminalEvent]);
 
   const acquired = acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW.getTime() + 1,
   });
   assert.ok(acquired.ok);

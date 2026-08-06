@@ -326,13 +326,13 @@ test('CLI spawn-style reset-desktop on terminal run: exit 1 + JSON ok:false RUN_
 // generation-mismatch 등 그 외 ok:false는 기존 exit 0 + JSON 유지.
 test('CLI lease acquire: terminal → exit 3 run-terminal; non-terminal generation-mismatch → exit 0 (contract preserved)', () => {
   const { root, owner, gen } = seedTerminal('completed');
-  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude']);
+  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'TERMINALATTEMPT01']);
   assert.equal(r.status, 3, r.stdout + r.stderr);
   assert.equal(JSON.parse(r.stdout).reason, 'run-terminal');
   // 비terminal + stale generation → 기존 계약(exit 0 + JSON)
   const fresh = mkdtempSync(join(tmpdir(), 'dl-term-nt-'));
   const { runId: r2 } = initRun(fresh, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
-  const r2res = run(fresh, ['lease', 'acquire', '--owner', 'other-run', '--generation', '9', '--runtime', 'claude']);
+  const r2res = run(fresh, ['lease', 'acquire', '--owner', 'other-run', '--generation', '9', '--runtime', 'claude', '--attempt-id', 'TERMINALATTEMPT02']);
   assert.equal(r2res.status, 0, r2res.stdout + r2res.stderr);
   assert.equal(JSON.parse(r2res.stdout).reason, 'generation-mismatch');
   void r2;
@@ -345,7 +345,7 @@ test('CLI lease acquire returns a retryable JSON envelope for concurrent lock co
   // must surface the same structured transient result, never a raw Node stack.
   mkdirSync(lock);
   try {
-    const args = ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--run-id', runId];
+    const args = ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'LOCKBUSYATTEMPT01', '--run-id', runId];
     const results = await Promise.all([runAsync(root, args), runAsync(root, args)]);
     for (const result of results) {
       assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -406,7 +406,7 @@ test('CLI lease acquire requires a valued runtime', () => {
 test('CLI lease acquire classifies an invalid runtime enum or stored runtime state as exit 1', () => {
   const { root, runId, owner, gen } = seedTerminal('running');
 
-  const invalid = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'other']);
+  const invalid = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'other', '--attempt-id', 'RUNTIMEATTEMPT01']);
   assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
   assert.match(invalid.stderr, /INVALID_RUNTIME/);
 
@@ -416,7 +416,7 @@ test('CLI lease acquire classifies an invalid runtime enum or stored runtime sta
   const raw = JSON.stringify(data, null, 2);
   writeFileSync(join(runDir(root, runId), 'loop.json'), raw);
   writeFileSync(join(runDir(root, runId), '.loop.hash'), contentHash(raw));
-  const invalidState = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude']);
+  const invalidState = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'RUNTIMEATTEMPT02']);
   assert.equal(invalidState.status, 1, invalidState.stdout + invalidState.stderr);
   assert.match(invalidState.stderr, /INVALID_RUNTIME_STATE/);
   assert.doesNotMatch(invalidState.stderr, /\n\s+at /, 'classified runtime-state errors must not leak a stack');
@@ -439,6 +439,7 @@ test('CLI lease acquire rejects malformed autonomy without a wrong-runtime takeo
   const beforeEvents = existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null;
   const result = run(root, [
     'lease', 'acquire', '--owner', 'CLAUDE-OWNER', '--generation', String(gen), '--runtime', 'claude',
+    '--attempt-id', 'AUTONOMYATTEMPT01',
   ]);
 
   assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -452,7 +453,7 @@ test('CLI lease acquire rejects malformed autonomy without a wrong-runtime takeo
 test('CLI lease acquire runtime mismatch exits 3 with structured RUNTIME_FENCED and mutates nothing', () => {
   const { root, runId, owner, gen } = seedTerminal('running');
   const before = structuredClone(readState(root, runId).data);
-  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'codex']);
+  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'codex', '--attempt-id', 'RUNTIMEATTEMPT03']);
   assert.equal(r.status, 3, r.stdout + r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), {
     ok: false,
@@ -492,7 +493,7 @@ test('CLI lease release on terminal run is intentionally allowed (cleanup path) 
   assert.equal(JSON.parse(r.stdout).ok, true);
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
   // 정리 후에도 불활성: 재획득 거부 + business write 거부
-  const acq = run(root, ['lease', 'acquire', '--owner', 'other-run', '--generation', String(gen), '--runtime', 'claude']);
+  const acq = run(root, ['lease', 'acquire', '--owner', 'other-run', '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'TERMINALATTEMPT03']);
   assert.equal(acq.status, 3);
   assert.equal(JSON.parse(acq.stdout).reason, 'run-terminal');
   const w = run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '[]', '--owner', owner, '--generation', String(gen)]);

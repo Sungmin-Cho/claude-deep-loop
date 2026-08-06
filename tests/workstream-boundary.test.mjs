@@ -507,6 +507,7 @@ test('public boundary handoff journals four artifacts, exact topology, one event
   assert.deepEqual(durableBytes(f.root), retryBytes);
 
   const acquired = acquireLease(f.root, f.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude',
     now: Date.parse(NOW) + 1,
   });
@@ -548,6 +549,7 @@ test('expired boundary reservations remain exclusive to the exact child and reje
   const before = ['loop.json', '.loop.hash', 'event-log.jsonl']
     .map(name => readFileSync(join(dir, name)));
   const unrelated = acquireLease(f.root, f.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: '01KUNRELATEDOWNER0000000000',
     expectGeneration: 1,
     runtime: 'claude',
@@ -568,6 +570,7 @@ test('expired boundary reservations remain exclusive to the exact child and reje
   );
 
   const acquired = acquireLease(f.root, f.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId,
     expectGeneration: 1,
     runtime: 'claude',
@@ -603,6 +606,7 @@ test('new-policy Codex boundary key constructs and settles a real terminal maker
     usage,
   });
   assert.equal(acquireLease(f.root, f.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId,
     expectGeneration: 1,
     runtime: 'codex',

@@ -280,7 +280,13 @@ function commandArgs(invocation) {
 }
 
 function executeReturnedCommand(invocation) {
-  return spawnSync(process.execPath, [CLI, ...commandArgs(invocation)], {
+  const args = commandArgs(invocation);
+  // Lease-acquire recovery descriptors deliberately omit the per-invocation nonce; the caller
+  // supplies it. The distinct `recovery acquire` grammar has no attempt-id surface.
+  if (args[0] === 'lease' && args[1] === 'acquire') {
+    args.push('--attempt-id', 'RECOVERYATTEMPT01');
+  }
+  return spawnSync(process.execPath, [CLI, ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
   });
@@ -569,6 +575,7 @@ test('affinity exact child executes the returned fresh-process recovery command;
     '--owner', recovery.child_run_id,
     '--generation', '1',
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT01',
   ]);
   assert.equal(generic.status, 3, generic.stderr);
   assert.match(generic.stdout + generic.stderr, /RECOVERY_ACQUIRE_REQUIRED/);
@@ -640,6 +647,7 @@ test('generic acquire fences an affinity recovery identified by the exact reserv
   writeState(fixture.root, fixture.runId, state);
   const before = durableBytes(fixture.root, fixture.runId);
   const acquired = acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: childRunId,
     expectGeneration: 1,
     runtime: 'claude',
@@ -658,6 +666,7 @@ test('resume-command rejects a malformed recovery topology without falling throu
     now: NOW + 2_000,
   });
   assert.equal(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: recovery.child_run_id,
     expectGeneration: 1,
     runtime: 'claude',
@@ -987,6 +996,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
 
     const arbitraryBefore = durableBytes(fixture.root, fixture.runId);
     const arbitrary = acquireLease(fixture.root, fixture.runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: 'ARBITRARY-OWNER',
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
@@ -1000,6 +1010,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
     writeState(fixture.root, fixture.runId, budgetState);
     const reservedBefore = durableBytes(fixture.root, fixture.runId);
     const blocked = acquireLease(fixture.root, fixture.runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: result.child_run_id,
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
@@ -1039,6 +1050,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
     }, topologyBeforeExtension);
 
     const acquired = acquireLease(fixture.root, fixture.runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: result.child_run_id,
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
@@ -1133,6 +1145,7 @@ test('boundary acquire breaker failure preserves exact topology through reset an
   tripBreaker(fixture.root, fixture.runId, 'operator-latched-breaker');
   const before = durableBytes(fixture.root, fixture.runId);
   assert.deepEqual(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: recovery.child_run_id,
     expectGeneration: fixture.expect.generation,
     runtime: 'claude',
@@ -1151,6 +1164,7 @@ test('boundary acquire breaker failure preserves exact topology through reset an
     fence: { ...fixture.expect, intent: 'breaker-reset' },
   }), { ok: true, status: 'paused' });
   const boundaryAcquired = acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: recovery.child_run_id,
     expectGeneration: fixture.expect.generation,
     runtime: 'claude',
@@ -1250,6 +1264,7 @@ test('boundary lease acquire rejects stale public --now after real wallclock exp
     '--owner', recovery.child_run_id,
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT02',
   ], staleNow);
   assert.equal(acquired.status, 0, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {
@@ -1380,6 +1395,7 @@ test('boundary recovery CLI classifies child reservation mismatch as fence exit 
     '--owner', 'ARBITRARY-OWNER',
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT03',
   ]);
   assert.equal(result.status, 3, result.stderr);
   assert.equal(JSON.parse(result.stdout).reason, 'child-not-reserved');
@@ -1408,6 +1424,7 @@ test('boundary recovery CLI classifies invalid topology as exit 1 without mutati
     '--owner', recovery.child_run_id,
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT04',
   ]);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(JSON.parse(result.stdout).reason, 'recovery-topology-invalid');
@@ -1435,6 +1452,7 @@ test('boundary recovery CLI classifies invalid capsule as exit 1 without mutatio
     '--owner', recovery.child_run_id,
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT05',
   ]);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(JSON.parse(result.stdout).reason, 'recovery-capsule-invalid');

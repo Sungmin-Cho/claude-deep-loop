@@ -66,6 +66,7 @@ export function reviewedMakerThenHandoff({ runtime = 'claude' } = {}) {
   });
   const releasing = readState(root, runId).data;
   const acquired = acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId,
     expectGeneration: releasing.session_chain.lease.generation,
     runtime,

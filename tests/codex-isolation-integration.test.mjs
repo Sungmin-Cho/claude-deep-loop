@@ -1260,6 +1260,11 @@ test('post-preflight executable or authenticated-home drift rolls back before a 
 test('claimed read-only checker imports exact final bytes once and commits content-addressed proof parity', () => {
   const h = createHostHarness();
   assert.equal(h.runMaker().result.action, 'resumed');
+  // The isolated maker has returned successfully, so this legacy continuation fixture is
+  // post-activation. Clear only its timer; activation proof belongs to a later slice.
+  const afterActivation = readState(h.root, h.runId).data;
+  afterActivation.session_chain.lease.activation_deadline_at = null;
+  writeState(h.root, h.runId, afterActivation);
   const review = seedIndependentChecker(h);
   const checkerRawPath = join(h.codexHome, 'checker-final.json');
   h.writeControl({ checkerRawPath });

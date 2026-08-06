@@ -464,6 +464,7 @@ for (const runtime of ['claude', 'codex']) {
       '--owner', handoff.childRunId,
       '--generation', '1',
       '--runtime', runtime,
+      '--attempt-id', 'WORKSTREAMATTEMPT01',
       '--now', FIXED_NOW,
       '--run-id', runId,
     ]), 'boundary child acquire');

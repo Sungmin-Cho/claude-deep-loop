@@ -787,15 +787,14 @@ const handlers = {
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
-      // spec §3.6.1: optional additive 플래그. 형식 위반은 **invalid value → exit 1** 이며 strArg 의
-      // fence 채널(exit 3)을 타지 않는다. 미지정은 위반이 아니다(현행 동작 완전 보존).
-      let attemptId = null;
-      if (f['attempt-id'] !== undefined) {
-        attemptId = f['attempt-id'];
-        if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
-          error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
-          return 1;
-        }
+      const attemptId = reqStr(f, 'attempt-id');
+      if (!attemptId) {
+        error('USAGE: --attempt-id <8-128 chars [A-Za-z0-9_-]> is required');
+        return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+        error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
+        return 1;
       }
       let r;
       try { r = acquireLease(root, runId, {
