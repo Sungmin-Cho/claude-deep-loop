@@ -102,6 +102,10 @@ export function reconcileCompactPruneTombstonesLocked(
       const checkpointPath = join(dir, `${key}-compact.json`);
       if (existsSync(checkpointPath)) {
         const checkpointBytes = readStableRegular(checkpointPath, 'COMPACT_PRUNE_INVALID').bytes;
+        if (payload.checkpoint_sha256 === null
+          || contentHash(checkpointBytes) !== payload.checkpoint_sha256) {
+          throw new Error('COMPACT_PRUNE_INVALID');
+        }
         let checkpoint;
         try { checkpoint = JSON.parse(checkpointBytes.toString('utf8')); }
         catch { checkpoint = null; }

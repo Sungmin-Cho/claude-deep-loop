@@ -350,7 +350,7 @@ function reconcilePruneTombstonesLocked(root, runId, guard) {
   return reconcileCompactPruneTombstonesLocked(root, runId, guard);
 }
 
-function pruneEnvelope(runId, key, contextSha256, receiptSha256, now) {
+function pruneEnvelope(runId, key, checkpointSha256, contextSha256, receiptSha256, now) {
   return wrap({
     producer: 'deep-loop',
     artifact_kind: 'compact-prune',
@@ -362,6 +362,7 @@ function pruneEnvelope(runId, key, contextSha256, receiptSha256, now) {
     },
     payload: {
       checkpoint_key: key,
+      checkpoint_sha256: checkpointSha256,
       context_sha256: contextSha256,
       receipt_sha256: receiptSha256,
     },
@@ -379,16 +380,26 @@ function pruneCheckpointPairLocked(root, runId, metadata, guard, {
   const checkpoint = strictPath(root, runId, key);
   const receipt = receiptPath(root, runId, key);
   const tombstone = prunePath(root, runId, key);
+  let checkpointSha256 = null;
   let contextSha256 = null;
   try {
-    const env = JSON.parse(readFileSync(checkpoint, 'utf8'));
+    const checkpointBytes = readFileSync(checkpoint);
+    checkpointSha256 = contentHash(checkpointBytes);
+    const env = JSON.parse(checkpointBytes.toString('utf8'));
     contextSha256 = sha256(env?.payload?.context_sha256) ? env.payload.context_sha256 : null;
   } catch { /* invalid checkpoints are still pair-pruned */ }
   let receiptSha256 = null;
   try { receiptSha256 = contentHash(readFileSync(receipt)); } catch { /* optional */ }
   durableAtomicWrite(
     tombstone,
-    JSON.stringify(pruneEnvelope(runId, key, contextSha256, receiptSha256, now), null, 2),
+    JSON.stringify(pruneEnvelope(
+      runId,
+      key,
+      checkpointSha256,
+      contextSha256,
+      receiptSha256,
+      now,
+    ), null, 2),
   );
   guard.renew();
   testFault(faultAt, 'prune:tombstone-written');

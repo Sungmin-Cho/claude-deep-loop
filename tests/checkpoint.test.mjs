@@ -1880,6 +1880,7 @@ test('compact prune reconciliation validates M3 identity and both surviving pair
   for (const [label, mutate] of [
     ['run binding', value => { value.envelope.run_id = 'foreign-run'; }],
     ['source binding', value => { value.envelope.provenance.source_artifacts.reverse(); }],
+    ['checkpoint bytes binding', value => { value.payload.checkpoint_sha256 = 'e'.repeat(64); }],
     ['checkpoint binding', value => { value.payload.context_sha256 = '0'.repeat(64); }],
     ['receipt binding', value => { value.payload.receipt_sha256 = 'f'.repeat(64); }],
   ]) {
@@ -1917,6 +1918,40 @@ test('compact prune reconciliation validates M3 identity and both surviving pair
     }), /COMPACT_PRUNE_INVALID/, label);
     assert.deepEqual(durableInventory(fixture), before, label);
   }
+});
+
+test('compact prune reconciliation rejects a malformed checkpoint replaced after tombstone publication', () => {
+  const fixture = seedBound();
+  const dir = checkpointDirOf(fixture.root, fixture.runId);
+  mkdirSync(dir, { recursive: true });
+  const key = 'f'.repeat(64);
+  const checkpoint = join(dir, `${key}-compact.json`);
+  writeFileSync(checkpoint, '{"invalid":"original"}');
+  for (let index = 0; index < 4; index += 1) {
+    __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `malformed-prune-${index}`),
+      now: NOW_MS + index + 1,
+    });
+  }
+  assert.throws(() => __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'malformed-prune-trigger'),
+    now: NOW_MS + 100,
+    faultAt: seam => { if (seam === 'prune:tombstone-written') throw new Error(seam); },
+  }), /prune:tombstone-written/);
+  assert.equal(existsSync(join(dir, `${key}-compact-prune.json`)), true);
+
+  writeFileSync(checkpoint, '{"invalid":"replacement"}');
+  const before = durableInventory(fixture);
+  assert.throws(() => emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 200,
+  }), /COMPACT_PRUNE_INVALID/);
+  assert.deepEqual(durableInventory(fixture), before);
 });
 
 test('direct restore retry converges a crashed prune tombstone under the restore transaction lock', () => {

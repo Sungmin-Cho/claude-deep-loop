@@ -130,8 +130,14 @@ export function validateCompactPruneBytes(bytes, { runId, key }) {
     || JSON.stringify(env.envelope.provenance.source_artifacts)
       !== JSON.stringify([checkpointRel, observationRel])
     || !exactKeys(env.envelope.provenance.tool_versions, [])
-    || !exactKeys(env.payload, ['checkpoint_key', 'context_sha256', 'receipt_sha256'])
+    || !exactKeys(env.payload, [
+      'checkpoint_key',
+      'checkpoint_sha256',
+      'context_sha256',
+      'receipt_sha256',
+    ])
     || env.payload.checkpoint_key !== key
+    || !(env.payload.checkpoint_sha256 === null || sha256(env.payload.checkpoint_sha256))
     || !(env.payload.context_sha256 === null || sha256(env.payload.context_sha256))
     || !(env.payload.receipt_sha256 === null || sha256(env.payload.receipt_sha256))) {
     throw new Error('COMPACT_PRUNE_INVALID');
