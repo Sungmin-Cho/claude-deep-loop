@@ -1602,11 +1602,11 @@ test('T6 a second boundary emit publishes an emit-invariant launcher text (Windo
 });
 
 // ── SLICE-003: recovery/root-recovery nonce, replay, and safety deadline ─────
-function rootAcquireCli(root, runId, child, generation, bindingGeneration, extra = []) {
+function rootAcquireCli(root, runId, child, generation, bindingGeneration, extra = [], runtime = 'claude') {
   return spawnSync(process.execPath, [
     CLI, 'root', 'recovery', 'acquire', '--capsule', child.recovery_rel,
     '--owner', child.run_id, '--generation', String(generation),
-    '--binding-generation', String(bindingGeneration), '--runtime', 'claude',
+    '--binding-generation', String(bindingGeneration), '--runtime', runtime,
     '--candidate-project-root', root, '--run-id', runId, ...extra,
   ], { cwd: REPO_ROOT, encoding: 'utf8' });
 }
@@ -1681,10 +1681,62 @@ test('SLICE-003 root recovery lost acknowledgement replays before exact receipt 
   assert.deepEqual([replay.proceed, replay.replayed], [true, true]);
   assert.deepEqual(replay.consumed, first.consumed);
   const current = lease(f.root, f.runId);
+  assert.equal(replay.project_binding_generation,
+    current.acquisition_receipt.project_binding_generation);
   assert.equal(current.acquisition_receipt.attempt_id, ROOT_RECOVERY_ATTEMPT);
   assert.equal(current.acquisition_receipt.reservation_key, child.root_recovery_operation_id);
   assert.equal(current.activation_deadline_at, '2026-07-27T00:35:00.000Z');
 });
+
+for (const mismatch of ['runtime', 'binding']) {
+  test(`SLICE-003 root recovery library replay fences wrong ${mismatch} without mutation`, () => {
+    const f = seedRelocatedRootReservation();
+    const reserved = readStateForRootRecovery(f.root, f.runId).data;
+    const child = reserved.session_chain.sessions.find(
+      session => session.run_id === f.recovered.replacement_session_id,
+    );
+    const args = { attemptId: ROOT_RECOVERY_ATTEMPT, capsuleRel: child.recovery_rel,
+      owner: child.run_id, expectGeneration: reserved.session_chain.lease.generation,
+      bindingGeneration: reserved.project.binding_generation, runtime: 'claude',
+      now: Date.parse(T2), clock: () => Date.parse(T2) };
+    acquireRootRecovery(f.root, f.runId, args);
+    const beforeReplay = anchoredBytes(f.root, f.runId);
+    assert.throws(() => acquireRootRecovery(f.root, f.runId, {
+      ...args,
+      ...(mismatch === 'runtime'
+        ? { runtime: 'codex' }
+        : { bindingGeneration: reserved.project.binding_generation + 777 }),
+    }), mismatch === 'runtime'
+      ? /RUNTIME_FENCED: root recovery runtime mismatch/
+      : /PROJECT_BINDING_FENCED: root recovery binding mismatch/);
+    assert.deepEqual(anchoredBytes(f.root, f.runId), beforeReplay);
+  });
+}
+
+for (const mismatch of ['runtime', 'binding']) {
+  test(`SLICE-003 root recovery CLI replay fences wrong ${mismatch} without mutation`, () => {
+    const f = seedRelocatedRootReservation();
+    const reserved = readStateForRootRecovery(f.root, f.runId).data;
+    const child = reserved.session_chain.sessions.find(
+      session => session.run_id === f.recovered.replacement_session_id,
+    );
+    const generation = reserved.session_chain.lease.generation;
+    const binding = reserved.project.binding_generation;
+    const first = rootAcquireCli(f.root, f.runId, child, generation, binding,
+      ['--attempt-id', ROOT_RECOVERY_ATTEMPT]);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.equal(JSON.parse(first.stdout).proceed, true);
+    const beforeReplay = anchoredBytes(f.root, f.runId);
+    const replay = rootAcquireCli(f.root, f.runId, child, generation,
+      mismatch === 'binding' ? binding + 777 : binding,
+      ['--attempt-id', ROOT_RECOVERY_ATTEMPT], mismatch === 'runtime' ? 'codex' : 'claude');
+    assert.equal(replay.status, 3, replay.stdout + replay.stderr);
+    assert.match(replay.stdout + replay.stderr, mismatch === 'runtime'
+      ? /RUNTIME_FENCED: root recovery runtime mismatch/
+      : /PROJECT_BINDING_FENCED: root recovery binding mismatch/);
+    assert.deepEqual(anchoredBytes(f.root, f.runId), beforeReplay);
+  });
+}
 
 test('SLICE-003 root recovery deadline uses safety clock, not public timestamps', () => {
   for (const now of [Date.parse(T0), Date.parse(T2) + 86_400_000]) {

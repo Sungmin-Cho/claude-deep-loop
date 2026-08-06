@@ -279,13 +279,13 @@ function commandArgs(invocation) {
   ));
 }
 
-function executeReturnedCommand(invocation) {
+function executeReturnedCommand(invocation, expectedAttemptId) {
   const args = commandArgs(invocation);
-  // Lease-acquire recovery descriptors deliberately omit the per-invocation nonce; the caller
-  // supplies it. The distinct `recovery acquire` grammar has no attempt-id surface.
-  if (args[0] === 'lease' && args[1] === 'acquire') {
-    args.push('--attempt-id', 'RECOVERYATTEMPT01');
-  }
+  const attemptIndexes = args.flatMap((arg, index) => arg === '--attempt-id' ? [index] : []);
+  assert.deepEqual(attemptIndexes, [args.length - 2],
+    'returned recovery command must carry exactly one final attempt id');
+  assert.equal(args[attemptIndexes[0] + 1], expectedAttemptId,
+    'returned recovery command must consume its durable operation id');
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
@@ -585,7 +585,8 @@ test('affinity exact child executes the returned fresh-process recovery command;
   assert.equal(resumed.stdout.split('\n')[0], recovery.resume_command);
   assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
 
-  const acquired = executeReturnedCommand(recovery.resume_command);
+  const acquired = executeReturnedCommand(recovery.resume_command,
+    readState(fixture.root, fixture.runId).data.session_chain.lease.recovery_discriminator);
   assert.equal(acquired.status, 0, acquired.stderr);
   const after = readState(fixture.root, fixture.runId).data;
   assert.equal(after.status, 'running');
@@ -1132,7 +1133,7 @@ test('boundary recovery returned command acquires the exact child in a fresh pro
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.equal(resumed.stdout.split('\n')[0], recovery.resume_command);
   assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
-  const acquired = executeReturnedCommand(recovery.resume_command);
+  const acquired = executeReturnedCommand(recovery.resume_command, recovery.operation_id);
   assert.equal(acquired.status, 0, acquired.stderr);
   const after = readState(fixture.root, fixture.runId).data;
   assert.equal(after.session_chain.lease.owner_run_id, recovery.child_run_id);
@@ -1302,7 +1303,8 @@ test('affinity recovery acquire samples production time after lock contention cr
   const acquired = await whileRunLockIsHeld(
     fixture.root,
     fixture.runId,
-    () => executeReturnedCommand(recovery.resume_command),
+    () => executeReturnedCommand(recovery.resume_command,
+      readState(fixture.root, fixture.runId).data.session_chain.lease.recovery_discriminator),
   );
   assert.equal(acquired.status, 1, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {
@@ -1333,7 +1335,7 @@ test('boundary recovery acquire samples production time after lock contention cr
   const acquired = await whileRunLockIsHeld(
     fixture.root,
     fixture.runId,
-    () => executeReturnedCommand(recovery.resume_command),
+    () => executeReturnedCommand(recovery.resume_command, recovery.operation_id),
   );
   assert.equal(acquired.status, 0, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {

@@ -947,9 +947,17 @@ export function acquireRootRecovery(candidateRoot, runId, {
       && replayReceipt.from_generation === expectGeneration
       && replayReceipt.to_generation === lease.generation
       && lease.activation_deadline_at != null) {
+      if (sessionRuntime(loop) !== runtime) {
+        throw new Error('RUNTIME_FENCED: root recovery runtime mismatch');
+      }
+      const receiptBindingGeneration = replayReceipt.project_binding_generation;
+      if (bindingGeneration !== receiptBindingGeneration
+        || receiptBindingGeneration !== loop.project?.binding_generation) {
+        throw new Error('PROJECT_BINDING_FENCED: root recovery binding mismatch');
+      }
       return contractFields(
         { ok: true, owner, generation: lease.generation,
-          project_binding_generation: bindingGeneration, reason: 'acquired' },
+          project_binding_generation: receiptBindingGeneration, reason: 'acquired' },
         { consumed: consumedFromReceipt(replayReceipt), replayed: true },
       );
     }
