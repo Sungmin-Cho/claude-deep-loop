@@ -415,7 +415,6 @@ export function releaseLease(root, runId, { owner, generation }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
-    if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
     if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
       return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
     }
@@ -426,7 +425,11 @@ export function releaseLease(root, runId, { owner, generation }) {
     data.session_chain.lease = { ...lease, state: 'released' };
     writeState(root, runId, data);
     return { ok: true, reason: 'released' };
-  });
+  }, { authorize: (_guard, { data }) => {
+    const lease = data.session_chain.lease;
+    if (lease.owner_run_id !== owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== generation) throw new Error('LEASE_FENCED: generation-mismatch');
+  } });
 }
 
 // 멱등키 선예약 CAS — phase∈{idle,acquired}에서만 신규 예약. 이중 트리거를 phase로 봉인 (spec §9.1).

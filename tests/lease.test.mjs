@@ -493,6 +493,19 @@ test('regression: non-paused run acquire leaves status running, no spurious paus
   assert.ok(!data.pause_reason, 'pause_reason must not be set on non-paused acquire');
 });
 
+test('releaseLease throws the authoritative owner and generation fences without mutation', () => {
+  const { root, runId } = seed();
+  const dir = runDir(root, runId);
+  const before = [readFileSync(join(dir, 'loop.json')), readFileSync(join(dir, '.loop.hash'))];
+  assert.throws(() => releaseLease(root, runId, {
+    owner: 'WRONG', generation: 1,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => releaseLease(root, runId, {
+    owner: runId, generation: 2,
+  }), /LEASE_FENCED: generation-mismatch/);
+  assert.deepEqual([readFileSync(join(dir, 'loop.json')), readFileSync(join(dir, '.loop.hash'))], before);
+});
+
 // Codex r3 🔴1: releaseLease must reject when status=paused — prevents owner bypassing recover audit path.
 test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquireLease stays blocked (codex-high)', () => {
   const { root, runId } = seed();

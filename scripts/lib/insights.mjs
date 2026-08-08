@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   captureReconciledRunSet,
@@ -421,11 +421,20 @@ export function emitInsights(root, runId, {
   mkdirSync(insightsDir(root), { recursive: true });
   const tmp = join(insightsDir(root), `.tmp-${fileUlid}`);
   atomicWrite(tmp, json);                                            // ① tmp (latest 스캔 제외 접두)
-  appendAnchored(root, runId,                                        // ② anchored 이벤트 = 신뢰 원천
-    { type: 'insights-emitted', data: { path: rel, sha256, candidates_count: payload.candidates.length } },
-    undefined,
-    (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
-    { floor: MUTATION_TURN_FLOOR });
+  try {
+    appendAnchored(root, runId,                                      // ② anchored 이벤트 = 신뢰 원천
+      { type: 'insights-emitted', data: { path: rel, sha256, candidates_count: payload.candidates.length } },
+      undefined,
+      (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
+      { floor: MUTATION_TURN_FLOOR });
+  } catch (error) {
+    // The hidden file is only staging until the anchored event succeeds. A rejected
+    // append (including a retained compact-restore intent) must not accumulate debris.
+    try { unlinkSync(tmp); } catch (cleanupError) {
+      if (cleanupError?.code !== 'ENOENT') error.cleanupError = cleanupError;
+    }
+    throw error;
+  }
   renameAtomicWithRetry(tmp, join(insightsDir(root), finalName),
     { platform, monotonicNowFn, renameFn, sleepFn });                // ③ 공개
   // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane).

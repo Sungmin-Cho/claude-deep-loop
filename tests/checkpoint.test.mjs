@@ -1312,6 +1312,7 @@ test('public checkpoint emit preserves stale-fence precedence over a retained re
     ['checkpoint', 'emit', '--runtime', fixture.runtime],
     ['state', 'patch', '--field', 'discovered_items', '--value', '[]'],
     ['breaker', 'reset', '--confirm'],
+    ['lease', 'release'],
   ]) {
     const result = spawnSync(process.execPath, [
       join(process.cwd(), 'scripts', 'deep-loop.mjs'),
@@ -1336,6 +1337,20 @@ test('public checkpoint emit preserves stale-fence precedence over a retained re
   ], { encoding: 'utf8' });
   assert.equal(authorized.status, 1, `${authorized.stdout}\n${authorized.stderr}`);
   assert.match(authorized.stderr, /COMPACT_RESTORE_INTENT_PENDING/);
+
+  const blockedInsights = spawnSync(process.execPath, [
+    join(process.cwd(), 'scripts', 'deep-loop.mjs'),
+    'insights', 'emit',
+    '--owner', fixture.fence.owner,
+    '--generation', String(fixture.fence.generation),
+    '--project-root', fixture.root,
+    '--run-id', fixture.runId,
+  ], { encoding: 'utf8' });
+  assert.equal(blockedInsights.status, 1, `${blockedInsights.stdout}\n${blockedInsights.stderr}`);
+  assert.match(blockedInsights.stderr, /COMPACT_RESTORE_INTENT_PENDING/);
+  const insightsDir = join(fixture.root, '.deep-loop', 'insights');
+  assert.ok(!existsSync(insightsDir) || readdirSync(insightsDir).length === 0,
+    'intent-blocked insights emit must leave no hidden temporary artifact');
   assert.deepEqual(durableInventory(fixture), before);
 });
 
