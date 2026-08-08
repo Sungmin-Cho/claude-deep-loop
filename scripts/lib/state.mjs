@@ -630,7 +630,14 @@ export function withReadLock(root, runId, fn, options = {}) {
     sleepFn,
     platform,
     deadlineAtMs,
+    deadlineMs,
   } = options;
+  // A read-set supplies one absolute deadline to every per-run lock.  Accept a
+  // relative form here as a convenience for callers that do not yet have an
+  // aggregate clock boundary, but never recompute it on retry.
+  const effectiveDeadlineAtMs = deadlineAtMs === undefined && deadlineMs !== undefined
+    ? boundedTime((typeof nowFn === 'function' ? nowFn : Date.now)()) + Number(deadlineMs)
+    : deadlineAtMs;
   return withLock(root, runId, fn, {
     ...(ttlMs === undefined ? {} : { ttlMs }),
     ...(retries === undefined ? {} : { retries }),
@@ -642,7 +649,7 @@ export function withReadLock(root, runId, fn, options = {}) {
     ...(probePid === undefined ? {} : { probePid }),
     ...(sleepFn === undefined ? {} : { sleepFn }),
     ...(platform === undefined ? {} : { platform }),
-    ...(deadlineAtMs === undefined ? {} : { deadlineAtMs }),
+    ...(effectiveDeadlineAtMs === undefined ? {} : { deadlineAtMs: effectiveDeadlineAtMs }),
   });
 }
 

@@ -18,7 +18,9 @@ import {
   isSuspiciousActive,
 } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
-import { readLines, appendAnchored, appendEvent, lastLogHead } from '../scripts/lib/integrity.mjs';
+import {
+  readLines, appendAnchored, appendEvent, lastLogHead, captureVerifiedRunSet,
+} from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -61,6 +63,29 @@ test('captureReconciledRunSet freezes run enumeration before a concurrent insert
   assert.equal(captured.runs[inserted], undefined);
   assert.deepEqual(computeInsightsFromSet(captured, { selfRunId: first, now: FIXED.getTime() }).runs_analyzed
     .map(run => run.run_id), [first]);
+});
+
+test('run-set errors discard earlier verified snapshots', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-verified-runset-'));
+  const first = initRun(root, { runtime: 'claude', goal: 'first', now: FIXED }).runId;
+  const second = initRun(root, {
+    runtime: 'claude', goal: 'second', now: new Date(FIXED.getTime() + 1),
+  }).runId;
+  writeFileSync(join(runDirOf(root, second), '.loop.hash'), 'tampered');
+
+  const captured = captureVerifiedRunSet(root, {
+    runIds: [second, first],
+    deadlineMs: 500,
+    nowFn: () => FIXED.getTime(),
+  });
+  assert.deepEqual(captured.runIds, [first, second]);
+  assert.deepEqual(Object.keys(captured.runs), []);
+  assert.equal(captured.errors[second].kind, 'integrity-invalid');
+  const insights = computeInsightsFromSet(captured, { selfRunId: first, now: FIXED.getTime() });
+  assert.deepEqual(insights.runs_analyzed, []);
+  // The later error invalidates the complete implicit selection, so the
+  // earlier clean candidate is intentionally discarded and labelled failed.
+  assert.deepEqual(insights.integrity_failed_runs, [first, second]);
 });
 
 test('captureLatestInsightsSet freezes artifact enumeration before a concurrent insertion', () => {

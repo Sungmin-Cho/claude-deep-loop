@@ -306,6 +306,7 @@ function readDeadlineAtMs(options = {}) {
   const vectorOptions = options.vectorOptions || {};
   const explicit = options.vectorDeadlineAtMs
     ?? options.deadlineAtMs
+    ?? options.deadlineAt
     ?? vectorOptions.deadlineAtMs
     ?? vectorOptions.deadlineMs;
   if (explicit !== undefined) return explicit;
@@ -1274,6 +1275,7 @@ const VERIFIED_READ_CLOSURE = Object.freeze([
   ['headOfLines', headOfLines],
   ['verifyLines', verifyLines],
   ['verifyHeadLines', verifyHeadLines],
+  ['enumerateRunIdsBounded', enumerateRunIdsBounded],
 ]);
 export const VERIFIED_READ_CLOSURE_NAMES = Object.freeze(VERIFIED_READ_CLOSURE.map(([name]) => name));
 const VERIFIED_READ_FORBIDDEN_CALL = /\b(?:appendAnchored|appendEvent|writeState|durableAtomicWrite|appendFileSync|renameSync|rmSync|unlinkSync|mkdirSync|fsyncSync|openSync|publishArtifactTargetsLocked|markPublicationCommittedLocked|retireCommittedPublicationLocked|reconcileAnchoredPublicationLocked)\s*\(/;
@@ -1313,24 +1315,202 @@ export function captureVerifiedRunSnapshot(root, runId, options = {}) {
   }
 }
 
+function nowMillis(nowFn) {
+  const value = (typeof nowFn === 'function' ? nowFn : () => Date.now())();
+  return value instanceof Date ? value.getTime() : Number(value);
+}
+
+function boundedRunSetError({ maxRunIds, deadlineMs, observedCount, totalIsLowerBound, phase }) {
+  const diagnostic = Object.freeze({
+    reason: 'run-set-bound-exceeded',
+    kind: 'run-set-bound-exceeded',
+    max_run_ids: maxRunIds,
+    deadline_ms: deadlineMs,
+    observed_count: observedCount,
+    total_is_lower_bound: totalIsLowerBound,
+    phase,
+  });
+  return Object.freeze(diagnostic);
+}
+
+/**
+ * Enumerate the implicit historical run directory incrementally.  In
+ * particular, do not turn an unbounded readdir result into an array before
+ * checking the cap: old terminal history is part of the attack surface.
+ */
+export function enumerateRunIdsBounded(root, {
+  maxRunIds = 64,
+  deadlineAtMs,
+  deadlineAt,
+  deadlineMs = 500,
+  nowFn,
+  opendirFn = opendirSync,
+} = {}) {
+  const suppliedDeadlineAt = deadlineAtMs ?? deadlineAt;
+  if (!Number.isSafeInteger(maxRunIds) || maxRunIds < 1
+    || (suppliedDeadlineAt !== undefined && !Number.isFinite(Number(suppliedDeadlineAt)))
+    || !Number.isSafeInteger(deadlineMs) || deadlineMs < 0) {
+    throw new Error('RUN_SET_OPTIONS_INVALID');
+  }
+  const now = () => nowMillis(nowFn);
+  const absoluteDeadline = suppliedDeadlineAt === undefined ? now() + deadlineMs : Number(suppliedDeadlineAt);
+  if (!Number.isSafeInteger(absoluteDeadline)) throw new Error('RUN_SET_OPTIONS_INVALID');
+  const observed = [];
+  const checkDeadline = () => {
+    const current = now();
+    if (!Number.isSafeInteger(current)) throw new Error('RUN_SET_DEADLINE_INVALID');
+    if (current >= absoluteDeadline) {
+      throw boundedRunSetError({
+        maxRunIds, deadlineMs, observedCount: observed.length, totalIsLowerBound: false, phase: 'enumeration',
+      });
+    }
+  };
+  const runsDir = join(root, '.deep-loop', 'runs');
+  if (!existsSync(runsDir)) return Object.freeze({ runIds: Object.freeze([]), deadlineAtMs: absoluteDeadline });
+
+  let directory;
+  try {
+    checkDeadline();
+    directory = opendirFn(runsDir);
+    while (true) {
+      checkDeadline();
+      const entry = directory.readSync();
+      if (entry === null) break;
+      if (!entry.isDirectory()) continue;
+      observed.push(entry.name);
+      if (observed.length > maxRunIds) {
+        throw boundedRunSetError({
+          maxRunIds,
+          deadlineMs,
+          observedCount: observed.length,
+          totalIsLowerBound: true,
+          phase: 'enumeration',
+        });
+      }
+    }
+    checkDeadline();
+  } catch (error) {
+    if (error?.kind === 'run-set-bound-exceeded') throw error;
+    throw new Error(`RUN_SET_ENUMERATION_FAILED: ${String(error?.message || error)}`);
+  } finally {
+    try { directory?.closeSync(); } catch { /* bounded read is already failed */ }
+  }
+  observed.sort();
+  for (const id of observed) runDir(root, id);
+  return Object.freeze({ runIds: Object.freeze(observed), deadlineAtMs: absoluteDeadline });
+}
+
+function defaultReadSleep(ms) {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 export function captureVerifiedRunSet(root, options = {}) {
-  const vectorDeadlineAtMs = readDeadlineAtMs(options);
-  const runIds = frozenRunIds(root, options.runIds);
+  const implicit = options.runIds === undefined;
+  let vectorDeadlineAtMs = readDeadlineAtMs(options);
+  if (vectorDeadlineAtMs === undefined && options.deadlineMs !== undefined) {
+    vectorDeadlineAtMs = nowMillis(options.nowFn) + Number(options.deadlineMs);
+  }
+  let runIds;
+  if (implicit) {
+    try {
+      const enumeration = enumerateRunIdsBounded(root, {
+        maxRunIds: options.maxRunIds ?? 64,
+        deadlineAtMs: vectorDeadlineAtMs,
+        deadlineMs: options.deadlineMs ?? 500,
+        nowFn: options.nowFn,
+        opendirFn: options.opendirFn,
+      });
+      runIds = enumeration.runIds;
+      vectorDeadlineAtMs = enumeration.deadlineAtMs;
+    } catch (error) {
+      if (error?.kind !== 'run-set-bound-exceeded') throw error;
+      return Object.freeze({
+        root: canonicalProjectRoot(root),
+        runIds: Object.freeze([]),
+        runs: Object.freeze(Object.create(null)),
+        errors: Object.freeze({ run_set: error }),
+        ok: false,
+        kind: error.kind,
+        ...error,
+      });
+    }
+  } else {
+    runIds = frozenRunIds(root, options.runIds);
+  }
   options.afterEnumeration?.(runIds);
   const runs = Object.create(null);
   const errors = Object.create(null);
   for (const runId of runIds) {
+    const capture = () => captureVerifiedRunSnapshot(root, runId, {
+      artifactRels: options.artifactRelsByRun?.[runId] || [],
+      lockOptions: options.lockOptions,
+      vectorOptions: options.vectorOptionsByRun?.[runId] || options.vectorOptions,
+      vectorDeadlineAtMs,
+      nowFn: options.nowFn,
+    });
     try {
-      const result = captureVerifiedRunSnapshot(root, runId, {
-        artifactRels: options.artifactRelsByRun?.[runId] || [],
-        lockOptions: options.lockOptions,
-        vectorOptions: options.vectorOptionsByRun?.[runId] || options.vectorOptions,
-        vectorDeadlineAtMs,
-        nowFn: options.nowFn,
-      });
+      let result;
+      try {
+        result = capture();
+      } catch (firstError) {
+        // One retry is allowed, but only outside the per-run lock and only
+        // while the same aggregate deadline still has time remaining.
+        const retryable = String(firstError?.message || firstError).startsWith('LOCK_BUSY');
+        if (!retryable) throw firstError;
+        const current = nowMillis(options.nowFn);
+        const remaining = vectorDeadlineAtMs === undefined ? null : Number(vectorDeadlineAtMs) - current;
+        if (!Number.isSafeInteger(current) || (remaining !== null && remaining <= 0)) {
+          throw boundedRunSetError({
+            maxRunIds: options.maxRunIds ?? 64,
+            deadlineMs: options.deadlineMs ?? 500,
+            observedCount: runIds.length,
+            totalIsLowerBound: false,
+            phase: 'lock-retry',
+          });
+        }
+        const delay = remaining === null ? (options.retryDelayMs ?? 50)
+          : Math.min(options.retryDelayMs ?? 50, remaining);
+        (options.sleepFn || options.lockOptions?.sleepFn || defaultReadSleep)(delay);
+        if (vectorDeadlineAtMs !== undefined && nowMillis(options.nowFn) >= Number(vectorDeadlineAtMs)) {
+          throw boundedRunSetError({
+            maxRunIds: options.maxRunIds ?? 64,
+            deadlineMs: options.deadlineMs ?? 500,
+            observedCount: runIds.length,
+            totalIsLowerBound: false,
+            phase: 'lock-retry',
+          });
+        }
+        result = capture();
+      }
       if (result.ok) runs[runId] = result;
-      else errors[runId] = result;
+      else {
+        const aggregateBound = implicit || options.deadlineMs !== undefined || options.maxRunIds !== undefined;
+        if (aggregateBound && vectorDeadlineAtMs !== undefined
+          && nowMillis(options.nowFn) >= Number(vectorDeadlineAtMs)) {
+          throw boundedRunSetError({
+            maxRunIds: options.maxRunIds ?? 64,
+            deadlineMs: options.deadlineMs ?? 500,
+            observedCount: runIds.length,
+            totalIsLowerBound: false,
+            phase: 'lock-retry',
+          });
+        }
+        errors[runId] = result;
+      }
     } catch (error) {
+      if (error?.kind === 'run-set-bound-exceeded') {
+        const diagnostic = error;
+        return Object.freeze({
+          root: canonicalProjectRoot(root),
+          runIds: Object.freeze([]),
+          runs: Object.freeze(Object.create(null)),
+          errors: Object.freeze({ run_set: diagnostic }),
+          ok: false,
+          kind: diagnostic.kind,
+          ...diagnostic,
+        });
+      }
       errors[runId] = Object.freeze({
         kind: error?.message?.startsWith('TRANSACTION_RECONCILIATION_REQUIRED')
           ? 'reconciliation-required' : 'integrity-invalid',
@@ -1338,12 +1518,13 @@ export function captureVerifiedRunSet(root, options = {}) {
       });
     }
   }
-  return Object.freeze({
+  const result = {
     root: canonicalProjectRoot(root),
     runIds,
     runs: Object.freeze(Object.keys(errors).length ? Object.create(null) : runs),
     errors: Object.freeze(errors),
-  });
+  };
+  return Object.freeze(result);
 }
 
 function appendDurableLine(path, bytes, guard, faultAt, index) {

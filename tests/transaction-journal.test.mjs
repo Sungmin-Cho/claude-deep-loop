@@ -1802,6 +1802,53 @@ test('verified run set discards earlier clean snapshot after later error', () =>
   assert.equal(result.errors[runB].kind, 'reconciliation-required');
 });
 
+test('bounded run enumeration rejects the 65th historical directory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-tx-bounded-enum-'));
+  const runs = join(root, '.deep-loop', 'runs');
+  mkdirSync(runs, { recursive: true });
+  for (let index = 0; index < 65; index++) {
+    mkdirSync(join(runs, `01J000000000000000000000${String(index).padStart(2, '0')}`));
+  }
+
+  const result = integrityApi.captureVerifiedRunSet(root, {
+    nowFn: () => 100,
+    deadlineMs: 500,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'run-set-bound-exceeded');
+  assert.equal(result.reason, 'run-set-bound-exceeded');
+  assert.equal(result.max_run_ids, 64);
+  assert.equal(result.observed_count, 65);
+  assert.equal(result.total_is_lower_bound, true);
+  assert.deepEqual(result.runIds, []);
+  assert.deepEqual(Object.keys(result.runs), []);
+  assert.match(JSON.stringify(result), /run-set-bound-exceeded/);
+});
+
+test('bounded run enumeration rejects lock retry after the absolute deadline', () => {
+  const fixtureState = anchoredSeed();
+  let clock = 100;
+  const sleeps = [];
+  withLock(fixtureState.root, fixtureState.runId, () => {
+    const result = integrityApi.captureVerifiedRunSet(fixtureState.root, {
+      runIds: [fixtureState.runId],
+      deadlineMs: 5,
+      nowFn: () => clock,
+      lockOptions: {
+        retries: 10,
+        backoffMs: 50,
+        nowFn: () => clock,
+        sleepFn(ms) { sleeps.push(ms); clock += ms; },
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, 'run-set-bound-exceeded');
+    assert.equal(result.phase, 'lock-retry');
+    assert.deepEqual(Object.keys(result.runs), []);
+    assert.deepEqual(sleeps, [5]);
+  });
+});
+
 test('verified capture gives valid orphan residue precedence over a valid committed sibling', () => {
   const fixtureState = anchoredSeed();
   assert.equal(publishOnce(fixtureState.root, fixtureState.runId, 'verified-committed-sibling').ok, true);
