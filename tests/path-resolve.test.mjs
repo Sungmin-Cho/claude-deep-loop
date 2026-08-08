@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { captureStableFileIdentity } from '../scripts/lib/fs-safe.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, captureVerifiedRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { resolveRunPath } from '../scripts/lib/path-resolve.mjs';
 import { captureReconciledRunSnapshot, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
@@ -88,7 +88,7 @@ function stableCore(root, runId) {
   return stableRunSnapshotAt(runDir(root, runId));
 }
 
-function preparePublication(root, runId, operationId) {
+function preparePublication(root, runId, operationId, barrier = 'prepared:digest-verified') {
   assert.throws(() => appendAnchored(
     root,
     runId,
@@ -99,14 +99,34 @@ function preparePublication(root, runId, operationId) {
       publication: {
         kind: 'path-resolve-fixture',
         operationId,
-        artifacts: [],
+        artifacts: barrier.startsWith('artifact:')
+          ? [{ rel: 'artifacts/partial.txt', bytes: Buffer.from('partial') }]
+          : [],
         topology: { operation_id: operationId },
         faultAt(label) {
-          if (label === 'prepared:digest-verified') throw new Error('fixture-stop-after-prepare');
+          if (label === barrier) throw new Error('fixture-stop-after-prepare');
         },
       },
     },
   ), /TRANSACTION_PENDING/);
+}
+
+function publishPublication(root, runId, operationId) {
+  return appendAnchored(
+    root,
+    runId,
+    { type: 'path-resolve-committed-fixture', data: { operation_id: operationId }, now: '2026-08-05T00:01:00.000Z' },
+    loop => { loop.discovered_items.push(operationId); },
+    undefined,
+    {
+      publication: {
+        kind: 'path-resolve-fixture',
+        operationId,
+        artifacts: [],
+        topology: { operation_id: operationId },
+      },
+    },
+  );
 }
 
 function moveLineageComponent(root, runId, componentRel, variant) {
@@ -275,7 +295,7 @@ test('prepared publication behind an internal or escaped run alias is rejected b
   }
 });
 
-test('foreign-project prepared publication is fenced before either target can reconcile it', () => {
+test('foreign-project prepared publication is bounded by verified integrity before either target can reconcile it', () => {
   const source = seed();
   const operationId = 'prepared-foreign-root';
   preparePublication(source.root, source.runId, operationId);
@@ -291,22 +311,136 @@ test('foreign-project prepared publication is fenced before either target can re
   ]) {
     assert.throws(
       () => resolveRunPath(candidateRoot, source.runId, options),
-      /^Error: (?:PROJECT_ROOT_FENCED|TRANSACTION_RECONCILIATION_REQUIRED)/,
+      /^Error: integrity-invalid:prepared-foreign-root:transaction-tree$/,
     );
     assert.deepEqual(stableRunSnapshotAt(candidateRunDir, operationId), before);
   }
 });
 
-test('safe in-root prepared publication reconciles once and then both targets resolve', () => {
+test('safe in-root prepared publication requires explicit reconciliation before both targets resolve', () => {
   const { root, runId, workstreamId, worktreeAbs } = seed();
-  preparePublication(root, runId, 'prepared-safe');
-  assert.equal(resolveRunPath(root, runId, { target: 'run-dir' }), runDir(root, runId));
+  const operationId = 'prepared-safe';
+  preparePublication(root, runId, operationId);
+  const beforeReconcile = stableRunSnapshotAt(runDir(root, runId), operationId);
+  for (const options of [
+    { target: 'run-dir' },
+    { target: 'workstream', workstreamId },
+  ]) {
+    assert.throws(
+      () => resolveRunPath(root, runId, options),
+      /^Error: reconciliation-required:prepared-safe:prepared$/,
+    );
+    assert.deepEqual(stableRunSnapshotAt(runDir(root, runId), operationId), beforeReconcile);
+  }
+
   const first = captureReconciledRunSnapshot(root, runId);
-  assert.deepEqual(first.data.discovered_items, ['prepared-safe']);
+  assert.deepEqual(first.data.discovered_items, [operationId]);
   assert.equal(first.logLines.filter(event => event.type === 'path-resolve-fixture').length, 1);
-  const afterReconcile = stableRunSnapshotAt(runDir(root, runId), 'prepared-safe');
+  const afterReconcile = stableRunSnapshotAt(runDir(root, runId), operationId);
+  assert.equal(resolveRunPath(root, runId, { target: 'run-dir' }), runDir(root, runId));
   assert.equal(resolveRunPath(root, runId, { target: 'workstream', workstreamId }), realpath(worktreeAbs));
-  assert.deepEqual(stableRunSnapshotAt(runDir(root, runId), 'prepared-safe'), afterReconcile);
+  assert.deepEqual(stableRunSnapshotAt(runDir(root, runId), operationId), afterReconcile);
+});
+
+test('PATH-RESOLVE-PREPARED returns reconciliation-required', () => {
+  const { root, runId } = seed();
+  preparePublication(root, runId, 'path-prepared');
+  const before = stableCore(root, runId);
+  const verified = captureVerifiedRunSnapshot(root, runId);
+  assert.deepEqual(verified, {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: 'path-prepared',
+    phase: 'prepared',
+  });
+  assert.throws(
+    () => resolveRunPath(root, runId, { target: 'run-dir', snapshot: verified }),
+    /reconciliation-required/,
+  );
+  assert.deepEqual(stableCore(root, runId), before);
+});
+
+test('PATH-RESOLVE-PARTIAL returns reconciliation-required', () => {
+  const { root, runId } = seed();
+  preparePublication(root, runId, 'path-partial', 'artifact:0:target-done');
+  const before = stableCore(root, runId);
+  const verified = captureVerifiedRunSnapshot(root, runId);
+  assert.equal(verified.kind, 'reconciliation-required');
+  assert.equal(verified.phase, 'partial');
+  assert.throws(
+    () => resolveRunPath(root, runId, { target: 'run-dir', snapshot: verified }),
+    /reconciliation-required/,
+  );
+  assert.deepEqual(stableCore(root, runId), before);
+});
+
+test('PATH-RESOLVE-VALID-COMMITTED resolves from clean-committed', () => {
+  const { root, runId } = seed();
+  assert.equal(publishPublication(root, runId, 'path-clean').ok, true);
+  const before = stableCore(root, runId);
+  const verified = captureVerifiedRunSnapshot(root, runId);
+  assert.equal(verified.ok, true);
+  assert.equal(verified.kind, 'clean-committed');
+  let injectedCalls = 0;
+  assert.equal(resolveRunPath(root, runId, {
+    target: 'run-dir',
+    snapshot: verified,
+    captureVerifiedRunSnapshot() { injectedCalls += 1; throw new Error('unexpected second capture'); },
+  }), runDir(root, runId));
+  assert.equal(injectedCalls, 0);
+  assert.equal(resolveRunPath(root, runId, {
+    target: 'run-dir',
+    captureVerifiedRunSnapshot() { injectedCalls += 1; return verified; },
+  }), runDir(root, runId));
+  assert.equal(injectedCalls, 1);
+  assert.deepEqual(stableCore(root, runId), before);
+});
+
+test('PATH-RESOLVE-CROSS-RUN rejects an injected snapshot for both targets', () => {
+  const first = seed();
+  const secondRun = initRun(first.root, { runtime: 'codex', goal: 'second', now: NOW });
+  const secondWorktree = '.claude/worktrees/second';
+  mkdirSync(join(first.root, secondWorktree), { recursive: true });
+  const secondWorkstream = newWorkstream(first.root, secondRun.runId, {
+    title: 'second', branch: 'feature/second', worktree: secondWorktree,
+    fence: { owner: secondRun.runId, generation: 1, intent: 'business' }, now: NOW,
+  });
+  const secondSnapshot = captureVerifiedRunSnapshot(first.root, secondRun.runId);
+  for (const options of [
+    { target: 'run-dir' },
+    { target: 'workstream', workstreamId: first.workstreamId },
+  ]) {
+    assert.throws(
+      () => resolveRunPath({ root: first.root, runId: first.runId, snapshot: secondSnapshot, ...options }),
+      /snapshot run mismatch/,
+    );
+  }
+  // Also prove the polarity is not accidentally accepted in the other
+  // direction when a workstream from B is supplied to A's resolver.
+  assert.throws(
+    () => resolveRunPath(first.root, secondRun.runId, {
+      target: 'workstream', workstreamId: secondWorkstream.id,
+      snapshot: { ...secondSnapshot.snapshot, data: { ...secondSnapshot.snapshot.data, run_id: first.runId } },
+    }),
+    /snapshot run mismatch/,
+  );
+});
+
+test('PATH-RESOLVE-CROSS-ROOT rejects a same-run-id snapshot from another root', () => {
+  const source = seed();
+  const candidateRoot = freshRoot('deep-loop-path-root-polarity-');
+  const candidateRunDir = runDir(candidateRoot, source.runId);
+  mkdirSync(dirname(candidateRunDir), { recursive: true });
+  cpSync(runDir(source.root, source.runId), candidateRunDir, { recursive: true, preserveTimestamps: true });
+  const verified = captureVerifiedRunSnapshot(source.root, source.runId);
+
+  assert.equal(resolveRunPath(source.root, source.runId, {
+    target: 'run-dir', snapshot: verified,
+  }), runDir(source.root, source.runId));
+  assert.throws(
+    () => resolveRunPath(candidateRoot, source.runId, { target: 'run-dir', snapshot: verified }),
+    /snapshot root mismatch/,
+  );
 });
 
 test('CLI path resolve has exact one-line output and strict grammar', () => {

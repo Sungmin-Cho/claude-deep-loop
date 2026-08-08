@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdtempSync,
@@ -15,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   captureCheckpointSet,
+  captureVerifiedCheckpointSet,
   emitCompactCheckpoint,
   emitLegacyCompactCheckpointFromTrustedHook,
   inspectCompactCheckpoint,
@@ -26,6 +28,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { contentHash, ulid, wrap } from '../scripts/lib/envelope.mjs';
+import { appendAnchored, captureVerifiedRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import {
   acquireRootRecovery,
@@ -397,6 +400,113 @@ test('strict v0.4 emit binds exact affinity context and exact retry is byte- and
     first.checkpoint_key,
     contentHash(JSON.stringify(['deep-loop-compact-checkpoint-v2', context])),
   );
+});
+
+test('verified checkpoint capture never calls reconcile', () => {
+  const fixture = seedBound();
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 1000,
+  });
+  let captureCalls = 0;
+  const captured = captureVerifiedCheckpointSet({
+    root: fixture.root,
+    runId: fixture.runId,
+    now: NOW_MS + 1000,
+    captureVerifiedRunSnapshot() {
+      captureCalls += 1;
+      return captureVerifiedRunSnapshot(fixture.root, fixture.runId);
+    },
+    afterRunSnapshotCapture() {
+      writeFileSync(strictCheckpointPath(fixture.root, fixture.runId, emitted), 'live checkpoint drift');
+    },
+    afterArtifactCapture({ rel }) {
+      if (rel === fixture.present) writeFileSync(join(fixture.root, fixture.present), 'live artifact drift');
+    },
+  });
+  assert.equal(captured.ok, true);
+  assert.equal(captured.checkpoints.length, 1);
+  assert.equal(captured.checkpoints[0].path, strictCheckpointPath(fixture.root, fixture.runId, emitted));
+  assert.equal(captureCalls, 1, 'no-snapshot form captures the run exactly once');
+
+  assert.throws(() => appendAnchored(
+    fixture.root,
+    fixture.runId,
+    { type: 'checkpoint-prepared-fixture', data: { operation_id: 'checkpoint-prepared' }, now: '2026-07-20T00:02:00.000Z' },
+    loop => { loop.discovered_items.push('checkpoint-prepared'); },
+    undefined,
+    {
+      publication: {
+        kind: 'checkpoint-fixture',
+        operationId: 'checkpoint-prepared',
+        artifacts: [],
+        topology: { operation_id: 'checkpoint-prepared' },
+        faultAt(label) {
+          if (label === 'prepared:digest-verified') throw new Error('fixture-stop-after-prepare');
+        },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+  const residueBefore = durableRunBytes(fixture);
+  const residue = captureVerifiedCheckpointSet(fixture.root, fixture.runId);
+  assert.deepEqual(residue, {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: 'checkpoint-prepared',
+    phase: 'prepared',
+  });
+  assert.deepEqual(durableRunBytes(fixture), residueBefore);
+});
+
+test('verified checkpoint capture rejects a same-run-id snapshot from another root before observing artifacts', () => {
+  const source = seedBound();
+  const emitted = emitCompactCheckpoint(source.root, source.runId, {
+    fence: source.fence,
+    runtime: source.runtime,
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 1000,
+  });
+  const snapshot = captureVerifiedRunSnapshot(source.root, source.runId);
+  assert.equal(snapshot.ok, true);
+
+  const candidateRoot = freshRoot();
+  cpSync(runDir(source.root, source.runId), runDir(candidateRoot, source.runId), {
+    recursive: true,
+    preserveTimestamps: true,
+  });
+  cpSync(join(source.root, source.worktree), join(candidateRoot, source.worktree), {
+    recursive: true,
+    preserveTimestamps: true,
+  });
+
+  let candidateObservations = 0;
+  assert.deepEqual(captureVerifiedCheckpointSet({
+    root: candidateRoot,
+    runId: source.runId,
+    snapshot,
+    now: NOW_MS + 1000,
+    observeArtifactFn() {
+      candidateObservations += 1;
+      throw new Error('cross-root artifact observation must not run');
+    },
+  }), {
+    ok: false,
+    kind: 'integrity-invalid',
+    phase: 'run-snapshot',
+  });
+  assert.equal(candidateObservations, 0);
+
+  const sourceResult = captureVerifiedCheckpointSet({
+    root: source.root,
+    runId: source.runId,
+    snapshot,
+    now: NOW_MS + 1000,
+  });
+  assert.equal(sourceResult.ok, true);
+  assert.equal(sourceResult.checkpoints.length, 1);
+  assert.equal(sourceResult.checkpoints[0].path, strictCheckpointPath(source.root, source.runId, emitted));
 });
 
 test('strict inspect orders two equal-time checkpoints by checkpoint_rel without mutating the frozen capture', () => {

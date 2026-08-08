@@ -17,11 +17,12 @@ import {
 } from './fs-safe.mjs';
 import { leaseCheck } from './lease.mjs';
 import { nextAction } from './next-action.mjs';
-import { projectRootDigest } from './project-root.mjs';
+import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 import { validateSessionRuntime, sessionRuntime } from './runtime.mjs';
 import { validate } from './schema.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 import { runDir, withReconciledMutationLock } from './state.mjs';
+import { captureVerifiedRunSnapshot } from './integrity.mjs';
 
 const KEEP = 5;
 const STRICT_SCHEMA_VERSION = '2.0';
@@ -196,6 +197,7 @@ function observeArtifact(root, rel) {
       state: 'present',
       sha256: contentHash(bytes),
       size: bytes.length,
+      bytes: Buffer.from(bytes),
     };
   }
   throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
@@ -230,7 +232,25 @@ function affinity(loop) {
   return { scope, workstream, episode, artifacts };
 }
 
-function deriveContext(root, runId, snapshot, { now, providerEvidence }) {
+function verifiedArtifact(artifactEvidence, rel) {
+  const evidence = artifactEvidence?.[rel];
+  if (!evidence || evidence.state === 'absent') {
+    if (evidence?.state === 'absent') return { rel, state: 'absent', sha256: null, size: null };
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  if (evidence.state !== 'present' || !sha256(evidence.sha256)
+    || !Number.isSafeInteger(evidence.size) || evidence.size < 0
+    || typeof evidence.base64 !== 'string') throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  const bytes = Buffer.from(evidence.base64, 'base64');
+  if (bytes.length !== evidence.size || contentHash(bytes) !== evidence.sha256) {
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  return { rel, state: 'present', sha256: evidence.sha256, size: evidence.size };
+}
+
+function deriveContext(root, runId, snapshot, {
+  now, providerEvidence, verifiedOnly = false, artifactEvidence = null,
+}) {
   const { data: loop, hash } = snapshot;
   assertCurrentSchema(loop);
   if (loop.autonomy?.continuation_policy !== 'workstream-session') {
@@ -248,7 +268,17 @@ function deriveContext(root, runId, snapshot, { now, providerEvidence }) {
     scope: structuredClone(scope),
     workstream: structuredClone(workstream),
     current_episode: structuredClone(episode),
-    artifacts: artifacts.map(rel => observeArtifact(root, rel)),
+    artifacts: artifacts.map(rel => {
+      const evidence = verifiedOnly
+        ? verifiedArtifact(artifactEvidence, rel)
+        : observeArtifact(root, rel);
+      return {
+        rel: evidence.rel,
+        state: evidence.state,
+        sha256: evidence.sha256,
+        size: evidence.size,
+      };
+    }),
     next_action: nextAction(loop, { now, unattended: false }),
     provider_evidence: providerEvidence,
   };
@@ -301,7 +331,9 @@ function validateStrictSelf(env, { runId, key }) {
   return env.payload.context;
 }
 
-function validateStrictBytes(bytes, { root, runId, key, snapshot, now, hostSessionEvidence }) {
+function validateStrictBytes(bytes, {
+  root, runId, key, snapshot, now, hostSessionEvidence, verifiedOnly = false, artifactEvidence = null,
+}) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_CHECKPOINT_BYTES) {
     throw new Error('CHECKPOINT_INVALID');
   }
@@ -311,6 +343,8 @@ function validateStrictBytes(bytes, { root, runId, key, snapshot, now, hostSessi
   const expected = deriveContext(root, runId, snapshot, {
     now: Date.parse(env.envelope.generated_at),
     providerEvidence: context.provider_evidence,
+    verifiedOnly,
+    artifactEvidence,
   });
   if (JSON.stringify(context) !== JSON.stringify(expected)) {
     throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
@@ -782,6 +816,179 @@ export function captureCheckpointSet(root, runId) {
     }
     return Object.freeze({ snapshot, checkpoints: Object.freeze(checkpoints) });
   });
+}
+
+// Read-only SessionStart boundary.  This deliberately has no lock callback
+// capable of reconciliation or writing: the run snapshot is verified first,
+// then checkpoint names and bytes are projected from that exact immutable vector.
+function expectedArtifactRels(snapshot) {
+  const episode = (snapshot.data.episodes || []).find(item => item.id === snapshot.data.current_episode);
+  const rels = [...new Set([
+    ...(Array.isArray(episode?.expected_artifacts) ? episode.expected_artifacts : []),
+    ...(Array.isArray(episode?.artifacts) ? episode.artifacts : []),
+  ])].sort();
+  if (rels.some(rel => normalizePortableRelativePath(rel) !== rel)) {
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  return rels;
+}
+
+function normalizeArtifactEvidence(value, rels) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  const normalized = Object.create(null);
+  for (const rel of rels) {
+    const evidence = value[rel];
+    if (!evidence || (evidence.state !== 'absent' && evidence.state !== 'present')) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    if (evidence.state === 'absent') {
+      normalized[rel] = Object.freeze({ rel, state: 'absent', sha256: null, size: null });
+      continue;
+    }
+    if (!sha256(evidence.sha256) || !Number.isSafeInteger(evidence.size) || evidence.size < 0) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    const bytes = typeof evidence.base64 === 'string'
+      ? Buffer.from(evidence.base64, 'base64')
+      : Buffer.isBuffer(evidence.bytes) ? Buffer.from(evidence.bytes) : null;
+    if (!bytes || bytes.length !== evidence.size || contentHash(bytes) !== evidence.sha256) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    normalized[rel] = Object.freeze({
+      rel,
+      state: 'present',
+      sha256: evidence.sha256,
+      size: evidence.size,
+      base64: bytes.toString('base64'),
+    });
+  }
+  return Object.freeze(normalized);
+}
+
+function captureArtifactEvidence(root, rels, options) {
+  const evidence = Object.create(null);
+  for (const rel of rels) {
+    const observed = (options.observeArtifactFn || observeArtifact)(root, rel);
+    if (observed.state === 'absent') {
+      evidence[rel] = Object.freeze({ rel, state: 'absent', sha256: null, size: null });
+    } else if (observed.state === 'present' && Buffer.isBuffer(observed.bytes)) {
+      const bytes = Buffer.from(observed.bytes);
+      evidence[rel] = Object.freeze({
+        rel,
+        state: 'present',
+        sha256: contentHash(bytes),
+        size: bytes.length,
+        base64: bytes.toString('base64'),
+      });
+    } else {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    options.afterArtifactCapture?.({ rel, evidence: evidence[rel] });
+  }
+  return Object.freeze(evidence);
+}
+
+function verifiedCheckpointEntries(root, runId, snapshot) {
+  if (!Array.isArray(snapshot.vector)) throw new Error('CHECKPOINT_VECTOR_REQUIRED');
+  const seen = new Set();
+  const entries = [];
+  for (const vectorEntry of snapshot.vector) {
+    if (!Array.isArray(vectorEntry) || typeof vectorEntry[0] !== 'string'
+      || typeof vectorEntry[1] !== 'string' || typeof vectorEntry[2] !== 'string') {
+      throw new Error('CHECKPOINT_VECTOR_INVALID');
+    }
+    if (vectorEntry[0] !== runId) throw new Error('CHECKPOINT_VECTOR_FOREIGN_RUN');
+    const rel = vectorEntry[1];
+    if (seen.has(rel)) throw new Error('CHECKPOINT_VECTOR_DUPLICATE');
+    seen.add(rel);
+    if (typeof rel !== 'string' || !rel.startsWith('checkpoints/')) continue;
+    if (vectorEntry[2] !== 'file' || !vectorEntry[3] || typeof vectorEntry[3].base64 !== 'string') {
+      if (vectorEntry[2] === 'ABSENT' || vectorEntry[2] === 'directory') continue;
+      throw new Error('CHECKPOINT_VECTOR_INVALID');
+    }
+    const bytes = Buffer.from(vectorEntry[3].base64, 'base64');
+    if (bytes.length !== vectorEntry[3].size || contentHash(bytes) !== vectorEntry[3].sha256) {
+      throw new Error('CHECKPOINT_VECTOR_INVALID');
+    }
+    const name = rel.slice('checkpoints/'.length);
+    const match = name.match(STRICT_FILE);
+    if (!match) throw new Error('CHECKPOINT_INVALID');
+    entries.push({
+      name,
+      path: join(runDir(root, runId), rel),
+      bytes,
+      key: match[1],
+    });
+  }
+  entries.sort((left, right) => right.name.localeCompare(left.name));
+  return entries;
+}
+
+export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg = {}) {
+  const objectForm = rootOrOptions && typeof rootOrOptions === 'object' && !Array.isArray(rootOrOptions);
+  const root = objectForm ? rootOrOptions.root : rootOrOptions;
+  const runId = objectForm ? rootOrOptions.runId : runIdArg;
+  const options = objectForm ? rootOrOptions : optionsArg;
+  const capture = options.captureVerifiedRunSnapshot || captureVerifiedRunSnapshot;
+  const captured = options.snapshot === undefined
+    ? capture(root, runId, options)
+    : options.snapshot;
+  if (captured?.ok === false) {
+    return Object.freeze({
+      ok: false,
+      kind: captured.kind || 'integrity-invalid',
+      operation_id: captured.operation_id ?? null,
+      phase: captured.phase || 'run-snapshot',
+    });
+  }
+  const snapshot = captured?.snapshot || captured;
+  if (!snapshot || typeof snapshot !== 'object' || !snapshot.data
+    || snapshot.data.run_id !== runId || typeof snapshot.hash !== 'string') {
+    return Object.freeze({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' });
+  }
+  try {
+    if (canonicalProjectRoot(root) !== canonicalProjectRoot(snapshot.data.project?.root)) {
+      return Object.freeze({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' });
+    }
+  } catch {
+    return Object.freeze({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' });
+  }
+  options.afterRunSnapshotCapture?.(snapshot);
+  let artifactEvidence;
+  const checkpoints = [];
+  try {
+    const artifactRels = expectedArtifactRels(snapshot);
+    artifactEvidence = options.artifactEvidence === undefined
+      ? captureArtifactEvidence(root, artifactRels, options)
+      : normalizeArtifactEvidence(options.artifactEvidence, artifactRels);
+    for (const entry of verifiedCheckpointEntries(root, runId, snapshot)) {
+      const env = JSON.parse(entry.bytes.toString('utf8'));
+      validateStrictSelf(env, { runId, key: entry.key });
+      validateStrictBytes(entry.bytes, {
+        root,
+        runId,
+        key: entry.key,
+        snapshot,
+        now: options.now ?? Date.now(),
+        hostSessionEvidence: options.hostSessionEvidence,
+        verifiedOnly: true,
+        artifactEvidence,
+      });
+      checkpoints.push(Object.freeze({
+        path: entry.path,
+        bytes: Buffer.from(entry.bytes),
+      }));
+    }
+  } catch (error) {
+    return Object.freeze({
+      ok: false,
+      kind: 'integrity-invalid',
+      phase: 'checkpoint',
+    });
+  }
+  return Object.freeze({ ok: true, snapshot, checkpoints: Object.freeze(checkpoints) });
 }
 
 function listLegacyCheckpoints(root, runId) {
