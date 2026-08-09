@@ -498,7 +498,7 @@ function runCliAsync(args, cwd = REPO_ROOT) {
 
 function lockBusyResult(result) {
   const stderr = String(result?.stderr || '').replace(/\u001b\[[0-9;]*m/g, '').trim();
-  return result?.status === 1 && /^\[deep-loop:error\] LOCK_BUSY(?::|$)/.test(stderr);
+  return result?.status === 1 && /^\[deep-loop:error\] LOCK_BUSY(?::[^\r\n]*)?$/.test(stderr);
 }
 
 test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => {
@@ -521,6 +521,10 @@ test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => 
   assert.equal(lockBusyResult({
     status: 1,
     stderr: 'prefix [deep-loop:error] LOCK_BUSY: run-a\n',
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] LOCK_BUSY: run-a\n[deep-loop:error] STATE_TAMPERED\n',
   }), false);
 });
 
