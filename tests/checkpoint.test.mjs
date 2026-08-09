@@ -2121,6 +2121,52 @@ test('compact prune reconciliation rejects a malformed checkpoint replaced after
   assert.deepEqual(durableInventory(fixture), before);
 });
 
+test('compact prune retry converges a parseable invalid checkpoint with a plausible context digest', () => {
+  const fixture = seedBound();
+  const dir = checkpointDirOf(fixture.root, fixture.runId);
+  mkdirSync(dir, { recursive: true });
+  const key = 'f'.repeat(64);
+  const checkpoint = join(dir, `${key}-compact.json`);
+  const receipt = join(dir, `${key}-compact-observation.json`);
+  const tombstone = join(dir, `${key}-compact-prune.json`);
+  writeFileSync(checkpoint, JSON.stringify({
+    payload: { context_sha256: 'a'.repeat(64) },
+  }));
+  writeFileSync(receipt, '{"receipt":"invalid-checkpoint-pair"}');
+  for (let index = 0; index < 4; index += 1) {
+    __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `invalid-context-prune-${index}`),
+      now: NOW_MS + index + 1,
+    });
+  }
+  assert.throws(() => __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'invalid-context-prune-trigger'),
+    now: NOW_MS + 100,
+    faultAt: seam => { if (seam === 'prune:tombstone-written') throw new Error(seam); },
+  }), /prune:tombstone-written/);
+  assert.equal(existsSync(checkpoint), true);
+  assert.equal(existsSync(receipt), true);
+  assert.equal(existsSync(tombstone), true);
+  assert.equal(
+    JSON.parse(readFileSync(tombstone, 'utf8')).payload.context_sha256,
+    null,
+  );
+
+  emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 200,
+  });
+
+  assert.equal(existsSync(checkpoint), false);
+  assert.equal(existsSync(receipt), false);
+  assert.equal(existsSync(tombstone), false);
+});
+
 test('direct restore retry converges a crashed prune tombstone under the restore transaction lock', () => {
   for (const seam of [
     'prune:tombstone-written',

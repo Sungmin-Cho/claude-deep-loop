@@ -105,7 +105,6 @@ const receiptPath = (root, runId, key) => join(
   checkpointDir(root, runId), `${key}-compact-observation.json`,
 );
 const prunePath = (root, runId, key) => join(checkpointDir(root, runId), `${key}-compact-prune.json`);
-const sha256 = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const canonicalIso = value => typeof value === 'string'
   && Number.isFinite(new Date(value).getTime())
   && new Date(value).toISOString() === value;
@@ -386,7 +385,8 @@ function pruneCheckpointPairLocked(root, runId, metadata, guard, {
     const checkpointBytes = readFileSync(checkpoint);
     checkpointSha256 = contentHash(checkpointBytes);
     const env = JSON.parse(checkpointBytes.toString('utf8'));
-    contextSha256 = sha256(env?.payload?.context_sha256) ? env.payload.context_sha256 : null;
+    validateStrictSelf(env, { runId, key });
+    contextSha256 = env.payload.context_sha256;
   } catch { /* invalid checkpoints are still pair-pruned */ }
   let receiptSha256 = null;
   try { receiptSha256 = contentHash(readFileSync(receipt)); } catch { /* optional */ }
