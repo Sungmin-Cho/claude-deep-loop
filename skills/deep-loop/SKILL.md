@@ -22,16 +22,18 @@ user-invocable: true
 
 `/deep-loop "<goal>"` — deep-suite 전체를 아우르는 내구성 있는 크로스-플러그인 오케스트레이션 run을 시작한다. loop engineering 진입점.
 
-## 단계 1: 기존 Run 감지
+## 단계 1: 기존 Run 감지와 명시적 identity 선택
 
-먼저 진행 중인 run이 있는지 확인한다:
+프로젝트에는 여러 run이 동시에 존재할 수 있다. 먼저 bounded verified 목록을 확인하고, 사용자가 선택한 불변 logical id를 이후 명령에 명시한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" run list --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-- 결과가 `running`이면 `/deep-loop-status`로 현황을 보여주고 이어가기 또는 새 run 시작 중 선택을 요청한다.
-- `null` 또는 파일 없음이면 새 run을 시작한다.
+`current` 포인터는 마지막으로 만들어진 run을 알려주는 **hint**일 뿐이며 권위, 소유권 증명, 후보 tie-breaker가 아니다. 목록에 없는 run이나 current로의 암묵적 fallback은 선택하지 않는다. 결과가 `running`이면 `/deep-loop-status`로 해당 `<run_id>`의 현황을 보여주고 이어가기 또는 새 run 시작 중 선택을 요청한다. `null` 또는 파일 없음이면 새 run을 시작한다.
+
+동시 run마다 worktree 경로와 branch를 서로 다르게 사용한다. worktree를 먼저 만들고 `workstream new`로 기록하는 create↔record 사이에는 좁은 TOCTOU가 아직 남아 있다. v1은 project-level reservation, claim retirement, ownership transfer를 구현하거나 보장하지 않으며, 중복 claim은 fail-closed되고 고아 정리는 proposal-only로 surface한다.
 
 ## 단계 2: Run 시작
 

@@ -23,6 +23,64 @@ test('README lists all commands + architecture + safety', () => {
   assert.match(s, /standalone|독립/i);
 });
 
+test('English/Korean docs publish bounded multi-run identity and the remaining TOCTOU', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /multi-run|multiple runs|여러 run|다중 run/i, `${path}: multi-run contract missing`);
+    assert.match(source, /run list/i, `${path}: bounded run list guidance missing`);
+    assert.match(source, /current[^\n]{0,180}(?:hint|last-created)|(?:hint|last-created)[^\n]{0,180}current/i,
+      `${path}: current-hint guidance missing`);
+    assert.match(source, /unique[^\n]{0,120}(?:worktree|branch)|고유[^\n]{0,120}(?:worktree|branch)/i,
+      `${path}: unique worktree/branch requirement missing`);
+    assert.match(source, /TOCTOU/i, `${path}: create-record TOCTOU disclosure missing`);
+    assert.match(source, /(?:reservation|예약)[^\n]{0,180}(?:not|없|후속|범위 밖)|(?:not|없|후속|범위 밖)[^\n]{0,180}(?:reservation|예약)/i,
+      `${path}: must not overclaim strong reservation`);
+    assert.match(source, /drive-headless\.mjs[\s\S]{0,240}--project-root[\s\S]{0,100}--run-id/i,
+      `${path}: explicit headless identity guidance missing`);
+  }
+});
+
+test('English/Korean docs distinguish exact no-fallback routes from legacy-current compatibility', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /mutation[^\n]{0,120}(?:no|never)[^\n]{0,120}(?:fall\s*back|fallback)|(?:no|never)[^\n]{0,120}(?:fall\s*back|fallback)[^\n]{0,120}mutation/i,
+      `${path}: mutation no-fallback boundary missing`);
+    assert.match(source, /exact read[^\n]{0,120}(?:no|never)[^\n]{0,120}(?:fall\s*back|fallback)|(?:no|never)[^\n]{0,120}(?:fall\s*back|fallback)[^\n]{0,120}exact read/i,
+      `${path}: exact-read no-fallback boundary missing`);
+    assert.match(source, /legacy-current[^\n]{0,500}terminal run|terminal run[^\n]{0,500}legacy-current/i,
+      `${path}: bounded legacy-current compatibility missing`);
+    assert.match(source, /one or more distinct terminal claims|terminal claim이 하나 이상/i,
+      `${path}: legacy-current must allow multiple terminal claims within one run`);
+  }
+});
+
+test('README human mutation examples carry complete project-root and run identity', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    const commandPattern = /`(node\s+"[^`\n]*deep-loop\.mjs"[^`\n]*(?:breaker reset|budget extend|episode abandon|attended-launch approve|attended-launch revoke|pause --mode preserve|root rebind(?:\s|`)|root recover(?:\s|`))[^`\n]*)`/gi;
+    for (const match of source.matchAll(commandPattern)) {
+      assert.match(match[1], /--project-root\s+/, `${path}: mutation shorthand lacks project root: ${match[1]}`);
+      assert.match(match[1], /--run-id\s+/, `${path}: mutation shorthand lacks run id: ${match[1]}`);
+    }
+  }
+});
+
+test('README recovery and relief examples preserve exact descriptor authority', () => {
+  for (const path of ['README.md', 'README.ko.md']) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /exact returned command unchanged|public-kernel command를 정확히 그대로 실행합니다/i,
+      `${path}: root relocation must execute the returned descriptor unchanged`);
+    assert.doesNotMatch(source, /node\s+"[^"\n]*deep-loop\.mjs"\s+root\s+(?:rebind|recovery\s+acquire)/i,
+      `${path}: docs must not synthesize partial root recovery commands`);
+    assert.match(source, /independent relief routes|독립적인 relief route/i,
+      `${path}: budget and breaker relief must be independent`);
+    const pause = source.match(/`([^`\n]*\bpause\s+--mode\s+preserve[^`\n]*)`/i);
+    assert.ok(pause, `${path}: pause preserve example is missing`);
+    assert.match(pause[1], /--reason\s+"[^"]+"/,
+      `${path}: pause preserve must carry a single-valued reason`);
+  }
+});
+
 test('README.ko mirrors commands', () => {
   const s = readFileSync(join(R, 'README.ko.md'), 'utf8');
   for (const c of SKILL_CMDS) assert.ok(s.includes(c), `README.ko missing ${c}`);

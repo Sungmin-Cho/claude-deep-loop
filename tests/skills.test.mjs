@@ -248,6 +248,40 @@ test('portable command contract: runtime and resumed mutation identity are expli
   }
 });
 
+test('entry guidance never presents current as sole active authority', () => {
+  const entry = readFileSync(skillPath('deep-loop'), 'utf8');
+  const status = readFileSync(skillPath('deep-loop-status'), 'utf8');
+  for (const [name, source] of [['deep-loop', entry], ['deep-loop-status', status]]) {
+    assert.match(source, /run list/i, `${name}: must list runs before implicit selection`);
+    assert.match(source, /current[^\n]{0,180}(?:hint|last-created)|(?:hint|last-created)[^\n]{0,180}current/i,
+      `${name}: current must be documented as a hint only`);
+    assert.doesNotMatch(source, /current\s+(?:run\s+)?(?:is\s+)?(?:the\s+)?(?:sole|single)\s+(?:authority|source|selection)/i,
+      `${name}: current must never be the sole routing authority`);
+  }
+});
+
+test('mutation examples include valued run-id', () => {
+  for (const file of [skillPath('deep-loop'), skillPath('deep-loop-status')]) {
+    const source = readFileSync(file, 'utf8')
+      .replace(/\r\n?/g, '\n')
+      .replace(/\\\n\s*/g, ' ');
+    for (const line of kernelCommandLines(source)) {
+      if (MUTATING_SUB.test(line) && /--owner\b/.test(line)) {
+        assert.match(line, /--run-id\s+<run_id>/, `${file}: mutation must pin valued --run-id: ${line}`);
+      }
+    }
+  }
+});
+
+test('inline human mutation shorthands in status remain fully identity-bound', () => {
+  const source = readFileSync(skillPath('deep-loop-status'), 'utf8');
+  const commandPattern = /`([^`\n]*(?:breaker reset|budget extend|episode abandon|attended-launch approve|attended-launch revoke|pause --mode preserve|root rebind(?:\s|`)|root recover(?:\s|`))[^`\n]*)`/gi;
+  for (const match of source.matchAll(commandPattern)) {
+    assert.match(match[1], /--project-root\s+/, `status shorthand lacks project root: ${match[1]}`);
+    assert.match(match[1], /--run-id\s+/, `status shorthand lacks run id: ${match[1]}`);
+  }
+});
+
 test('portable host invocation contract: every user entry names Claude slash and Codex qualified dollar forms', () => {
   for (const [dir, name, invocable] of SKILLS) {
     if (!invocable) continue;

@@ -310,6 +310,35 @@ test('cron template calls the fail-closed driver (not raw claude -p)', () => {
   assert.match(s, /fail-closed|budget|proposal-only/i);
 });
 
+test('cron uses explicit provisioned project-root and run-id, never implicit current', () => {
+  const source = readFileSync(join(A, 'cron-morning-triage.yml'), 'utf8');
+  assert.match(source, /one-time|provisioned|provisioning/i, 'cron must describe one-time identity provisioning');
+  assert.match(source, /--project-root\s+["']?<PROJECT_ROOT>["']?/i);
+  assert.match(source, /--run-id\s+["']?<RUN_ID>["']?/i);
+  assert.doesNotMatch(source, /\.deep-loop\/current|current run|drive-headless\.mjs['"`]?\s*(?:>>|$)/i,
+    'cron must not use current or no-argument driver invocation');
+});
+
+test('cron-shaped explicit missing run fails closed with routing-invalid exit 1', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-missing-'));
+  const missingRunId = '01J00000000000000000000000';
+  let error;
+  try {
+    execFileSync(process.execPath, [
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'hooks-impl', 'drive-headless.mjs'),
+      '--project-root', root, '--run-id', missingRunId,
+    ], { encoding: 'utf8', env: { ...process.env, DEEP_LOOP_UNATTENDED: '1' } });
+  } catch (cause) {
+    error = cause;
+  }
+  assert.equal(error?.status, 1, 'missing provisioned run must be a nonzero routing failure');
+  const result = JSON.parse(error.stdout);
+  assert.equal(result.ok, false);
+  assert.equal(result.action, 'routing-invalid');
+  assert.equal(result.kind, 'invalid');
+  assert.equal(result.total, 1);
+});
+
 test('execution-plane automation is root-portable and delegates to the runtime-selected trusted measured driver', () => {
   const source = readFileSync(HANDOFF_REFERENCE, 'utf8');
   assert.match(source, /loaded SKILL\.md path|로드된 `?SKILL\.md`? 경로/i,
@@ -364,7 +393,7 @@ test('handoff emit derives resume_policy=headless from spawn_style without --hea
     CLI, 'handoff', 'emit',
     '--reason', 'milestone',
     '--owner', runId, '--generation', '1',
-    '--project-root', root,
+    '--project-root', root, '--run-id', runId,
   ], { encoding: 'utf8' }));
   assert.ok(out.ok, `handoff emit must succeed: ${JSON.stringify(out)}`);
 
@@ -614,7 +643,7 @@ test('driveHeadless: legacy terminal+emitted pending handoff → no write, termi
   writeState(root, runId, data);
   const before = JSON.stringify(readState(root, runId).data);
   const r = driveHeadless({
-    root,
+    root, runId,
     now: NOW1,
     spawnFn: () => { throw new Error('must not spawn'); },
   });
