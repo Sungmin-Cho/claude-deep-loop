@@ -1175,12 +1175,16 @@ test('run containment rejects symlinked run directories and prepared residue', (
   const generic = seedTrustedFixture({ genericPublication: true });
   const genericResult = runTrustedVerifier(generic);
   assert.equal(genericResult.status, 0, genericResult.stdout);
-  const controlGeneric = seedTrustedFixture({
-    genericPublication: true,
-    genericArtifactRel: 'artifacts/control\u0001.txt',
-  });
-  const controlGenericResult = runTrustedVerifier(controlGeneric);
-  assert.equal(controlGenericResult.status, 0, controlGenericResult.stdout);
+  // Windows cannot create control-character filenames; retain this production-valid
+  // portable-path acceptance proof on filesystems that support the fixture byte.
+  if (process.platform !== 'win32') {
+    const controlGeneric = seedTrustedFixture({
+      genericPublication: true,
+      genericArtifactRel: 'artifacts/control\u0001.txt',
+    });
+    const controlGenericResult = runTrustedVerifier(controlGeneric);
+    assert.equal(controlGenericResult.status, 0, controlGenericResult.stdout);
+  }
   const forgedGeneric = seedTrustedFixture({ genericPublication: true });
   const forgedGenericRunDirectory = join(forgedGeneric.project, '.deep-loop', 'runs', forgedGeneric.runId);
   const forgedGenericOperation = readdirSync(join(forgedGenericRunDirectory, 'transactions'))[0];
