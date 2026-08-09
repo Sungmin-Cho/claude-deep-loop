@@ -7,8 +7,8 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
-  renameSync,
   rmdirSync,
   statSync,
   unlinkSync,
@@ -58,7 +58,12 @@ import { emitHandoff } from './handoff.mjs';
 import { nextAction } from './next-action.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 import {
+  locateCapturedImportedReviewArtifact,
+  verifyCapturedImportedReviewProof,
+} from './review-import.mjs';
+import {
   listProcessUsageReceipts,
+  markCheckerImportUnconfirmed,
   makeProcessUsageReceiptDescriptor,
   removeProcessUsageReceipt,
 } from './preflight-receipt-journal.mjs';
@@ -153,8 +158,9 @@ function defaultProcessAlive(pid) {
   }
 }
 
-function releaseHeadlessHostLock(lockPath, ownerPayload, token) {
-  const ownerPath = join(lockPath, 'owner');
+const HOST_LOCK_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function releaseHeadlessHostLock(lockPath, ownerPath, ownerPayload, { unlinkFn, rmdirFn }) {
   let current;
   try {
     current = readFileSync(ownerPath, 'utf8');
@@ -163,37 +169,35 @@ function releaseHeadlessHostLock(lockPath, ownerPayload, token) {
     throw error;
   }
   if (current !== ownerPayload) return;
-
-  // Host ownership is already carried by this exact random token.  Do not take
-  // the run's transaction lock merely to retire host metadata after the turn:
-  // a timed-out/killed kernel child may leave that lock legitimately
-  // unreconciled, and release must not replace the already-derived host result
-  // with a second cleanup LOCK_BUSY.  Rename gives a successor a fresh lexical
-  // lock path while keeping deletion bound to the directory we actually owned.
-  const quarantinePath = `${lockPath}.release-${token}`;
-  renameSync(lockPath, quarantinePath);
-  const quarantineOwnerPath = join(quarantinePath, 'owner');
-  let quarantinedOwner = null;
-  try { quarantinedOwner = readFileSync(quarantineOwnerPath, 'utf8'); } catch { /* fail closed below */ }
-  if (quarantinedOwner !== ownerPayload) {
-    // Never delete or restore-by-overwrite bytes which stopped matching our
-    // token.  A canonical successor may already be constructing its owner
-    // metadata, so preserve the quarantine as ownership-loss evidence.
-    throw new Error('HOST_LOCK_OWNERSHIP_LOST');
+  try { unlinkFn(ownerPath); }
+  catch (error) {
+    // A hard-TTL successor may have retired this exact token before the unlink
+    // reaches the filesystem. Its token-specific owner has a different path,
+    // so an absent predecessor is already a safe release boundary.
+    if (error?.code === 'ENOENT') return;
+    throw error;
   }
-  unlinkSync(quarantineOwnerPath);
-  rmdirSync(quarantinePath);
+  try { rmdirFn(lockPath); }
+  catch (error) {
+    // A non-empty directory is successor ownership. Never delete or replace it.
+    if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST' || error?.code === 'ENOENT') return;
+    throw error;
+  }
 }
 
-function acquireHeadlessHostLock(root, runId, {
+export function acquireHeadlessHostLock(root, runId, {
   timeoutMs,
   wallNow = Date.now,
   processAlive = defaultProcessAlive,
   pid = process.pid,
+  tokenFactory = randomUUID,
+  unlinkFn = unlinkSync,
+  rmdirFn = rmdirSync,
 } = {}) {
   const lockPath = join(runDir(root, runId), '.headless-host.lock');
-  const ownerPath = join(lockPath, 'owner');
-  const token = randomUUID();
+  const token = String(tokenFactory()).toLowerCase();
+  if (!HOST_LOCK_TOKEN.test(token)) throw new Error('HOST_LOCK_TOKEN_INVALID');
+  const ownerPath = join(lockPath, `owner-${token}`);
   const ttlMs = hostLockTtl(timeoutMs);
   const ownerPayload = JSON.stringify({ token, pid, started_at_ms: wallNow() });
   let acquired = false;
@@ -206,15 +210,24 @@ function acquireHeadlessHostLock(root, runId, {
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error;
         const ageMs = wallNow() - statSync(lockPath).mtimeMs;
+        let observedOwnerPath = null;
         let observedOwner = null;
-        try { observedOwner = readFileSync(ownerPath, 'utf8'); } catch (inspectError) {
+        let ownerEntries = [];
+        try {
+          ownerEntries = readdirSync(lockPath).filter(name => name === 'owner' || name.startsWith('owner-'));
+          if (ownerEntries.length === 1) {
+            observedOwnerPath = join(lockPath, ownerEntries[0]);
+            observedOwner = readFileSync(observedOwnerPath, 'utf8');
+          }
+        } catch (inspectError) {
           if (inspectError?.code !== 'ENOENT') throw inspectError;
         }
         let owner = null;
         try {
           const parsed = JSON.parse(observedOwner);
           if (parsed && typeof parsed.token === 'string' && parsed.token.length > 0
-            && Number.isInteger(parsed.pid) && parsed.pid > 0) owner = parsed;
+            && Number.isInteger(parsed.pid) && parsed.pid > 0
+            && (ownerEntries[0] === 'owner' || ownerEntries[0] === `owner-${parsed.token}`)) owner = parsed;
         } catch { /* malformed metadata is treated like an owner-missing partial acquire */ }
         let alive = true;
         if (owner && ageMs > HOST_LOCK_CRASH_GRACE_MS) {
@@ -225,8 +238,8 @@ function acquireHeadlessHostLock(root, runId, {
             || (ageMs > HOST_LOCK_CRASH_GRACE_MS && (!owner || !alive)));
         if (!reclaimable) return false;
         try {
-          if (observedOwner != null) unlinkSync(ownerPath);
-          rmdirSync(lockPath);
+          if (observedOwnerPath != null) unlinkFn(observedOwnerPath);
+          rmdirFn(lockPath);
           mkdirSync(lockPath, { mode: 0o700 });
         } catch {
           return false;
@@ -235,7 +248,7 @@ function acquireHeadlessHostLock(root, runId, {
       try {
         writeFileSync(ownerPath, ownerPayload, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       } catch (error) {
-        try { rmdirSync(lockPath); } catch { /* best effort */ }
+        try { rmdirFn(lockPath); } catch { /* best effort */ }
         throw error;
       }
       return true;
@@ -252,7 +265,7 @@ function acquireHeadlessHostLock(root, runId, {
   return {
     release() {
       if (released) return;
-      releaseHeadlessHostLock(lockPath, ownerPayload, token);
+      releaseHeadlessHostLock(lockPath, ownerPath, ownerPayload, { unlinkFn, rmdirFn });
       released = true;
     },
   };
@@ -389,6 +402,137 @@ function pauseWithOriginalFence(root, runId, { reason, expect, now }) {
   }
 }
 
+function captureImportedCheckerProof(projectRoot, runId, { checkerEpisodeId, attemptId, claim }) {
+  let first;
+  try { first = captureReconciledRunSnapshot(projectRoot, runId); }
+  catch (error) {
+    if (String(error?.message || error).startsWith('LOCK_BUSY:')) return { state: 'lock-busy' };
+    return { state: 'invalid' };
+  }
+  const checker = first.data.episodes?.find(episode => episode.id === checkerEpisodeId);
+  if (checker?.status === 'in_progress' && checker.attempt_id === attemptId
+    && sameValue(checker.review_claim, claim)) return { state: 'missing' };
+  if (!['approved', 'rejected'].includes(checker?.status)
+    || checker.review_source !== 'imported-stdin'
+    || checker.attempt_id !== attemptId
+    || !sameValue(checker.review_claim, claim)) return { state: 'invalid' };
+  const located = locateCapturedImportedReviewArtifact(first, { runId, checkerEpisodeId, attemptId });
+  if (!located.ok) return { state: 'invalid' };
+  try {
+    const captured = captureReconciledRunSnapshot(projectRoot, runId, {
+      artifactRels: [located.reportRel],
+    });
+    const verified = verifyCapturedImportedReviewProof(captured, {
+      runId, checkerEpisodeId, attemptId, claim,
+    });
+    return verified.ok ? { state: 'committed', proof: verified } : { state: 'invalid' };
+  } catch (error) {
+    if (String(error?.message || error).startsWith('LOCK_BUSY:')) return { state: 'lock-busy' };
+    return { state: 'invalid' };
+  }
+}
+
+function captureExactRecoveredCheckerBlock(projectRoot, runId, { checkerEpisodeId, attemptId, claim }) {
+  try {
+    const snapshot = captureReconciledRunSnapshot(projectRoot, runId);
+    const checker = snapshot.data.episodes?.find(episode => episode.id === checkerEpisodeId);
+    const events = snapshot.logLines.filter(event => event?.type === 'independent-review-blocked'
+      && event?.data?.episode_id === checkerEpisodeId
+      && event.data.attempt_id === attemptId);
+    return checker?.status === 'blocked'
+      && checker.block_reason === 'checker-import-failed'
+      && sameValue(checker.review_claim, claim)
+      && events.length === 1
+      && sameValue(events[0].data, {
+        episode_id: checkerEpisodeId,
+        attempt_id: attemptId,
+        reason: 'checker-import-failed',
+      });
+  } catch (error) {
+    if (String(error?.message || error).startsWith('LOCK_BUSY:')) return null;
+    return false;
+  }
+}
+
+function routeCompletedChecker({
+  projectRoot,
+  runId,
+  parentFence,
+  checkerEpisodeId,
+  attemptId,
+  usage,
+  recorded,
+  clock,
+  env,
+  emitHandoffFn,
+  accountingReason = null,
+}) {
+  const parentOwner = parentFence.owner;
+  const parentGeneration = parentFence.generation;
+  let actionNow = clock();
+  let continuation = false;
+  let continuationFailure = null;
+  const afterAccounting = captureFreshLoop(projectRoot, runId);
+  if (recorded && afterAccounting.status === 'running') {
+    const selected = nextAction(afterAccounting, { now: actionNow, unattended: true }).action;
+    if (selected?.type === 'await_human'
+      && (selected.reason === 'budget' || selected.reason === 'breaker')) {
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: `checker-gate:${selected.reason}`, expect: parentFence, now: actionNow,
+      });
+      return {
+        ok: false,
+        action: pauseOutcome === 'fenced' ? 'fenced'
+          : (pauseOutcome === 'terminal' ? 'terminal' : 'gate-blocked'),
+        reason: selected.reason,
+        checkerEpisodeId,
+        attemptId,
+        continuation: false,
+        usage,
+        recorded,
+      };
+    }
+    const boundaryPolicy = afterAccounting.autonomy?.continuation_policy === 'workstream-session';
+    const routed = boundaryPolicy ? selected : null;
+    if (!boundaryPolicy || routed?.type === 'handoff') {
+      try {
+        const handoff = emitHandoffFn(projectRoot, runId, {
+          reason: boundaryPolicy ? routed.reason : 'independent-review-complete',
+          trigger: boundaryPolicy ? routed.reason : `independent-review-complete:${checkerEpisodeId}:${attemptId}`,
+          ...(boundaryPolicy ? { boundaryEvent: routed.boundary_event } : {}),
+          headless: true,
+          resumePolicy: 'headless',
+          expect: { owner: parentOwner, generation: parentGeneration },
+          now: actionNow,
+          env,
+        });
+        continuation = handoff?.ok === true;
+        if (!continuation) continuationFailure = handoff?.reason || 'handoff-not-emitted';
+      } catch (error) {
+        continuationFailure = String(error?.message || error || 'handoff-error').slice(0, 128);
+      }
+    }
+    if (continuationFailure) {
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: 'independent-review-continuation-failed', expect: parentFence, now: actionNow,
+      });
+      if (pauseOutcome === 'terminal') continuationFailure = 'terminal';
+      else if (pauseOutcome === 'fenced') continuationFailure = 'fenced';
+    }
+  }
+  return {
+    ok: continuationFailure == null,
+    action: continuationFailure == null ? 'checker-complete' : 'continuation-failed',
+    checkerEpisodeId,
+    attemptId,
+    continuation,
+    usage,
+    recorded,
+    ...(continuationFailure ? { reason: continuationFailure } : {}),
+    ...(accountingReason ? { accounting_reason: accountingReason } : {}),
+  };
+}
+
 function driveIndependentChecker({
   root,
   runId,
@@ -418,6 +562,7 @@ function driveIndependentChecker({
   claimReviewFn,
   blockReviewFn,
   revalidateClaimFn,
+  markCheckerRecoveryFn,
   attemptIdFactory,
 }) {
   let actionNow = now;
@@ -903,35 +1048,73 @@ function driveIndependentChecker({
   } catch {
     imported = { ok: false, reason: 'checker-import-failed' };
   }
-  let importProof = 'missing';
-  try {
-    const proofLoop = captureFreshLoop(projectRoot, runId);
-    const proofChecker = proofLoop.episodes.find(episode => episode.id === pending.id);
-    if (['approved', 'rejected'].includes(proofChecker?.status)
-      && proofChecker.review_source === 'imported-stdin'
-      && proofChecker.attempt_id === claimed.attemptId
-      && sameValue(proofChecker.review_claim, claimed.claim)) {
-      importProof = 'committed';
-    }
-  } catch (error) {
-    if (String(error?.message || error).startsWith('LOCK_BUSY:')) importProof = 'lock-busy';
-    else importProof = 'invalid';
-  }
-  if (importProof === 'committed') {
+  const importProof = captureImportedCheckerProof(projectRoot, runId, {
+    checkerEpisodeId: pending.id,
+    attemptId: claimed.attemptId,
+    claim: claimed.claim,
+  });
+  if (importProof.state === 'committed') {
     // The import subprocess may have committed its content-addressed proof and
     // then lost the stdout/exit acknowledgement.  The canonical proof is the
     // authority; do not convert it back into a blocked checker.
     imported = { ok: true, recovered: imported?.ok !== true };
-  } else if (importProof === 'lock-busy' && checkerResult.usageReceipt != null) {
+  } else if (importProof.state === 'lock-busy' && checkerResult.usageReceipt != null) {
     // A killed/timed-out import can leave its immutable process receipt and a
     // live or not-yet-stale kernel lock.  Neither success nor failure is
     // knowable at this boundary.  Preserve the claim and receipt for the next
     // canonical host tick, which reconciles before inspecting the checker.
+    try {
+      markCheckerRecoveryFn({
+        receipt: checkerResult.usageReceipt,
+        descriptor: checkerUsageReceiptDescriptor,
+      });
+    } catch {
+      return {
+        ok: false,
+        action: 'checker-import-recovery-journal-failed',
+        reason: 'checker-import-recovery-journal-failed',
+        checkerEpisodeId: pending.id,
+        attemptId: claimed.attemptId,
+        continuation: false,
+        usage: checkerResult.usage,
+        recorded: false,
+      };
+    }
     return {
       ok: false,
       action: 'checker-import-unconfirmed',
       reason: 'checker-import-proof-lock-busy',
       import_reason: imported?.reason || 'checker-import-unconfirmed',
+      checkerEpisodeId: pending.id,
+      attemptId: claimed.attemptId,
+      continuation: false,
+      usage: checkerResult.usage,
+      recorded: false,
+    };
+  } else if (importProof.state === 'invalid') {
+    if (checkerResult.usageReceipt != null) {
+      try {
+        markCheckerRecoveryFn({
+          receipt: checkerResult.usageReceipt,
+          descriptor: checkerUsageReceiptDescriptor,
+        });
+      } catch {
+        return {
+          ok: false,
+          action: 'checker-import-recovery-journal-failed',
+          reason: 'checker-import-recovery-journal-failed',
+          checkerEpisodeId: pending.id,
+          attemptId: claimed.attemptId,
+          continuation: false,
+          usage: checkerResult.usage,
+          recorded: false,
+        };
+      }
+    }
+    return {
+      ok: false,
+      action: 'checker-import-proof-invalid',
+      reason: 'checker-import-proof-invalid',
       checkerEpisodeId: pending.id,
       attemptId: claimed.attemptId,
       continuation: false,
@@ -977,78 +1160,19 @@ function driveIndependentChecker({
       : processAccountingFailureReason(error);
   }
 
-  let continuation = false;
-  let continuationFailure = null;
-  const afterAccounting = captureFreshLoop(projectRoot, runId);
-  if (recorded && afterAccounting.status === 'running') {
-    actionNow = clock();
-    const selected = nextAction(afterAccounting, { now: actionNow, unattended: true }).action;
-    if (selected?.type === 'await_human'
-      && (selected.reason === 'budget' || selected.reason === 'breaker')) {
-      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-        reason: `checker-gate:${selected.reason}`,
-        expect: parentFence,
-        now: actionNow,
-      });
-      return {
-        ok: false,
-        action: pauseOutcome === 'fenced' ? 'fenced'
-          : (pauseOutcome === 'terminal' ? 'terminal' : 'gate-blocked'),
-        reason: selected.reason,
-        checkerEpisodeId: pending.id,
-        attemptId: claimed.attemptId,
-        continuation: false,
-        usage: checkerResult.usage,
-        recorded,
-      };
-    }
-
-    const boundaryPolicy = afterAccounting.autonomy?.continuation_policy === 'workstream-session';
-    const routed = boundaryPolicy ? selected : null;
-    // Workstream sessions may rotate only at an exact closed boundary. An
-    // independent checker completing inside an open affinity continues in the
-    // same session; it must not synthesize a transport milestone.
-    if (!boundaryPolicy || routed?.type === 'handoff') {
-      try {
-        const handoff = emitHandoffFn(projectRoot, runId, {
-          reason: boundaryPolicy ? routed.reason : 'independent-review-complete',
-          trigger: boundaryPolicy
-            ? routed.reason
-            : `independent-review-complete:${pending.id}:${claimed.attemptId}`,
-          ...(boundaryPolicy ? { boundaryEvent: routed.boundary_event } : {}),
-          headless: true,
-          resumePolicy: 'headless',
-          expect: { owner: parentOwner, generation: parentGeneration },
-          now: actionNow,
-          env,
-        });
-        continuation = handoff?.ok === true;
-        if (!continuation) continuationFailure = handoff?.reason || 'handoff-not-emitted';
-      } catch (error) {
-        continuationFailure = String(error?.message || error || 'handoff-error').slice(0, 128);
-      }
-    }
-    if (continuationFailure) {
-      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-        reason: 'independent-review-continuation-failed',
-        expect: parentFence,
-        now: actionNow,
-      });
-      if (pauseOutcome === 'terminal') continuationFailure = 'terminal';
-      else if (pauseOutcome === 'fenced') continuationFailure = 'fenced';
-    }
-  }
-  return {
-    ok: continuationFailure == null,
-    action: continuationFailure == null ? 'checker-complete' : 'continuation-failed',
+  return routeCompletedChecker({
+    projectRoot,
+    runId,
+    parentFence,
     checkerEpisodeId: pending.id,
     attemptId: claimed.attemptId,
-    continuation,
     usage: checkerResult.usage,
     recorded,
-    ...(continuationFailure ? { reason: continuationFailure } : {}),
-    ...(accountingReason ? { accounting_reason: accountingReason } : {}),
-  };
+    clock,
+    env,
+    emitHandoffFn,
+    accountingReason,
+  });
 }
 
 function driveHeadlessRunLocked({
@@ -1071,6 +1195,7 @@ function driveHeadlessRunLocked({
   listProcessReceiptsFn = listProcessUsageReceipts,
   makeProcessReceiptDescriptorFn = makeProcessUsageReceiptDescriptor,
   removeProcessReceiptFn = removeProcessUsageReceipt,
+  markCheckerRecoveryFn = markCheckerImportUnconfirmed,
   respawnFn = respawn,
   launchCommandBuilder = buildLaunchCommand,
   revalidateExecutable = revalidateTrustedRuntimeExecutable,
@@ -1110,7 +1235,110 @@ function driveHeadlessRunLocked({
     let pendingReceipts;
     try {
       pendingReceipts = listProcessReceiptsFn({ root: projectRoot, runId });
-      for (const item of pendingReceipts) {
+      const recoveries = pendingReceipts.filter(item => item.recovery === 'checker-import-unconfirmed');
+      if (recoveries.length > 1) throw new Error('PROCESS_ACCOUNTING_RECOVERY_AMBIGUOUS');
+      if (recoveries.length === 1) {
+        const item = recoveries[0];
+        const context = item.receipt.context;
+        const checker = initialLoop.episodes?.find(episode => episode.id === context.checker_episode_id);
+        if (item.receipt.process_kind !== 'checker'
+          || context.origin_owner !== parentOwner
+          || context.origin_generation !== parentGeneration
+          || checker?.attempt_id !== context.attempt_id
+          || checker?.target_maker !== context.target_maker
+          || codexCheckerClaimHash(checker?.review_claim) !== context.claim_hash) {
+          return {
+            ok: false,
+            action: 'checker-import-proof-invalid',
+            reason: 'checker-import-proof-invalid',
+          };
+        }
+        const recoveredBlock = checker.status === 'blocked'
+          ? captureExactRecoveredCheckerBlock(projectRoot, runId, {
+              checkerEpisodeId: checker.id,
+              attemptId: context.attempt_id,
+              claim: checker.review_claim,
+            })
+          : false;
+        const proof = recoveredBlock === true
+          ? { state: 'missing-blocked' }
+          : recoveredBlock === null
+            ? { state: 'lock-busy' }
+            : captureImportedCheckerProof(projectRoot, runId, {
+                checkerEpisodeId: checker.id,
+                attemptId: context.attempt_id,
+                claim: checker.review_claim,
+              });
+        if (proof.state === 'lock-busy') {
+          return {
+            ok: false,
+            action: 'checker-import-unconfirmed',
+            reason: 'checker-import-proof-lock-busy',
+            checkerEpisodeId: checker.id,
+            attemptId: context.attempt_id,
+            continuation: false,
+            usage: item.receipt.usage,
+            recorded: false,
+          };
+        }
+        if (proof.state === 'invalid') {
+          return {
+            ok: false,
+            action: 'checker-import-proof-invalid',
+            reason: 'checker-import-proof-invalid',
+            checkerEpisodeId: checker.id,
+            attemptId: context.attempt_id,
+            continuation: false,
+            usage: item.receipt.usage,
+            recorded: false,
+          };
+        }
+        if (proof.state === 'missing' || proof.state === 'missing-blocked') {
+          if (proof.state === 'missing') {
+            blockReviewFn(projectRoot, runId, {
+              episodeId: checker.id,
+              attemptId: context.attempt_id,
+              reason: 'checker-import-failed',
+              fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
+            });
+          }
+          const settlement = settleProcessCostFn(projectRoot, runId, {
+            receipt: item.receipt,
+            fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+          });
+          if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+          removeProcessReceiptFn(item);
+          return {
+            ok: false,
+            action: 'checker-blocked',
+            reason: 'checker-import-failed',
+            checkerEpisodeId: checker.id,
+            attemptId: context.attempt_id,
+            recorded: true,
+          };
+        }
+        const settlement = settleProcessCostFn(projectRoot, runId, {
+          receipt: item.receipt,
+          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+        });
+        if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+        const routed = routeCompletedChecker({
+          projectRoot,
+          runId,
+          parentFence,
+          checkerEpisodeId: checker.id,
+          attemptId: context.attempt_id,
+          usage: item.receipt.usage,
+          recorded: true,
+          clock: sampleNow,
+          env,
+          emitHandoffFn,
+        });
+        removeProcessReceiptFn(item);
+        return routed;
+      }
+      const ordinaryReceipts = pendingReceipts.filter(item => item.recovery == null);
+      for (const item of ordinaryReceipts) {
         const settlement = settleProcessCostFn(projectRoot, runId, {
           receipt: item.receipt,
           fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
@@ -1121,7 +1349,7 @@ function driveHeadlessRunLocked({
       }
       // Settle the complete bounded snapshot first, then clean it. A crash during cleanup leaves only
       // already-recorded immutable receipts for the next host, never a partially unaccounted suffix.
-      const cleanupOrder = [...pendingReceipts].sort((left, right) => {
+      const cleanupOrder = [...ordinaryReceipts].sort((left, right) => {
         const leftRank = left.receipt?.smoke_kind === 'write' ? 0
           : left.receipt?.smoke_kind === 'read' ? 2 : 1;
         const rightRank = right.receipt?.smoke_kind === 'write' ? 0
@@ -1129,7 +1357,7 @@ function driveHeadlessRunLocked({
         return leftRank - rightRank || left.journalPath.localeCompare(right.journalPath);
       });
       for (const item of cleanupOrder) removeProcessReceiptFn(item);
-      if (pendingReceipts.length > 0) initialLoop = captureFreshLoop(projectRoot, runId);
+      if (ordinaryReceipts.length > 0) initialLoop = captureFreshLoop(projectRoot, runId);
     } catch (error) {
       return {
         ok: false,
@@ -1158,6 +1386,7 @@ function driveHeadlessRunLocked({
     settleProcessCostFn,
     makeProcessReceiptDescriptorFn,
     removeProcessReceiptFn,
+    markCheckerRecoveryFn,
     revalidateExecutable,
     resolveCodexHome,
     inspectDirectory,

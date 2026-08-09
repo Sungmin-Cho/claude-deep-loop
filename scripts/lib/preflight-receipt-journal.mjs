@@ -1,13 +1,16 @@
 import {
   closeSync,
+  existsSync,
   fstatSync,
   fsyncSync,
   lstatSync,
+  linkSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -55,6 +58,11 @@ function processDescriptorId(processKind, context) {
 
 function expectedProcessJournalPath(root, runId, processKind, context) {
   return join(journalDirectory(root, runId), `${processDescriptorId(processKind, context)}-${processKind}.json`);
+}
+
+function expectedCheckerRecoveryJournalPath(descriptor) {
+  if (descriptor.processKind !== 'checker') throw new Error('checker recovery descriptor required');
+  return descriptor.journalPath.replace(/-checker\.json$/, '-checker-unconfirmed.json');
 }
 
 function descriptorFailure(error) {
@@ -320,6 +328,64 @@ export function readProcessUsageReceipt(value) {
   }
 }
 
+function readProcessUsageReceiptAt(descriptor, journalPath) {
+  const parent = trustedJournalDirectory(
+    join(runDir(descriptor.root, descriptor.runId), 'preflight', 'process-receipts'),
+    descriptor.root,
+    descriptor.runId,
+  );
+  let bytes;
+  try { bytes = readTrustedReceiptBytes(journalPath, parent); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  const receipt = exactProcessReceipt(descriptor, JSON.parse(bytes.toString('utf8')));
+  if (!bytes.equals(receiptBytes(receipt))) throw new Error('receipt bytes invalid');
+  return receipt;
+}
+
+export function markCheckerImportUnconfirmed({ receipt, descriptor } = {}) {
+  try {
+    const exactDescriptor = validateProcessUsageReceiptDescriptor(descriptor);
+    const recoveryPath = expectedCheckerRecoveryJournalPath(exactDescriptor);
+    const stored = readProcessUsageReceipt(exactDescriptor);
+    const recovered = readProcessUsageReceiptAt(exactDescriptor, recoveryPath);
+    if (recovered != null) {
+      if (JSON.stringify(recovered) !== JSON.stringify(receipt)
+        || (stored != null && JSON.stringify(stored) !== JSON.stringify(receipt))) {
+        throw new Error('recovery receipt conflict');
+      }
+      if (stored != null) unlinkSync(exactDescriptor.journalPath);
+      return {
+        receipt: recovered,
+        descriptor: exactDescriptor,
+        journalPath: recoveryPath,
+        recovery: 'checker-import-unconfirmed',
+      };
+    }
+    if (stored == null || JSON.stringify(stored) !== JSON.stringify(receipt)) {
+      throw new Error('source receipt missing or changed');
+    }
+    // A hard link is an exclusive, atomic marker creation over the already
+    // validated immutable receipt inode. It cannot overwrite attacker bytes.
+    linkSync(exactDescriptor.journalPath, recoveryPath);
+    const linked = readProcessUsageReceiptAt(exactDescriptor, recoveryPath);
+    if (linked == null || JSON.stringify(linked) !== JSON.stringify(receipt)) {
+      throw new Error('recovery receipt validation failed');
+    }
+    unlinkSync(exactDescriptor.journalPath);
+    return {
+      receipt: linked,
+      descriptor: exactDescriptor,
+      journalPath: recoveryPath,
+      recovery: 'checker-import-unconfirmed',
+    };
+  } catch (error) {
+    throw new Error('CHECKER_IMPORT_RECOVERY_MARK_FAILED', { cause: error });
+  }
+}
+
 export function writeProcessUsageReceipt(value, usage) {
   if (value != null && typeof value === 'object' && !Array.isArray(value)
     && Object.hasOwn(value, 'smokeKind')) {
@@ -376,7 +442,7 @@ export function listPreflightUsageReceipts({ root, runId, journalDir } = {}) {
     if (entries.length > RECEIPT_MAX_FILES) throw new Error('too many receipt files');
     const candidates = entries.flatMap(entry => {
       const match = entry.name.match(/^([a-f0-9]{32,64})-(read|write)\.json$/);
-      const processMatch = entry.name.match(/^[a-f0-9]{64}-(maker|checker)\.json$/);
+      const processMatch = entry.name.match(/^[a-f0-9]{64}-(?:maker|checker|checker-unconfirmed)\.json$/);
       if (!entry.isFile() || entry.isSymbolicLink() || (!match && !processMatch)) {
         throw new Error('unexpected receipt entry');
       }
@@ -439,7 +505,7 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
     for (const entry of entries) {
       if (!entry.isFile() || entry.isSymbolicLink()
         || (!/^([a-f0-9]{32,64})-(read|write)\.json$/.test(entry.name)
-          && !/^[a-f0-9]{64}-(maker|checker)\.json$/.test(entry.name))) {
+          && !/^[a-f0-9]{64}-(?:maker|checker|checker-unconfirmed)\.json$/.test(entry.name))) {
         throw new Error('unexpected receipt entry');
       }
     }
@@ -450,22 +516,41 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
     });
     const output = [...preflight];
     const parent = trustedJournalDirectory(expectedDir, canonicalRoot, runId);
+    const recoveryIds = new Set(entries.flatMap(entry => {
+      const match = entry.name.match(/^([a-f0-9]{64})-checker-unconfirmed\.json$/);
+      return match ? [match[1]] : [];
+    }));
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const recoveryMatch = entry.name.match(/^([a-f0-9]{64})-checker-unconfirmed\.json$/);
       const match = entry.name.match(/^([a-f0-9]{64})-(maker|checker)\.json$/);
-      if (!match) continue;
+      if (!match && !recoveryMatch) continue;
+      if (match?.[2] === 'checker' && recoveryIds.has(match[1])) continue;
       const journalPath = join(parent, entry.name);
       const bytes = readTrustedReceiptBytes(journalPath, parent);
       const raw = JSON.parse(bytes.toString('utf8'));
+      const processKind = recoveryMatch ? 'checker' : match[2];
+      const descriptorPath = recoveryMatch
+        ? join(parent, `${recoveryMatch[1]}-checker.json`)
+        : journalPath;
       const descriptor = validateProcessUsageReceiptDescriptor({
-        journalPath,
+        journalPath: descriptorPath,
         root: canonicalRoot,
         runId,
-        processKind: match[2],
+        processKind,
         context: raw?.context,
       });
       const receipt = exactProcessReceipt(descriptor, raw);
       if (!bytes.equals(receiptBytes(receipt))) throw new Error('receipt bytes invalid');
-      output.push({ receipt, descriptor, journalPath });
+      if (recoveryMatch && existsSync(descriptorPath)) {
+        const duplicate = readProcessUsageReceiptAt(descriptor, descriptorPath);
+        if (JSON.stringify(duplicate) !== JSON.stringify(receipt)) throw new Error('recovery duplicate conflict');
+      }
+      output.push({
+        receipt,
+        descriptor,
+        journalPath,
+        ...(recoveryMatch ? { recovery: 'checker-import-unconfirmed' } : {}),
+      });
     }
     return output.sort((left, right) => left.journalPath.localeCompare(right.journalPath));
   } catch (error) {
@@ -473,17 +558,45 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
   }
 }
 
-export function removeProcessUsageReceipt({ receipt, descriptor = null, journalPath = null } = {}) {
+export function removeProcessUsageReceipt({ receipt, descriptor = null, journalPath = null, recovery = null } = {}) {
   try {
-    const exactDescriptor = descriptor;
-    if (exactDescriptor == null || (journalPath != null && exactDescriptor.journalPath !== journalPath)) {
+    if (descriptor != null && typeof descriptor === 'object' && !Array.isArray(descriptor)
+      && Object.hasOwn(descriptor, 'smokeKind')) {
+      if (recovery !== null) throw new Error('preflight receipt cannot carry process recovery');
+      const exactPreflightDescriptor = validatePreflightUsageReceiptDescriptor(descriptor);
+      if (journalPath != null && exactPreflightDescriptor.journalPath !== journalPath) {
+        throw new Error('preflight descriptor required');
+      }
+      const storedPreflight = readPreflightUsageReceipt(exactPreflightDescriptor);
+      if (storedPreflight == null) return { ok: true, removed: false };
+      if (JSON.stringify(storedPreflight) !== JSON.stringify(receipt)) throw new Error('receipt changed');
+      rmSync(exactPreflightDescriptor.journalPath);
+      if (readPreflightUsageReceipt(exactPreflightDescriptor) != null) throw new Error('receipt remained');
+      return { ok: true, removed: true };
+    }
+    const exactDescriptor = validateProcessUsageReceiptDescriptor(descriptor);
+    const expectedPath = recovery === 'checker-import-unconfirmed'
+      ? expectedCheckerRecoveryJournalPath(exactDescriptor)
+      : exactDescriptor.journalPath;
+    if ((recovery !== null && recovery !== 'checker-import-unconfirmed')
+      || (journalPath != null && expectedPath !== journalPath)) {
       throw new Error('process descriptor required');
     }
-    const stored = readProcessUsageReceipt(exactDescriptor);
+    const stored = readProcessUsageReceiptAt(exactDescriptor, expectedPath);
     if (stored == null) return { ok: true, removed: false };
     if (JSON.stringify(stored) !== JSON.stringify(receipt)) throw new Error('receipt changed');
-    rmSync(exactDescriptor.journalPath);
-    if (readProcessUsageReceipt(exactDescriptor) != null) throw new Error('receipt remained');
+    if (recovery === 'checker-import-unconfirmed') {
+      const duplicate = readProcessUsageReceipt(exactDescriptor);
+      if (duplicate != null) {
+        if (JSON.stringify(duplicate) !== JSON.stringify(receipt)) throw new Error('receipt changed');
+        // The recovery marker is the semantic authority. If marking crashed
+        // between link and source unlink, retire the ordinary alias first so a
+        // later crash can never erase the marker and revive generic settlement.
+        rmSync(exactDescriptor.journalPath);
+      }
+    }
+    rmSync(expectedPath);
+    if (readProcessUsageReceiptAt(exactDescriptor, expectedPath) != null) throw new Error('receipt remained');
     return { ok: true, removed: true };
   } catch (error) {
     throw new Error('PROCESS_USAGE_RECEIPT_CLEANUP_FAILED', { cause: error });

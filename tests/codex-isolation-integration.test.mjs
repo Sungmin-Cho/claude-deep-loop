@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1451,14 +1452,39 @@ test('claimed read-only checker imports exact final bytes once and commits conte
   assert.equal(explicitCosts.at(-1).data.turns, 0, 'checker explicit cost must absorb its review-outcome floor');
   assert.equal(events.filter(event => event.type === 'handoff-emitted').length, 2, 'maker handoff plus one checker continuation');
   assert.equal(existsSync(h.markerDir), false);
-  assertCommittedImportLostAckReconciles();
-  assertHostLockReleaseDoesNotMutateCanonicalSuccessor();
+  assertUnconfirmedImportWithoutProofBlocksOnNextTick();
+  assertCommittedImportLostAckReconcilesAndRoutes();
 });
 
-function assertCommittedImportLostAckReconciles() {
+function checkerResultWithVerdict(h, options, verdict) {
+  const result = runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker });
+  if (verdict === 'APPROVE') return result;
+  const message = JSON.parse(result.finalMessage.toString('utf8'));
+  return {
+    ...result,
+    finalMessage: Buffer.from(JSON.stringify({
+      ...message,
+      verdict,
+      report_body: `# deterministic recovered ${verdict}`,
+    })),
+  };
+}
+
+function assertCommittedImportLostAckReconcilesAndRoutes() {
+  for (const scenario of [
+    { label: 'approved', verdict: 'APPROVE', breakerBefore: 0, terminal: 'approved', continuation: true },
+    { label: 'request-changes', verdict: 'REQUEST_CHANGES', breakerBefore: 0, terminal: 'rejected', continuation: true },
+    { label: 'breaker-third', verdict: 'REQUEST_CHANGES', breakerBefore: 2, terminal: 'rejected', continuation: false },
+  ]) {
   const h = createHostHarness();
   assert.equal(h.runMaker().result.action, 'resumed');
   const review = seedIndependentChecker(h);
+  if (scenario.breakerBefore > 0) {
+    const state = readState(h.root, h.runId).data;
+    state.circuit_breaker.consecutive_request_changes = scenario.breakerBefore;
+    writeState(h.root, h.runId, state);
+  }
+  const attemptId = `attempt-task-2.8-lost-ack-${scenario.label}`;
   let heldLock = null;
   let first;
   try {
@@ -1467,8 +1493,8 @@ function assertCommittedImportLostAckReconciles() {
       expect: { owner: h.handoff.childRunId, generation: 2 },
       now: NOW1 + 18_000,
       timeoutMs: 20_000,
-      attemptIdFactory: () => 'attempt-task-2.8-lost-import-ack',
-      checkerRunFn: options => runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker }),
+      attemptIdFactory: () => attemptId,
+      checkerRunFn: options => checkerResultWithVerdict(h, options, scenario.verdict),
       checkerImportFn: (options, bytes) => {
         const imported = importReviewViaCli(options, bytes);
         assert.equal(imported.ok, true, JSON.stringify(imported));
@@ -1486,7 +1512,7 @@ function assertCommittedImportLostAckReconciles() {
     reason: 'checker-import-proof-lock-busy',
     import_reason: 'checker-import-timeout',
     checkerEpisodeId: review.checkerId,
-    attemptId: 'attempt-task-2.8-lost-import-ack',
+    attemptId,
     continuation: false,
     usage: { num_turns: 1, tokens: 36, input_tokens: 17, output_tokens: 19 },
     recorded: false,
@@ -1498,7 +1524,8 @@ function assertCommittedImportLostAckReconciles() {
   );
   assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'independent-review-blocked').length, 0);
   const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
-  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 1);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 1, scenario.label);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 0, scenario.label);
 
   let checkerRetries = 0;
   const second = driveHeadlessRun({
@@ -1507,44 +1534,104 @@ function assertCommittedImportLostAckReconciles() {
     now: NOW1 + 18_100,
     checkerRunFn: () => {
       checkerRetries += 1;
-      throw new Error('a committed checker must never respawn after lost acknowledgement');
+      throw new Error(`a committed ${scenario.label} checker must never respawn after lost acknowledgement`);
     },
   });
 
-  assert.deepEqual(second, { ok: true, action: 'no-pending-handoff' });
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.action, 'checker-complete', JSON.stringify(second));
+  assert.equal(second.recorded, true, JSON.stringify(second));
+  assert.equal(second.continuation, scenario.continuation, JSON.stringify(second));
   assert.equal(checkerRetries, 0);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 0);
   assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 0);
   const state = readState(h.root, h.runId).data;
   const checker = state.episodes.find(episode => episode.id === review.checkerId);
-  assert.equal(checker.status, 'approved');
+  assert.equal(checker.status, scenario.terminal);
   assert.equal(checker.review_source, 'imported-stdin');
-  assert.equal(checker.attempt_id, 'attempt-task-2.8-lost-import-ack');
+  assert.equal(checker.attempt_id, attemptId);
+  assert.equal(state.status, scenario.breakerBefore === 2 ? 'paused' : 'running');
+  assert.equal(state.circuit_breaker.tripped, scenario.breakerBefore === 2);
   const events = readLines(h.root, h.runId);
   assert.equal(events.filter(event => event.type === 'review-outcome').length, 1);
   assert.equal(events.filter(event => event.type === 'independent-review-blocked').length, 0);
+  assert.equal(
+    events.filter(event => event.type === 'handoff-emitted').length,
+    scenario.continuation ? 2 : 1,
+    scenario.label,
+  );
   assert.deepEqual(
     events.filter(event => event.type === 'cost' && event.data.reported_turns === 1)
       .map(event => event.data.reported_tokens),
     [5, 12, 24, 36],
   );
+  }
 }
 
-function assertHostLockReleaseDoesNotMutateCanonicalSuccessor() {
-  const source = readFileSync(join(DEEP_LOOP_ROOT, 'scripts', 'lib', 'headless-host.mjs'), 'utf8');
-  const functionStart = source.indexOf('function releaseHeadlessHostLock(');
-  const functionEnd = source.indexOf('\nfunction acquireHeadlessHostLock(', functionStart);
-  assert.ok(functionStart >= 0 && functionEnd > functionStart, 'release helper source boundary must remain inspectable');
-  const releaseSource = source.slice(functionStart, functionEnd);
-  const quarantineMutation = 'renameSync(lockPath, quarantinePath);';
-  const quarantineAt = releaseSource.indexOf(quarantineMutation);
-  assert.ok(quarantineAt >= 0, 'release must first move its exact owned directory out of the canonical path');
-  const afterQuarantine = releaseSource.slice(quarantineAt + quarantineMutation.length);
-  assert.doesNotMatch(
-    afterQuarantine,
-    /\b(?:mkdirSync|writeFileSync|unlinkSync|rmdirSync|renameSync)\([^;\n]*\blockPath\b/,
-    'release may only inspect/delete its token-bound quarantine; it must never restore or overwrite a canonical successor',
+function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  const review = seedIndependentChecker(h);
+  const attemptId = 'attempt-task-2.8-lost-ack-no-proof';
+  let heldLock = null;
+  let first;
+  try {
+    first = driveHeadlessRun({
+      ...h.baseOptions,
+      expect: { owner: h.handoff.childRunId, generation: 2 },
+      now: NOW1 + 18_200,
+      timeoutMs: 20_000,
+      attemptIdFactory: () => attemptId,
+      checkerRunFn: options => runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker }),
+      checkerImportFn: () => {
+        heldLock = holdKernelLockUntilReleased(h.root, h.runId);
+        return { ok: false, reason: 'checker-import-exit-1' };
+      },
+    });
+  } finally {
+    heldLock?.release();
+  }
+  assert.equal(first.action, 'checker-import-unconfirmed', JSON.stringify(first));
+  assert.equal(first.recorded, false);
+  const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 1);
+  const recoveryName = readdirSync(receiptDir).find(name => name.endsWith('-checker-unconfirmed.json'));
+  linkSync(
+    join(receiptDir, recoveryName),
+    join(receiptDir, recoveryName.replace('-checker-unconfirmed.json', '-checker.json')),
   );
-  assert.match(afterQuarantine, /throw new Error\('HOST_LOCK_OWNERSHIP_LOST'\)/);
+  assert.equal(
+    readdirSync(receiptDir).filter(name => name.includes('checker')).length,
+    2,
+    'crash after marker link but before source unlink leaves two names for one immutable inode',
+  );
+  let checkerRetries = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 18_300,
+    checkerRunFn: () => {
+      checkerRetries += 1;
+      throw new Error('a post-import unconfirmed checker must reconcile without respawn');
+    },
+  });
+  assert.equal(second.ok, false, JSON.stringify(second));
+  assert.equal(second.action, 'checker-blocked', JSON.stringify(second));
+  assert.equal(second.recorded, true, JSON.stringify(second));
+  assert.equal(checkerRetries, 0);
+  assert.equal(readdirSync(receiptDir).filter(name => name.includes('checker')).length, 0);
+  const state = readState(h.root, h.runId).data;
+  assert.equal(state.status, 'paused');
+  assert.equal(state.episodes.find(episode => episode.id === review.checkerId).status, 'blocked');
+  const events = readLines(h.root, h.runId);
+  assert.equal(events.filter(event => event.type === 'review-outcome').length, 0);
+  assert.equal(events.filter(event => event.type === 'independent-review-blocked').length, 1);
+  assert.equal(events.filter(event => event.data?.process_kind === 'checker').length, 1);
+  assert.deepEqual(
+    events.filter(event => event.type === 'cost' && event.data.reported_turns === 1)
+      .map(event => event.data.reported_tokens),
+    [5, 12, 24, 36],
+  );
 }
 
 test('artifact drift after a measured checker turn leaves no proof, charges once, and pauses without retry', () => {

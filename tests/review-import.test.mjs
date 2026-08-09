@@ -14,8 +14,9 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
-import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { captureReconciledRunSnapshot, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
+import * as reviewImport from '../scripts/lib/review-import.mjs';
 import {
   REVIEW_IMPORT_MAX_ARTIFACTS,
   REVIEW_REPORT_BODY_MAX_BYTES,
@@ -185,6 +186,68 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
     report: result.report, report_sha256: result.report_sha256,
   });
   assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), /REVIEW_ALREADY_RECORDED/);
+});
+
+test('recovered imported proof requires one exact event and content-addressed envelope binding', () => {
+  assert.equal(typeof reviewImport.verifyCapturedImportedReviewProof, 'function');
+  const capture = () => {
+    const f = fixture();
+    const result = importReviewOutcome(f.root, f.runId, {
+      raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+    });
+    const artifactRel = `reviews/${result.report_sha256}.json`;
+    const snapshot = captureReconciledRunSnapshot(f.root, f.runId, { artifactRels: [artifactRel] });
+    const checker = snapshot.data.episodes.find(episode => episode.id === f.checkerId);
+    return { f, result, artifactRel, snapshot, claim: structuredClone(checker.review_claim) };
+  };
+  const verify = ({ f, snapshot, claim }) => reviewImport.verifyCapturedImportedReviewProof(snapshot, {
+    runId: f.runId,
+    checkerEpisodeId: f.checkerId,
+    attemptId: 'attempt-01',
+    claim,
+  });
+
+  const valid = capture();
+  assert.deepEqual(verify(valid), {
+    ok: true,
+    verdict: 'APPROVE',
+    terminal: 'approved',
+    report: valid.result.report,
+    report_sha256: valid.result.report_sha256,
+  });
+
+  for (const [label, mutate] of [
+    ['missing event', item => {
+      item.snapshot.logLines = item.snapshot.logLines.filter(event => event.type !== 'review-outcome');
+    }],
+    ['missing report', item => { item.snapshot.artifacts[item.artifactRel] = { state: 'absent' }; }],
+    ['altered report', item => {
+      item.snapshot.artifacts[item.artifactRel] = {
+        ...item.snapshot.artifacts[item.artifactRel], bytes: Buffer.from('altered'),
+      };
+    }],
+    ['stale event', item => {
+      item.snapshot.logLines.find(event => event.type === 'review-outcome').data.attempt_id = 'attempt-stale';
+    }],
+    ['unrelated event', item => {
+      item.snapshot.logLines.find(event => event.type === 'review-outcome').data.target_maker = 'unrelated-maker';
+    }],
+    ['forged bound envelope', item => {
+      const event = item.snapshot.logLines.find(candidate => candidate.type === 'review-outcome');
+      const envelope = JSON.parse(item.snapshot.artifacts[item.artifactRel].bytes.toString('utf8'));
+      envelope.envelope.provenance.review_binding.target_maker = 'forged-maker';
+      const bytes = Buffer.from(JSON.stringify(envelope));
+      const forgedSha = sha256(bytes);
+      const forgedRel = `reviews/${forgedSha}.json`;
+      event.data.report_sha256 = forgedSha;
+      event.data.report = `.deep-loop/runs/${item.f.runId}/${forgedRel}`;
+      item.snapshot.artifacts = { [forgedRel]: { state: 'present', bytes, sha256: forgedSha } };
+    }],
+  ]) {
+    const item = capture();
+    mutate(item);
+    assert.deepEqual(verify(item), { ok: false, reason: 'checker-import-proof-invalid' }, label);
+  }
 });
 
 test('import accepts only the checker plugin as canonical reviewer_id', () => {

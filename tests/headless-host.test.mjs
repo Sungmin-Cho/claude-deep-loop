@@ -1,9 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync,
+  unlinkSync, utimesSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { driveHeadless as driveHeadlessImpl, driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
+import {
+  acquireHeadlessHostLock,
+  driveHeadless as driveHeadlessImpl,
+  driveHeadlessRun as driveHeadlessRunImpl,
+} from '../scripts/lib/headless-host.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -1917,4 +1924,100 @@ test('a live-PID host lock is reclaimed after the timeout-derived hard stale bou
   assert.equal(result.action, 'resumed');
   assert.equal(makerCalls, 1);
   assert.equal(existsSync(lockPath), false);
+});
+
+test('token-owner release cannot displace a hard-TTL successor from the canonical host lock', () => {
+  assert.equal(typeof acquireHeadlessHostLock, 'function');
+  const { root, runId } = seedClaudeHandoff();
+  const lockPath = join(runDir(root, runId), '.headless-host.lock');
+  const tokenA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const tokenB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const tokenC = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const started = Date.now();
+  let successor = null;
+  let excluded = null;
+  const ownerAPath = join(lockPath, `owner-${tokenA}`);
+  const first = acquireHeadlessHostLock(root, runId, {
+    timeoutMs: 0,
+    wallNow: () => started,
+    pid: 101,
+    processAlive: () => true,
+    tokenFactory: () => tokenA,
+    unlinkFn(path) {
+      if (path === ownerAPath && successor == null) {
+        const staleAt = new Date(started - 16 * 60 * 1000);
+        utimesSync(lockPath, staleAt, staleAt);
+        successor = acquireHeadlessHostLock(root, runId, {
+          timeoutMs: 0,
+          wallNow: () => started,
+          pid: 102,
+          processAlive: () => true,
+          tokenFactory: () => tokenB,
+        });
+        excluded = acquireHeadlessHostLock(root, runId, {
+          timeoutMs: 0,
+          wallNow: () => started,
+          pid: 103,
+          processAlive: () => true,
+          tokenFactory: () => tokenC,
+        });
+      }
+      return unlinkSync(path);
+    },
+  });
+  assert.ok(first);
+  first.release();
+  assert.ok(successor, 'hard-TTL successor B must acquire during A release');
+  assert.equal(excluded, null, 'consumer C must remain excluded by successor B');
+  assert.deepEqual(readdirSync(lockPath), [`owner-${tokenB}`]);
+  assert.equal(JSON.parse(readFileSync(join(lockPath, `owner-${tokenB}`), 'utf8')).token, tokenB);
+  successor.release();
+  assert.equal(existsSync(lockPath), false);
+});
+
+test('token-owner protocol handles release crash debris, mismatch, and legacy generic owner compatibility', () => {
+  const tokenA = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const tokenB = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  {
+    const { root, runId } = seedClaudeHandoff();
+    const lockPath = join(runDir(root, runId), '.headless-host.lock');
+    const acquired = acquireHeadlessHostLock(root, runId, {
+      timeoutMs: 0, tokenFactory: () => tokenA, rmdirFn: () => { throw new Error('release-crash'); },
+    });
+    assert.throws(() => acquired.release(), /release-crash/);
+    assert.deepEqual(readdirSync(lockPath), [], 'crash after owner retirement leaves only an empty canonical directory');
+    const staleAt = new Date(Date.now() - 31 * 1000);
+    utimesSync(lockPath, staleAt, staleAt);
+    const recovered = acquireHeadlessHostLock(root, runId, {
+      timeoutMs: 0, tokenFactory: () => tokenB, wallNow: Date.now,
+    });
+    assert.ok(recovered);
+    recovered.release();
+  }
+  {
+    const { root, runId } = seedClaudeHandoff();
+    const lockPath = join(runDir(root, runId), '.headless-host.lock');
+    const acquired = acquireHeadlessHostLock(root, runId, { timeoutMs: 0, tokenFactory: () => tokenA });
+    writeFileSync(join(lockPath, `owner-${tokenA}`), JSON.stringify({ token: tokenB, pid: 2, started_at_ms: 0 }));
+    acquired.release();
+    assert.equal(existsSync(lockPath), true, 'mismatched owner bytes must not be retired');
+  }
+  {
+    const { root, runId } = seedClaudeHandoff();
+    const lockPath = join(runDir(root, runId), '.headless-host.lock');
+    const debrisPath = `${lockPath}.release-legacy`;
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner'), JSON.stringify({ token: 'legacy', pid: 2, started_at_ms: 0 }));
+    mkdirSync(debrisPath);
+    writeFileSync(join(debrisPath, 'owner'), 'legacy-debris');
+    const staleAt = new Date(Date.now() - 16 * 60 * 1000);
+    utimesSync(lockPath, staleAt, staleAt);
+    const acquired = acquireHeadlessHostLock(root, runId, {
+      timeoutMs: 0, tokenFactory: () => tokenB, processAlive: () => true, wallNow: Date.now,
+    });
+    assert.ok(acquired, 'legacy generic owner remains reclaimable at the required hard TTL');
+    assert.deepEqual(readdirSync(lockPath), [`owner-${tokenB}`]);
+    assert.equal(readFileSync(join(debrisPath, 'owner'), 'utf8'), 'legacy-debris');
+    acquired.release();
+  }
 });
