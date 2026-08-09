@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -308,6 +309,65 @@ test('PostCompact child failures are fixed, bounded, and never expose child or h
     assert.deepEqual(result, { ok: false, action: 'failed', reason: 'observe-child-failed' });
     assert.equal(JSON.stringify(result).includes(rawIdentity), false);
   }
+});
+
+test('PostCompact bounds run inventory, loop bytes, checkpoint entries, and observe child time', async () => {
+  const fixture = seed('claude');
+  const adapter = await loadAdapter();
+  assert.equal(adapter.MAX_POSTCOMPACT_RUN_ENTRIES, 256);
+  assert.equal(adapter.MAX_POSTCOMPACT_CHECKPOINT_ENTRIES, 256);
+  assert.equal(adapter.MAX_POSTCOMPACT_LOOP_BYTES, 1024 * 1024);
+  assert.equal(adapter.POSTCOMPACT_OBSERVE_TIMEOUT_MS, 5000);
+
+  let calls = 0;
+  const spawnSyncImpl = (_bin, _argv, options) => {
+    calls += 1;
+    assert.equal(options.timeout, adapter.POSTCOMPACT_OBSERVE_TIMEOUT_MS);
+    return { status: null, signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } };
+  };
+  const timedOut = adapter.runPostCompactObserve({
+    cwd: fixture.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: fixture.root });
+  assert.deepEqual(timedOut, { ok: false, action: 'failed', reason: 'observe-child-failed' });
+  assert.equal(calls, 1);
+
+  const runs = join(fixture.root, '.deep-loop', 'runs');
+  for (let index = 0; index < adapter.MAX_POSTCOMPACT_RUN_ENTRIES; index += 1) {
+    writeFileSync(join(runs, `junk-${String(index).padStart(3, '0')}`), 'x');
+  }
+  const tooManyRuns = adapter.runPostCompactObserve({
+    cwd: fixture.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: fixture.root });
+  assert.deepEqual(tooManyRuns, { ok: false, action: 'ignored', reason: 'observation-unavailable' });
+  assert.equal(calls, 1, 'oversized run inventory must fail before spawn');
+
+  const loopFixture = seed('claude');
+  const loopPath = join(runDir(loopFixture.root, loopFixture.runId), 'loop.json');
+  writeFileSync(loopPath, ' '.repeat(adapter.MAX_POSTCOMPACT_LOOP_BYTES + 1));
+  const oversizedLoop = adapter.runPostCompactObserve({
+    cwd: loopFixture.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: loopFixture.root });
+  assert.deepEqual(oversizedLoop, { ok: false, action: 'ignored', reason: 'observation-unavailable' });
+  assert.equal(calls, 1, 'oversized loop must fail before spawn');
+
+  const checkpointFixture = seed('claude');
+  const checkpointDir = join(runDir(checkpointFixture.root, checkpointFixture.runId), 'checkpoints');
+  for (let index = 0; index < adapter.MAX_POSTCOMPACT_CHECKPOINT_ENTRIES; index += 1) {
+    writeFileSync(join(checkpointDir, `junk-${String(index).padStart(3, '0')}`), 'x');
+  }
+  const tooManyCheckpoints = adapter.runPostCompactObserve({
+    cwd: checkpointFixture.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: checkpointFixture.root });
+  assert.deepEqual(tooManyCheckpoints, { ok: false, action: 'ignored', reason: 'observation-unavailable' });
+  assert.equal(calls, 1, 'oversized checkpoint inventory must fail before spawn');
 });
 
 test('PostCompact bootstrap stays shell-free and adapter imports no mutation facade', () => {

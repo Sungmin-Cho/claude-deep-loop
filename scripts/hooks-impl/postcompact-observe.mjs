@@ -1,9 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
-  readFileSync,
-  readdirSync,
+  openSync,
+  opendirSync,
+  readSync,
   realpathSync,
   statSync,
 } from 'node:fs';
@@ -14,6 +17,10 @@ import { detectMain } from '../lib/detect-main.mjs';
 import { sessionRuntime } from '../lib/runtime.mjs';
 
 export const MAX_POSTCOMPACT_INPUT_BYTES = 4096;
+export const MAX_POSTCOMPACT_RUN_ENTRIES = 256;
+export const MAX_POSTCOMPACT_CHECKPOINT_ENTRIES = 256;
+export const MAX_POSTCOMPACT_LOOP_BYTES = 1024 * 1024;
+export const POSTCOMPACT_OBSERVE_TIMEOUT_MS = 5000;
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'deep-loop.mjs');
 const CHECKPOINT_NAME = /^[0-9a-f]{64}-compact\.json$/;
@@ -43,6 +50,47 @@ function exactRegularFile(path) {
     return entry.isFile() && !entry.isSymbolicLink() && realpathSync(path) === path;
   } catch {
     return false;
+  }
+}
+
+function boundedDirectoryNames(path, maxEntries) {
+  let directory;
+  try {
+    directory = opendirSync(path);
+    const names = [];
+    while (true) {
+      const entry = directory.readSync();
+      if (entry === null) return names;
+      if (names.length >= maxEntries) return null;
+      names.push(entry.name);
+    }
+  } catch {
+    return null;
+  } finally {
+    try { directory?.closeSync(); } catch { /* best effort */ }
+  }
+}
+
+function readBoundedExactRegular(path, maxBytes) {
+  if (!exactRegularFile(path)) return null;
+  let descriptor;
+  try {
+    descriptor = openSync(path, 'r');
+    const stat = fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.size < 1n || stat.size > BigInt(maxBytes)) return null;
+    const expected = Number(stat.size);
+    const bytes = Buffer.allocUnsafe(expected + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return offset === expected ? bytes.subarray(0, offset) : null;
+  } catch {
+    return null;
+  } finally {
+    try { if (descriptor !== undefined) closeSync(descriptor); } catch { /* best effort */ }
   }
 }
 
@@ -107,9 +155,10 @@ export function resolvePostCompactProjectRoot(cwd, { expectedRoot } = {}) {
 
 function newestCheckpoint(runPath) {
   const directory = join(runPath, 'checkpoints');
-  let names;
-  try { names = readdirSync(directory).filter(name => CHECKPOINT_NAME.test(name)); }
-  catch { return null; }
+  if (canonicalExactDirectory(directory) !== directory) return null;
+  const entries = boundedDirectoryNames(directory, MAX_POSTCOMPACT_CHECKPOINT_ENTRIES);
+  if (entries === null) return null;
+  const names = entries.filter(name => CHECKPOINT_NAME.test(name));
   const candidates = [];
   for (const name of names) {
     const path = join(directory, name);
@@ -124,9 +173,10 @@ function runObservationCandidate(root, runId, canonicalCwd) {
   const runPath = join(root, '.deep-loop', 'runs', runId);
   if (canonicalExactDirectory(runPath) !== runPath) return null;
   const loopPath = join(runPath, 'loop.json');
-  if (!exactRegularFile(loopPath)) return null;
+  const loopBytes = readBoundedExactRegular(loopPath, MAX_POSTCOMPACT_LOOP_BYTES);
+  if (loopBytes === null) return null;
   let loop;
-  try { loop = JSON.parse(readFileSync(loopPath, 'utf8')); } catch { return null; }
+  try { loop = JSON.parse(loopBytes.toString('utf8')); } catch { return null; }
   if (loop?.run_id !== runId || loop?.status !== 'running') return null;
   let storedRoot;
   try { storedRoot = realpathSync(loop?.project?.root); } catch { return null; }
@@ -185,8 +235,9 @@ function observationRequest(root, cwd) {
   if (canonicalCwd === null) return null;
   const runsPath = join(root, '.deep-loop', 'runs');
   if (canonicalExactDirectory(runsPath) !== runsPath) return null;
-  let names;
-  try { names = readdirSync(runsPath).filter(safeCurrentRunId).sort(); } catch { return null; }
+  const entries = boundedDirectoryNames(runsPath, MAX_POSTCOMPACT_RUN_ENTRIES);
+  if (entries === null) return null;
+  const names = entries.filter(safeCurrentRunId).sort();
   const candidates = names
     .map(runId => runObservationCandidate(root, runId, canonicalCwd))
     .filter(Boolean);
@@ -251,6 +302,7 @@ export function runPostCompactObserve(input = {}, {
       stdio: ['pipe', 'ignore', 'ignore'],
       input: body,
       windowsHide: true,
+      timeout: POSTCOMPACT_OBSERVE_TIMEOUT_MS,
     });
   } catch {
     return { ok: false, action: 'failed', reason: 'observe-child-failed' };
