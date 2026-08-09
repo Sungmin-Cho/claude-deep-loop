@@ -869,11 +869,16 @@ function runTrustedVerifier(fixture, options = {}) {
     DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.14.0',
     DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: fixture.digest, ...options,
   };
+  const sourceDir = mkdtempSync(join(tmpdir(), 'dl-trusted-source-'));
+  const sourcePath = join(sourceDir, 'trusted-workflow.mjs');
+  writeFileSync(sourcePath, trustedWorkflowSource(), { mode: 0o600 });
   try {
-    const stdout = execFileSync(process.execPath, ['--input-type=module', '--eval', trustedWorkflowSource()], { encoding: 'utf8', env });
+    const stdout = execFileSync(process.execPath, [sourcePath], { encoding: 'utf8', env });
     return { status: 0, stdout };
   } catch (error) {
     return { status: error.status, stdout: String(error.stdout || '') };
+  } finally {
+    rmSync(sourceDir, { recursive: true, force: true });
   }
 }
 function durableRunSnapshot(project, runId) {

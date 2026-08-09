@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, win32 as win32Path } from 'node:path';
+import { join, posix as posixPath, win32 as win32Path } from 'node:path';
 import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../scripts/lib/run-context.mjs';
 import { appendAnchored, captureVerifiedRunSet, captureVerifiedRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { recordedClaimKey } from '../scripts/lib/fs-safe.mjs';
@@ -33,11 +33,13 @@ const captureSet = (runs, extra = {}) => () => ({
   errors: extra,
 });
 function resolve(runs, options = {}) {
+  const platform = options.platform ?? 'linux';
   return resolveRunContext({
     root: ROOT,
     realpathFn,
     captureRunSet: captureSet(runs, options.errors),
-    platform: options.platform ?? 'linux',
+    pathApi: options.pathApi ?? (platform === 'win32' ? win32Path : posixPath),
+    platform,
     ...(options.current !== undefined ? { currentRunIdFn: () => options.current } : {}),
     ...options,
   });
