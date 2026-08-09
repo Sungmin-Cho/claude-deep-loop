@@ -8,6 +8,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmdirSync,
   statSync,
   unlinkSync,
@@ -152,6 +153,38 @@ function defaultProcessAlive(pid) {
   }
 }
 
+function releaseHeadlessHostLock(lockPath, ownerPayload, token) {
+  const ownerPath = join(lockPath, 'owner');
+  let current;
+  try {
+    current = readFileSync(ownerPath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  if (current !== ownerPayload) return;
+
+  // Host ownership is already carried by this exact random token.  Do not take
+  // the run's transaction lock merely to retire host metadata after the turn:
+  // a timed-out/killed kernel child may leave that lock legitimately
+  // unreconciled, and release must not replace the already-derived host result
+  // with a second cleanup LOCK_BUSY.  Rename gives a successor a fresh lexical
+  // lock path while keeping deletion bound to the directory we actually owned.
+  const quarantinePath = `${lockPath}.release-${token}`;
+  renameSync(lockPath, quarantinePath);
+  const quarantineOwnerPath = join(quarantinePath, 'owner');
+  let quarantinedOwner = null;
+  try { quarantinedOwner = readFileSync(quarantineOwnerPath, 'utf8'); } catch { /* fail closed below */ }
+  if (quarantinedOwner !== ownerPayload) {
+    // Never delete or restore-by-overwrite bytes which stopped matching our
+    // token.  A canonical successor may already be constructing its owner
+    // metadata, so preserve the quarantine as ownership-loss evidence.
+    throw new Error('HOST_LOCK_OWNERSHIP_LOST');
+  }
+  unlinkSync(quarantineOwnerPath);
+  rmdirSync(quarantinePath);
+}
+
 function acquireHeadlessHostLock(root, runId, {
   timeoutMs,
   wallNow = Date.now,
@@ -219,16 +252,7 @@ function acquireHeadlessHostLock(root, runId, {
   return {
     release() {
       if (released) return;
-      withReconciledMutationLock(root, runId, () => {
-        let current;
-        try { current = readFileSync(ownerPath, 'utf8'); } catch (error) {
-          if (error?.code === 'ENOENT') return;
-          throw error;
-        }
-        if (current !== ownerPayload) return;
-        unlinkSync(ownerPath);
-        rmdirSync(lockPath);
-      }, { retries: 2_000, backoffMs: 5 });
+      releaseHeadlessHostLock(lockPath, ownerPayload, token);
       released = true;
     },
   };
@@ -879,19 +903,43 @@ function driveIndependentChecker({
   } catch {
     imported = { ok: false, reason: 'checker-import-failed' };
   }
-  if (imported?.ok) {
-    try {
-      const proofLoop = captureFreshLoop(projectRoot, runId);
-      const proofChecker = proofLoop.episodes.find(episode => episode.id === pending.id);
-      if (!['approved', 'rejected'].includes(proofChecker?.status)
-        || proofChecker.review_source !== 'imported-stdin'
-        || proofChecker.attempt_id !== claimed.attemptId
-        || !sameValue(proofChecker.review_claim, claimed.claim)) {
-        imported = { ok: false, reason: 'checker-import-proof-missing' };
-      }
-    } catch {
-      imported = { ok: false, reason: 'checker-import-proof-missing' };
+  let importProof = 'missing';
+  try {
+    const proofLoop = captureFreshLoop(projectRoot, runId);
+    const proofChecker = proofLoop.episodes.find(episode => episode.id === pending.id);
+    if (['approved', 'rejected'].includes(proofChecker?.status)
+      && proofChecker.review_source === 'imported-stdin'
+      && proofChecker.attempt_id === claimed.attemptId
+      && sameValue(proofChecker.review_claim, claimed.claim)) {
+      importProof = 'committed';
     }
+  } catch (error) {
+    if (String(error?.message || error).startsWith('LOCK_BUSY:')) importProof = 'lock-busy';
+    else importProof = 'invalid';
+  }
+  if (importProof === 'committed') {
+    // The import subprocess may have committed its content-addressed proof and
+    // then lost the stdout/exit acknowledgement.  The canonical proof is the
+    // authority; do not convert it back into a blocked checker.
+    imported = { ok: true, recovered: imported?.ok !== true };
+  } else if (importProof === 'lock-busy' && checkerResult.usageReceipt != null) {
+    // A killed/timed-out import can leave its immutable process receipt and a
+    // live or not-yet-stale kernel lock.  Neither success nor failure is
+    // knowable at this boundary.  Preserve the claim and receipt for the next
+    // canonical host tick, which reconciles before inspecting the checker.
+    return {
+      ok: false,
+      action: 'checker-import-unconfirmed',
+      reason: 'checker-import-proof-lock-busy',
+      import_reason: imported?.reason || 'checker-import-unconfirmed',
+      checkerEpisodeId: pending.id,
+      attemptId: claimed.attemptId,
+      continuation: false,
+      usage: checkerResult.usage,
+      recorded: false,
+    };
+  } else if (imported?.ok) {
+    imported = { ok: false, reason: 'checker-import-proof-missing' };
   }
   if (!imported?.ok) {
     return settleMeasuredFailure(

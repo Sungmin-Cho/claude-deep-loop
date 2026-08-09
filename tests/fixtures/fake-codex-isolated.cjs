@@ -74,6 +74,17 @@ function emitLargeMakerItem() {
   writeSync(1, Buffer.from('","exit_code":0}}\n'));
 }
 
+function parseKernelJson(result, label, stdoutOverride) {
+  const stdout = stdoutOverride ?? result.stdout;
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    process.stderr.write(`${label}-malformed-json`);
+    process.exitCode = 11;
+    return null;
+  }
+}
+
 function main() {
   try { unlinkSync(__filename); } catch { /* the parent asserts the write probe remains exact */ }
 
@@ -131,7 +142,9 @@ function main() {
     }
     emitLargeMakerItem();
     writeRepeated(2, 'e', LARGE_STDERR_BYTES);
-    const expectedGeneration = String(Number(process.env.DEEP_LOOP_GENERATION) - 1);
+    const expectedGeneration = control.makerMode === 'acquire-non-proceed'
+      ? String(Number(process.env.DEEP_LOOP_GENERATION) + 10)
+      : String(Number(process.env.DEEP_LOOP_GENERATION) - 1);
     const acquired = spawnSync(process.execPath, [
       control.kernelPath,
       'lease', 'acquire',
@@ -152,6 +165,23 @@ function main() {
       process.exitCode = 9;
       return;
     }
+    const acquiredJson = parseKernelJson(
+      acquired,
+      'lease-acquire',
+      control.makerMode === 'acquire-malformed-json' ? '{' : undefined,
+    );
+    if (acquiredJson === null) return;
+    if (acquiredJson.ok !== true
+      || acquiredJson.proceed !== true
+      || acquiredJson.reason !== 'acquired'
+      || acquiredJson.generation !== Number(process.env.DEEP_LOOP_GENERATION)) {
+      process.stderr.write(`lease-acquire-rejected:${JSON.stringify(acquiredJson)}`);
+      process.exitCode = 11;
+      return;
+    }
+    const activationAttempt = control.makerMode === 'activate-attempt-mismatch'
+      ? 'FAKECODEXATTEMPT02'
+      : 'FAKECODEXATTEMPT01';
     const activated = spawnSync(process.execPath, [
       control.kernelPath,
       'lease', 'activate',
@@ -160,7 +190,7 @@ function main() {
       '--owner', process.env.DEEP_LOOP_OWNER,
       '--generation', process.env.DEEP_LOOP_GENERATION,
       '--runtime', 'codex',
-      '--attempt-id', 'FAKECODEXATTEMPT01',
+      '--attempt-id', activationAttempt,
       '--activation-token', 'FakeCodexActivationToken_01',
     ], {
       cwd: process.env.DEEP_LOOP_PROJECT_ROOT,
@@ -171,6 +201,13 @@ function main() {
     if (activated.status !== 0) {
       process.stderr.write(`lease-activate-failed:${activated.status}:${activated.stderr}`);
       process.exitCode = 10;
+      return;
+    }
+    const activatedJson = parseKernelJson(activated, 'lease-activate');
+    if (activatedJson === null) return;
+    if (activatedJson.ok !== true || activatedJson.reason !== 'activated') {
+      process.stderr.write(`lease-activate-rejected:${JSON.stringify(activatedJson)}`);
+      process.exitCode = 11;
       return;
     }
     emitTerminal(11, 13);
