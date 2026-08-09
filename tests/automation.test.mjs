@@ -1067,7 +1067,7 @@ test('root tokens reject candidate and initial-stage same-byte swaps', () => {
   assertConfigurationInvalid(runTrustedVerifier(seedTrustedFixture(), { DEEP_LOOP_TEST_STAGE_INITIAL_SWAP: '1' }));
 });
 
-test('run containment rejects symlinked run directories and prepared residue', (t) => {
+test('run containment rejects symlinked run directories and prepared residue', () => {
   const symlinked = seedTrustedFixture();
   const runDirectory = join(symlinked.project, '.deep-loop', 'runs', symlinked.runId);
   const moved = `${runDirectory}.real`;
@@ -1152,14 +1152,6 @@ test('run containment rejects symlinked run directories and prepared residue', (
   const malformedOperation = readdirSync(join(malformed.project, '.deep-loop', 'runs', malformed.runId, 'transactions'))[0];
   writeFileSync(join(malformed.project, '.deep-loop', 'runs', malformed.runId, 'transactions', malformedOperation, 'owner.json'), '{}');
   assertConfigurationInvalid(runTrustedVerifier(malformed));
-
-  const nestedSymlink = seedTrustedFixture({ committedPublication: true });
-  const nestedOperation = readdirSync(join(nestedSymlink.project, '.deep-loop', 'runs', nestedSymlink.runId, 'transactions'))[0];
-  const nestedStages = join(nestedSymlink.project, '.deep-loop', 'runs', nestedSymlink.runId, 'transactions', nestedOperation, 'stages');
-  const nestedStage = join(nestedStages, readdirSync(nestedStages)[0]);
-  renameSync(nestedStage, `${nestedStage}.real`);
-  if (!createFileSymlinkOrSkip(t, `${nestedStage}.real`, nestedStage)) return;
-  assertConfigurationInvalid(runTrustedVerifier(nestedSymlink));
 
   const missingTargetDone = seedTrustedFixture({ committedPublication: true });
   const missingOperation = readdirSync(join(missingTargetDone.project, '.deep-loop', 'runs', missingTargetDone.runId, 'transactions'))[0];
@@ -1266,6 +1258,16 @@ test('run containment rejects symlinked run directories and prepared residue', (
   writeFileSync(replacementPath, readFileSync(sameInodeTargetPath));
   renameSync(replacementPath, sameInodeTargetPath);
   assertConfigurationInvalid(runTrustedVerifier(sameBytesNewInode));
+});
+
+test('run containment rejects a nested stage file symlink', (t) => {
+  const nestedSymlink = seedTrustedFixture({ committedPublication: true });
+  const nestedOperation = readdirSync(join(nestedSymlink.project, '.deep-loop', 'runs', nestedSymlink.runId, 'transactions'))[0];
+  const nestedStages = join(nestedSymlink.project, '.deep-loop', 'runs', nestedSymlink.runId, 'transactions', nestedOperation, 'stages');
+  const nestedStage = join(nestedStages, readdirSync(nestedStages)[0]);
+  renameSync(nestedStage, `${nestedStage}.real`);
+  if (!createFileSymlinkOrSkip(t, `${nestedStage}.real`, nestedStage)) return;
+  assertConfigurationInvalid(runTrustedVerifier(nestedSymlink));
 });
 
 test('aggregate source bound fails before reading the next file', () => {
