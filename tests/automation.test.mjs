@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, lstatSync, realpathSync, readdirSync, rmSync, linkSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 import crypto from 'node:crypto';
@@ -767,7 +767,15 @@ function seedTrustedFixture({
   genericPublication = false,
   genericArtifactRel = 'artifacts/safe.txt',
 } = {}) {
-  const base = mkdtempSync(join(tmpdir(), 'dl-github-source-'));
+  let fixtureParent = tmpdir();
+  if (process.platform === 'linux' && process.arch === 'x64') {
+    try {
+      const home = homedir();
+      const stat = lstatSync(home);
+      if (stat.isDirectory() && (stat.mode & 0o022) === 0) fixtureParent = home;
+    } catch { /* portable fallback keeps non-Linux fixtures available */ }
+  }
+  const base = mkdtempSync(join(fixtureParent, 'dl-github-source-'));
   const candidate = join(base, 'candidate'); const stageParent = join(base, 'stage-parent');
   const project = join(base, 'project'); const workspace = workspaceOverlap ? project : join(base, 'workspace');
   mkdirSync(candidate, { recursive: true }); mkdirSync(stageParent); mkdirSync(project, { recursive: true });
