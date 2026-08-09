@@ -17,7 +17,7 @@ import {
   findRoot,
 } from './lib/state.mjs';
 import {
-  leaseCheck, acquireLease, activateLease, releaseLease, sameBoundaryEvent,
+  leaseCheck, acquireLease, activateLease, reapLease, releaseLease, sameBoundaryEvent,
 } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
@@ -889,6 +889,28 @@ const handlers = {
         const classified = classifyKernelError(e);
         if (classified) { error(classified.message); return classified.code; }
         error(String(e?.message || e)); return 1;
+      }
+    }
+    if (verb === 'reap') {
+      if (Object.hasOwn(f, 'now')) {
+        error('USAGE: lease reap does not accept --now');
+        return 2;
+      }
+      const owner = strArg(f, 'owner');
+      const generation = intArg(f, 'generation');
+      try {
+        json(reapLease(root, runId, { owner, generation }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('LEASE_FENCED') || message.startsWith('RUN_TERMINAL')) {
+          error(message);
+          return 3;
+        }
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(message);
+        return 1;
       }
     }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }

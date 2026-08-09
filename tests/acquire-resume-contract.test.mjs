@@ -20,7 +20,7 @@ import {
 } from '../scripts/lib/state.mjs';
 import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, activateLease, releaseLease } from '../scripts/lib/lease.mjs';
+import { acquireLease, activateLease, reapLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { acquireRecovery, recoverBoundary, supersedeAffinity } from '../scripts/lib/recover.mjs';
 import { acquireRootRecovery, recoverRelocatedRoot } from '../scripts/lib/project-root-recovery.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
@@ -380,7 +380,7 @@ test('T3 every non-proceeding acquire leaves the reconciled baseline and the pre
   assert.equal(leaseAcquiredEvents(f.root, f.runId).length, 0);
 });
 
-test('T3 the commit-then-crash window is durably indistinguishable from a committed acquire (M2 residue)', () => {
+test('SLICE-007 F2 state-written principal death is settled by one expiry reap', () => {
   const f = seedEmittedBoundary();
   const seen = [];
   assert.throws(() => acquireLease(f.root, f.runId, {
@@ -396,7 +396,7 @@ test('T3 the commit-then-crash window is durably indistinguishable from a commit
   }), /SIMULATED_PRINCIPAL_DEATH/);
   assert.deepEqual(seen, ['event:appended', 'state:written']);
 
-  // durable 상태는 커밋된 성공과 동일하다 — 고아 창의 존재를 문서화-고정(제거 증명이 아니다).
+  // durable 상태는 커밋된 성공과 동일하지만 deadline 이후 reap이 고아 창을 safe state로 닫는다.
   const after = lease(f.root, f.runId);
   assert.equal(after.owner_run_id, f.child);
   assert.equal(after.generation, 2);
@@ -404,6 +404,15 @@ test('T3 the commit-then-crash window is durably indistinguishable from a commit
   assert.equal(after.acquisition_receipt.takeover_kind, 'boundary-handoff');
   assert.equal(leaseAcquiredEvents(f.root, f.runId).length, 1);
   assert.equal(readState(f.root, f.runId).data.status, 'running');
+  assert.deepEqual(reapLease(f.root, f.runId, {
+    owner: f.child,
+    generation: 2,
+    clock: () => Date.parse(after.activation_deadline_at) + 1,
+  }), { ok: true, reason: 'activation-expired', transition: 'preserve-pause' });
+  const settled = readState(f.root, f.runId).data;
+  assert.equal(settled.status, 'paused');
+  assert.equal(settled.pause_reason, 'activation-expired');
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'activation-expired').length, 1);
 });
 
 test('T3 a crash at the event:appended barrier is a fail-stop, not a recoverable half-commit', () => {

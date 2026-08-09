@@ -22,9 +22,16 @@ const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 
 const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
 const LEGACY_ACTIVATION_DEADLINE_SEC = 900;
 const ACTIVATE_HALT = 'ACTIVATE_HALT';
+const REAP_HALT = 'REAP_HALT';
 
 function activateHalt(payload) {
   const error = new Error(ACTIVATE_HALT);
+  error.payload = payload;
+  return error;
+}
+
+function reapHalt(payload) {
+  const error = new Error(REAP_HALT);
   error.payload = payload;
   return error;
 }
@@ -552,6 +559,96 @@ export function activateLease(root, runId, {
     }, mutate, preCheck, __testFaultAt ? { faultAt: __testFaultAt } : {});
   } catch (error) {
     if (error?.message !== ACTIVATE_HALT) throw error;
+    return error.payload;
+  }
+  return outcome;
+}
+
+export function reapLease(root, runId, {
+  owner,
+  generation,
+  clock = Date.now,
+  __testFaultAt,
+} = {}) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error('INVALID_GENERATION');
+  }
+
+  const receiptData = {};
+  let outcome = null;
+  const operationId = contentHash(JSON.stringify([
+    'activation-expiry', runId, owner, generation, ulid(),
+  ]));
+
+  const preCheck = (data) => {
+    const lease = data.session_chain.lease;
+    if (lease.owner_run_id !== owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== generation) throw new Error('LEASE_FENCED: generation-mismatch');
+    if (data.status === 'completed' || data.status === 'stopped') {
+      throw new Error('RUN_TERMINAL');
+    }
+    if (data.status !== 'running') {
+      throw reapHalt({ ok: false, reason: 'already-safe' });
+    }
+    const deadlineAt = lease.activation_deadline_at;
+    if (lease.state !== 'active' && (deadlineAt === null || deadlineAt === undefined)) {
+      throw reapHalt({ ok: false, reason: 'already-safe' });
+    }
+    if (deadlineAt === null || deadlineAt === undefined) {
+      throw reapHalt({ ok: false, reason: 'no-expiry-pending' });
+    }
+
+    const decidedAtMs = lockedSafetyTime(clock, 'lease activation expiry');
+    const deadlineAtMs = Date.parse(deadlineAt);
+    if (decidedAtMs < deadlineAtMs) {
+      throw reapHalt({ ok: false, reason: 'deadline-not-expired' });
+    }
+    const acquisition = lease.acquisition_receipt;
+    Object.assign(receiptData, {
+      decision_kind: 'activation-expiry',
+      evidence_kind: 'kernel-activation-deadline',
+      authority: 'kernel-clock',
+      transition: 'preserve-pause',
+      run_id: runId,
+      subject_owner_run_id: lease.owner_run_id,
+      subject_attempt_id: acquisition?.attempt_id,
+      subject_from_generation: acquisition?.from_generation,
+      subject_to_generation: acquisition?.to_generation,
+      deadline_at: deadlineAt,
+      decided_at: new Date(decidedAtMs).toISOString(),
+    });
+  };
+
+  const mutate = (data) => {
+    data.status = 'paused';
+    data.pause_reason = 'activation-expired';
+    data.resume_policy = 'human';
+    data.session_chain.lease.expiry_receipt = structuredClone(receiptData);
+    data.session_chain.lease.activation_deadline_at = null;
+    outcome = { ok: true, reason: 'activation-expired', transition: 'preserve-pause' };
+  };
+
+  const faultAt = __testFaultAt
+    ? (barrier) => {
+      __testFaultAt(barrier === 'event:0:append' ? 'event:appended' : barrier);
+    }
+    : undefined;
+  try {
+    appendAnchored(root, runId, {
+      type: 'activation-expired',
+      data: receiptData,
+    }, mutate, preCheck, {
+      publication: {
+        kind: 'activation-expiry',
+        operationId,
+        artifacts: [],
+        topology: { run_id: runId, subject_owner_run_id: owner, generation },
+        ...(faultAt ? { faultAt } : {}),
+      },
+    });
+  } catch (error) {
+    if (error?.message !== REAP_HALT) throw error;
     return error.payload;
   }
   return outcome;

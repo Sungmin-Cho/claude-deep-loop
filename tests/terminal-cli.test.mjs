@@ -726,6 +726,13 @@ function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime
   ]);
 }
 
+function reapCli(f, extra = [], owner = f.owner, generation = f.gen) {
+  return run(f.root, [
+    'lease', 'reap', '--owner', owner, '--generation', String(generation),
+    '--run-id', f.runId, ...extra,
+  ]);
+}
+
 test('SLICE-004 CLI lease activate records --now and returns activated', () => {
   const f = seedActivationCli();
   const result = activateCli(f, [
@@ -738,6 +745,49 @@ test('SLICE-004 CLI lease activate records --now and returns activated', () => {
   assert.equal(state.session_chain.lease.activation.activated_at, '2026-08-06T08:09:10.000Z');
   assert.equal(state.session_chain.lease.activation_deadline_at, null);
   assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
+});
+
+test('SLICE-007 CLI lease reap settles an expired pending acquisition', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  const result = reapCli(f);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true, reason: 'activation-expired', transition: 'preserve-pause',
+  });
+  assert.equal(readState(f.root, f.runId).data.status, 'paused');
+});
+
+test('SLICE-007 CLI lease reap rejects the --now argument itself without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = reapCli(f, ['--now', '2999-01-01T00:00:00.000Z']);
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stderr, /USAGE: lease reap does not accept --now/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-007 CLI lease reap maps stale owner fences to exit 3 without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = reapCli(f, [], 'STALEOWNER');
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-007 CLI lease reap maps terminal state to exit 3 after the fresh fence', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.status = 'completed';
+  writeState(f.root, f.runId, data);
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = reapCli(f);
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /RUN_TERMINAL/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
 });
 
 test('SLICE-004 CLI omitted or empty activation attempt is usage exit 2 without mutation', () => {
