@@ -4,6 +4,11 @@
 # crontab -e 에 붙여넣어 사용. <PROJECT_ROOT>/<DEEP_LOOP_DIR> 를 실제 경로로 치환.
 # ONE-TIME PROVISIONING (outside cron): run init-run once, capture its immutable
 # <run_id>, and provision PROJECT_ROOT/RUN_ID below. Cron never reads current.
+# Provisioned automation identity (run A); these values are fixed operator inputs,
+# not repository RUN_ID, DEEP_LOOP_ROOT, or any caller/current hint.
+provisioned_project_root: "<PROJECT_ROOT>"
+provisioned_run_id: "<RUN_ID>"
+immutable: true
 #
 # ┌ min  ┌ hour ┌ dom ┌ mon ┌ dow
 # 0      8      *     *     *   DEEP_LOOP_UNATTENDED=1 node <DEEP_LOOP_DIR>/scripts/hooks-impl/drive-headless.mjs --project-root "<PROJECT_ROOT>" --run-id "<RUN_ID>" >> deep-loop-cron.log 2>&1

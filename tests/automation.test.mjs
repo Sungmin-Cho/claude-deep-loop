@@ -23,6 +23,7 @@ import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs'
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
 const GITHUB_WORKFLOW = join(A, 'github-actions-loop.yml');
 
@@ -326,6 +327,27 @@ test('cron uses explicit provisioned project-root and run-id, never implicit cur
     'cron must not use current or no-argument driver invocation');
 });
 
+test('cron recipe provisions immutable project-root and run-id A', () => {
+  const source = readFileSync(join(A, 'cron-morning-triage.yml'), 'utf8');
+  assert.match(source, /provisioned_project_root:\s*["']<PROJECT_ROOT>["']/,
+    'cron must name the provisioned canonical project-root input');
+  assert.match(source, /provisioned_run_id:\s*["']<RUN_ID>["']/,
+    'cron must name the provisioned run identity input');
+  assert.match(source, /immutable:\s*true/,
+    'cron identity must be immutable after one-time provisioning');
+  assert.doesNotMatch(source, /DEEP_LOOP_ROOT\s*=|\.deep-loop\/current/i,
+    'cron must not source authority from caller root or current hint');
+});
+
+test('exact probe binds persisted project root before A-only driver', () => {
+  const source = trustedWorkflowSource();
+  assert.match(source, /loop\.json/);
+  assert.match(source, /loop\?\.project\?\.root/);
+  assert.match(source, /--project-root[\s\S]{0,120}--run-id/);
+  assert.match(source, /DEEP_LOOP_RUN_ID/);
+  assert.match(source, /configuration-invalid/);
+});
+
 test('cron-shaped explicit missing run fails closed with routing-invalid exit 1', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-missing-'));
   const missingRunId = '01J00000000000000000000000';
@@ -415,7 +437,7 @@ test('exact probe argv and bounded child termination reasons are workflow-owned'
     'bootstrap controls and public argv must have a second literal separator');
 });
 
-test('same-stage driver drives A only', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+test('same-stage compatibility driver preserves B', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
   const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
   const { runId: siblingRunId } = initRun(fixture.project, {
     runtime: 'claude', goal: 'trusted sibling fixture', detected: {},
@@ -443,6 +465,48 @@ test('same-stage driver drives A only', { skip: process.platform !== 'linux' || 
   assert.match(markerLines[1], new RegExp(`^probe-transitive-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/lib/child-transitive\\.mjs$`));
   assert.match(markerLines[2], new RegExp(`^driver-entry-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/hooks-impl/drive-headless\\.mjs$`));
   assert.match(markerLines[3], new RegExp(`^driver-transitive-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/lib/child-transitive\\.mjs$`));
+});
+
+test('A-only driver uses the real staged production source and leaves persistent B untouched', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const records = productionSourceRecords();
+  assert.ok(Object.keys(records).length > 17, 'production fixture must include the complete source inventory');
+  const fixture = seedTrustedFixture({ records });
+  const { runId: siblingRunId } = initRun(fixture.project, {
+    runtime: 'claude', goal: 'production sibling fixture', detected: {},
+    review: { points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: false },
+    now: new Date('2026-06-24T00:00:03.000Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const siblingDir = join(fixture.project, '.deep-loop', 'runs', siblingRunId);
+  mkdirSync(join(siblingDir, 'transactions', 'prepared-sibling'), { recursive: true });
+  writeFileSync(join(siblingDir, 'transactions', 'prepared-sibling', 'prepared.json'), '{"foreign":"prepared"}\n');
+  writeFileSync(join(fixture.project, '.deep-loop', 'current'), `${siblingRunId}\n`);
+  const beforeA = durableRunSnapshot(fixture.project, fixture.runId);
+  const beforeB = durableRunSnapshot(fixture.project, siblingRunId);
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+  });
+  assert.equal(result.status, 0, result.stdout);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.kind, 'trusted-fd-execution');
+  assert.equal(output.run_id, fixture.runId);
+  assert.equal(output.project_root, fixture.project);
+  assert.equal(output.probe, 1);
+  assert.equal(output.driver, 1);
+  assert.equal(output.mutation, 0);
+  assert.deepEqual(durableRunSnapshot(fixture.project, fixture.runId), beforeA);
+  assert.deepEqual(durableRunSnapshot(fixture.project, siblingRunId), beforeB);
+  assert.deepEqual(readdirSync(fixture.workspace), [], 'ordinary target workspace remains source-empty');
+});
+
+test('target checkout may omit plugin scripts when candidate root is valid', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  assert.deepEqual(readdirSync(fixture.workspace), [], 'ordinary target workspace is not the candidate source');
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_CHILD_V1_MARKER: join(fixture.base, 'target-without-source.log'),
+  });
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout.trim()).kind, 'trusted-fd-execution');
 });
 
 test('persisted probe root and run identity reject wrong argv', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
@@ -668,6 +732,31 @@ function fixtureDigest(records = FIXTURE_RECORDS, header = SOURCE_HEADER) {
     chunks.push(pl, p, cl, bytes);
   }
   return crypto.createHash('sha256').update(Buffer.concat(chunks)).digest('hex');
+}
+
+function productionSourceRecords() {
+  const records = {};
+  const walk = relDir => {
+    const absoluteDir = join(REPO_ROOT, relDir);
+    for (const entry of readdirSync(absoluteDir, { withFileTypes: true })) {
+      const rel = join(relDir, entry.name).split('\\').join('/');
+      const absolute = join(REPO_ROOT, rel);
+      if (entry.isDirectory()) walk(rel);
+      else {
+        assert.equal(entry.isFile(), true, `production source inventory must contain regular files: ${rel}`);
+        const stat = lstatSync(absolute);
+        assert.equal(stat.isSymbolicLink(), false, `production source inventory must reject aliases: ${rel}`);
+        records[rel] = readFileSync(absolute);
+      }
+    }
+  };
+  for (const root of ['scripts', 'skills', 'schemas', 'protocols', 'recipes', 'hooks']) walk(root);
+  for (const rel of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'package.json']) {
+    const stat = lstatSync(join(REPO_ROOT, rel));
+    assert.equal(stat.isFile() && !stat.isSymbolicLink(), true, `production metadata must be regular: ${rel}`);
+    records[rel] = readFileSync(join(REPO_ROOT, rel));
+  }
+  return Object.freeze(records);
 }
 function seedTrustedFixture({
   records = FIXTURE_RECORDS,
@@ -1247,6 +1336,25 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
   assert.match(s, /timeout-minutes:\s*35/);
   assert.match(s, /drive-headless\.mjs/);
   assert.match(s, /proposal-only|사람 승인|human/i);
+});
+
+test('GitHub automation provisions canonical A and isolates the ordinary target checkout', () => {
+  const source = readFileSync(join(A, 'github-actions-loop.yml'), 'utf8');
+  assert.match(source, /runs-on:\s*\[self-hosted,\s*deep-loop,\s*linux,\s*x64\]/);
+  assert.match(source, /DEEP_LOOP_PROJECT_ROOT:\s*\$\{\{\s*vars\.DEEP_LOOP_PROJECT_ROOT\s*\}\}/);
+  assert.match(source, /DEEP_LOOP_RUN_ID:\s*\$\{\{\s*vars\.DEEP_LOOP_RUN_ID\s*\}\}/);
+  assert.match(source, /GITHUB_WORKSPACE/);
+  assert.match(source, /persistent project\/state and candidate source roots/i);
+  assert.doesNotMatch(source, /actions\/checkout|git\s+(?:clean|reset)|\brm\s+-rf\b|\.deep-loop\/current/i);
+  assert.doesNotMatch(source, /vars\.DEEP_LOOP_ROOT|vars\.RUN_ID/);
+});
+
+test('GitHub canonical-root mismatch fails closed before probe or driver', () => {
+  const fixture = seedTrustedFixture();
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_CANONICAL_PROJECT_ROOT: join(fixture.base, 'wrong-canonical-project'),
+  });
+  assertConfigurationInvalid(result);
 });
 
 // Regression: handoff emit CLI must honor spawn_style='headless' even without --headless flag.

@@ -4,6 +4,18 @@ on:
   schedule:
     - cron: "0 8 * * *"
 
+# Official automation is a provisioned run-A Linux/x64 source-preflight boundary.
+# vars.DEEP_LOOP_PROJECT_ROOT and vars.DEEP_LOOP_RUN_ID are captured once from
+# init-run and are the canonical project-root/run-id pair; repository RUN_ID,
+# DEEP_LOOP_ROOT, and the current hint are never authority. GITHUB_WORKSPACE is
+# only the ordinary target checkout workspace and is kept disjoint from the
+# persistent project/state and candidate source roots.
+#
+# Official runner labels are intentionally exact: self-hosted, deep-loop, linux, x64.
+# The target checkout may omit plugin scripts because the candidate root is the
+# only staged source authority; an invalid candidate stops before child launch.
+# No checkout/clean/reset/delete or durable upload/restore is performed here.
+#
 # Official automation is a provisioned Linux/x64 source-preflight boundary. It
 # intentionally has no checkout, cleanup, shell fallback, or runtime fallback.
 # The later verified execution stage may invoke drive-headless.mjs only after
@@ -11,7 +23,7 @@ on:
 # External push/PR/merge/publish/delete remains proposal-only and human-approved.
 jobs:
   preflight:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, deep-loop, linux, x64]
     timeout-minutes: 35
     steps:
       - name: Trusted staged source preflight
@@ -1228,12 +1240,12 @@ jobs:
                   '--project-root', project, '--run-id', runId,
                 ], DRIVER_EXIT_TIMEOUT_MS, stageFd, stageStat);
                 if (!driver.ok) throw new Error(driver.reason);
-                process.stdout.write(JSON.stringify({ ok: true, kind: 'trusted-fd-execution', records: sealed.files.length, stage: 'sealed', probe: 1, driver: 1, spawn: 2, mutation: 0 }) + '\n');
+                process.stdout.write(JSON.stringify({ ok: true, kind: 'trusted-fd-execution', records: sealed.files.length, stage: 'sealed', run_id: runId, project_root: canonicalProject, probe: 1, driver: 1, spawn: 2, mutation: 0 }) + '\n');
               } finally {
                 fs.closeSync(stageFd);
               }
             } else {
-              process.stdout.write(JSON.stringify({ ok: true, kind: 'source-identity-verified', records: sealed.files.length, stage: 'sealed', probe: 0, driver: 0, spawn: 0, mutation: 0 }) + '\n');
+              process.stdout.write(JSON.stringify({ ok: true, kind: 'source-identity-verified', records: sealed.files.length, stage: 'sealed', run_id: runId, project_root: canonicalProject, probe: 0, driver: 0, spawn: 0, mutation: 0 }) + '\n');
             }
           } catch (error) {
             const message = error?.message || error;
