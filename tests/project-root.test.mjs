@@ -1244,13 +1244,16 @@ test('Task 13 plain and replacement root publications roll forward exactly once 
         route === 'plain' ? 'claude' : 'codex',
         `dl-root-crash-${route}-${barrier.replaceAll(':', '-')}-`,
       );
+      const retryOptions = relocationOptions(moved);
       assert.throws(
-        () => mutate(moved.candidateRoot, moved.runId, relocationOptions(moved, {
+        () => mutate(moved.candidateRoot, moved.runId, {
+          ...retryOptions,
           faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
-        })),
+        }),
         /TRANSACTION_PENDING|TRANSACTION_RECONCILIATION_REQUIRED/,
         `${route}/${barrier}`,
       );
+      mutate(moved.candidateRoot, moved.runId, retryOptions);
       const reopened = invoke([
         'root', 'diagnose',
         '--candidate-project-root', moved.candidateRoot,
@@ -1536,13 +1539,16 @@ test('Round1 acceptance RED: every relocation topology replays every artifact an
         'codex',
         `dl-root-r1-crash-${topology}-${barrier.replaceAll(':', '-')}-`,
       );
+      const retryOptions = relocationOptions(moved);
       assert.throws(
-        () => recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved, {
+        () => recoverRelocatedRoot(moved.candidateRoot, moved.runId, {
+          ...retryOptions,
           faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
-        })),
+        }),
         /TRANSACTION_PENDING|TRANSACTION_RECONCILIATION_REQUIRED/,
         `${topology}/${barrier}`,
       );
+      recoverRelocatedRoot(moved.candidateRoot, moved.runId, retryOptions);
       const reopened = invoke([
         'root', 'diagnose',
         '--candidate-project-root', moved.candidateRoot,

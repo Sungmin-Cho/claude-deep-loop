@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { reserveHandoff } from '../scripts/lib/lease.mjs';
 import { EFFORT_LEVELS, validateEffort, validateModel, validateRuntimeProfile, setSessionProfile } from '../scripts/lib/session-profile.mjs';
 
@@ -111,7 +111,15 @@ test('setSessionProfile invalid value throws and does not mutate', () => {
 
 const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 function cli(root, args) {
-  return spawnSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+  return spawnSync('node', [CLI, ...args, '--project-root', root, '--run-id', seedRunId(root)], { encoding: 'utf8' });
+}
+
+function seedRunId(root) {
+  const ids = readdirSync(join(root, '.deep-loop', 'runs'), { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name);
+  assert.equal(ids.length, 1, 'fixture must have exactly one run');
+  return ids[0];
 }
 
 test('CLI session-profile set: exit codes', () => {

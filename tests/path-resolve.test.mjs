@@ -494,7 +494,8 @@ test('CLI and shared classifier retain invalid-value and fence exit classes', ()
     { args: ['path', 'resolve', '--target', 'run-dir', '--project-root', join(root, 'missing'), '--run-id', runId], code: 'PROJECT_ROOT_UNRESOLVABLE' },
     ...['.', '..', 'a/b', 'a\\b'].map(unsafe => ({
       args: ['path', 'resolve', '--target', 'run-dir', '--project-root', root, '--run-id', unsafe],
-      code: 'RUN_DIR_ESCAPE',
+      code: unsafe === '.' || unsafe === '..' || unsafe.includes('/') || unsafe.includes('\\')
+        ? 'RUN_ID_INVALID' : 'RUN_DIR_ESCAPE',
     })),
   ];
   for (const item of invalidCases) {

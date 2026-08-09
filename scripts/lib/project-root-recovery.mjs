@@ -813,7 +813,6 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
   if (snapshot.data.run_id !== runId) throw new Error('STATE_INVALID: loop.run_id mismatch');
   const binding = classifyProjectRootBinding(candidateCanonical, snapshot.data.project.root);
   if (binding.mismatch_class === 'match') {
-    const result = alreadyRebound(candidateCanonical, runId, snapshot);
     const receipt = exactReceipt(candidateCanonical, runId, snapshot.data, snapshot.hash).receipt;
     if (input.actor !== 'human') {
       throw new Error('INVALID_ACTOR: root rebind requires actor human');
@@ -828,7 +827,11 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
       || input.fence?.generation !== receipt.old_lease_generation) {
       throw new Error('ROOT_OPERATION_RETRY_MISMATCH');
     }
-    return result;
+    // A retry may have completed the anchored publication during the
+    // reconciled capture above. Route the validated retry through the normal
+    // reconciled diagnosis path so its committed journal is retired before
+    // exact, read-only consumers inspect the run.
+    return diagnoseProjectRoot(candidateCanonical, runId);
   }
   assertMutationInput(snapshot.data, input);
   const classified = classifyTopology(snapshot.data);
