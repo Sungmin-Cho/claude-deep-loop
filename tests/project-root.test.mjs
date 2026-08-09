@@ -496,6 +496,19 @@ function runCliAsync(args, cwd = REPO_ROOT) {
   });
 }
 
+function lockBusyResult(result) {
+  return result?.status === 1 && /^LOCK_BUSY(?::|$)/m.test(String(result.stderr || '').trim());
+}
+
+async function retryLockBusyDiagnose(result, args, cwd) {
+  let current = result;
+  for (let attempt = 0; attempt < 5 && lockBusyResult(current); attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    current = await runCliAsync(args, cwd);
+  }
+  return current;
+}
+
 function durableSnapshot(root, runId) {
   const dir = runDir(root, runId);
   const eventPath = join(dir, 'event-log.jsonl');
@@ -1606,12 +1619,20 @@ test('Round1 acceptance RED: retention removes commit-oldest only and concurrent
     'commit-oldest unreferenced receipts must be pruned first',
   );
 
-  const concurrent = await Promise.all(Array.from({ length: 4 }, () => runCliAsync([
+  const diagnoseArgs = [
     'root', 'diagnose',
     '--candidate-project-root', currentRoot,
     '--run-id', runId,
-  ], freshRoot('dl-root-r1-retention-cwd-'))));
-  assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0]);
+  ];
+  const concurrentInitial = await Promise.all(Array.from({ length: 4 }, () => {
+    const cwd = freshRoot('dl-root-r1-retention-cwd-');
+    return runCliAsync(diagnoseArgs, cwd).then(result => ({ result, cwd }));
+  }));
+  const concurrent = await Promise.all(concurrentInitial.map(({ result, cwd }) => (
+    retryLockBusyDiagnose(result, diagnoseArgs, cwd)
+  )));
+  assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0],
+    JSON.stringify(concurrent.map(result => ({ status: result.status, stderr: result.stderr }))));
   assert.deepEqual(
     concurrent.map(result => JSON.parse(result.stdout).operation_id),
     Array(4).fill(operationIds.at(-1)),

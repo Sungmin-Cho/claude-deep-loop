@@ -1202,7 +1202,9 @@ test('run containment rejects symlinked run directories and prepared residue', (
     'stages',
     String(forgedGenericTarget.stage_index).padStart(6, '0') + '.bin',
   );
-  writeFileSync(join(forgedGenericRunDirectory, forgedGenericRel), readFileSync(forgedGenericStagePath));
+  const forgedGenericArtifactPath = join(forgedGenericRunDirectory, forgedGenericRel);
+  mkdirSync(dirname(forgedGenericArtifactPath), { recursive: true });
+  writeFileSync(forgedGenericArtifactPath, readFileSync(forgedGenericStagePath));
   const forgedGenericMarkerPath = join(
     forgedGenericOperationDirectory,
     'markers',
