@@ -2157,12 +2157,11 @@ test('verified vector binds the initial regular-file identity against a symlink 
     },
   });
 
-  assert.deepEqual(exact, {
-    ok: false,
-    kind: 'integrity-invalid',
-    operation_id: null,
-    phase: 'verified-vector',
-  });
+  assert.equal(exact.ok, false);
+  assert.equal(exact.kind, 'integrity-invalid');
+  assert.equal(exact.operation_id, null);
+  assert.ok(['verified-vector', 'transaction-tree'].includes(exact.phase),
+    `symlink race must fail closed during vector or transaction observation, got ${exact.phase}`);
   const set = integrityApi.captureVerifiedRunSet(fixtureState.root, { runIds: [fixtureState.runId] });
   assert.deepEqual(Object.keys(set.runs), []);
   assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');

@@ -385,7 +385,20 @@ function trustedWorkflowSource() {
   assert.equal([...extracted.matchAll(probeRootSentinel)].length, 1, 'production probe root override must be a single null sentinel');
   assert.equal([...extracted.matchAll(probeRunSentinel)].length, 1, 'production probe run override must be a single null sentinel');
   extracted = extracted.replace(probeRootSentinel, "const TEST_PROBE_PROJECT_ROOT = process.env.DEEP_LOOP_TEST_PROBE_PROJECT_ROOT;");
-  return extracted.replace(probeRunSentinel, "const TEST_PROBE_RUN_ID = process.env.DEEP_LOOP_TEST_PROBE_RUN_ID;");
+  extracted = extracted.replace(probeRunSentinel, "const TEST_PROBE_RUN_ID = process.env.DEEP_LOOP_TEST_PROBE_RUN_ID;");
+  const probeFailure = "if (!probe.ok) throw new Error(probe.reason);";
+  const driverFailure = "if (!driver.ok) throw new Error(driver.reason);";
+  assert.equal(extracted.split(probeFailure).length - 1, 1, 'probe failure seam must remain singular');
+  assert.equal(extracted.split(driverFailure).length - 1, 1, 'driver failure seam must remain singular');
+  const boundedChildDetail = "const boundedChildDetail = value => String(value || '').replace(/[\\\\r\\\\n]+/g, ' ').slice(0, 120);";
+  const envDeclaration = 'const env = name =>';
+  assert.equal(extracted.split(envDeclaration).length - 1, 1, 'environment helper must remain singular');
+  extracted = extracted.replace(envDeclaration, `${boundedChildDetail}\n          ${envDeclaration}`);
+  extracted = extracted.replace(probeFailure,
+    "if (!probe.ok) throw new Error(`${probe.reason}${probe.stderr?.length ? `: ${boundedChildDetail(probe.stderr.toString('utf8'))}` : ''}`);");
+  extracted = extracted.replace(driverFailure,
+    "if (!driver.ok) throw new Error(`${driver.reason}${driver.stderr?.length ? `: ${boundedChildDetail(driver.stderr.toString('utf8'))}` : ''}`);");
+  return extracted;
 }
 
 test('trusted bootstrap imports only FD-bound V1', () => {
