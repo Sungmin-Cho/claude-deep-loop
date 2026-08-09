@@ -17,7 +17,11 @@ import {
   classifyProjectRootBinding,
   projectRootDigest,
 } from './project-root.mjs';
-import { appendAnchored, readLines } from './integrity.mjs';
+import {
+  appendAnchored,
+  captureVerifiedRootRecoverySnapshot,
+  readLines,
+} from './integrity.mjs';
 import { contentHash, unwrap, wrap } from './envelope.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { buildRootRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
@@ -371,6 +375,10 @@ function pruneReceipts(candidateRoot, runId, guard, protectedIds) {
 
 function alreadyRebound(candidateRoot, runId, snapshot) {
   const { receipt, event } = exactReceipt(candidateRoot, runId, snapshot.data, snapshot.hash);
+  return alreadyReboundFromEvidence(receipt, event);
+}
+
+function alreadyReboundFromEvidence(receipt, event) {
   return {
     action: 'already-rebound',
     blocker: null,
@@ -390,15 +398,52 @@ function alreadyRebound(candidateRoot, runId, snapshot) {
   };
 }
 
-function diagnosis(candidateRoot, runId, snapshot) {
+function sampleDiagnosisEvidence(candidateRoot, runId, snapshot) {
+  const loop = snapshot.data;
+  const binding = classifyProjectRootBinding(candidateRoot, loop.project.root);
+  let rebound = null;
+  if (binding.mismatch_class === 'match') {
+    const exact = exactReceipt(candidateRoot, runId, loop, snapshot.hash);
+    rebound = alreadyReboundFromEvidence(exact.receipt, exact.event);
+  }
+  // Preserve the established diagnosis order: a live relocated producer is
+  // authoritative before accounting is inspected.  Both observations remain
+  // frozen in this evidence sample and are never re-read during classification.
+  const liveProducer = binding.mismatch_class === 'unresolvable'
+    ? liveHeadlessProducer(candidateRoot, runId) : false;
+  let accounting = { ok: true };
+  if (binding.mismatch_class === 'unresolvable') {
+    try {
+      inventoryRelocatedProcessReceipts(
+        candidateRoot,
+        runId,
+        loop,
+        projectRootDigest(loop.project.root),
+      );
+    } catch (error) {
+      if (!/^PROJECT_ROOT_ACCOUNTING_(?:UNMEASURABLE|CONFLICT)(?::|$)/
+        .test(String(error?.message || error))) throw error;
+      accounting = { ok: false };
+    }
+  }
+  return Object.freeze({
+    binding,
+    rebound,
+    liveHeadlessProducer: liveProducer,
+    accounting,
+  });
+}
+
+function diagnosis(candidateRoot, runId, snapshot, sampledEvidence = null) {
   const loop = snapshot.data;
   const lease = assertRecoveryState(loop, runId);
-  const binding = classifyProjectRootBinding(candidateRoot, loop.project.root);
-  if (binding.mismatch_class === 'match') return alreadyRebound(candidateRoot, runId, snapshot);
+  const evidence = sampledEvidence || sampleDiagnosisEvidence(candidateRoot, runId, snapshot);
+  const binding = evidence.binding;
+  if (binding.mismatch_class === 'match') return evidence.rebound || alreadyRebound(candidateRoot, runId, snapshot);
   if (binding.mismatch_class === 'fenced') {
     throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
   }
-  if (liveHeadlessProducer(candidateRoot, runId)) {
+  if (evidence.liveHeadlessProducer) {
     return {
       action: 'wait',
       blocker: 'live-headless-producer',
@@ -410,18 +455,7 @@ function diagnosis(candidateRoot, runId, snapshot) {
     };
   }
   const classified = classifyTopology(loop);
-  try {
-    inventoryRelocatedProcessReceipts(
-      candidateRoot,
-      runId,
-      loop,
-      projectRootDigest(loop.project.root),
-    );
-  } catch (error) {
-    if (!/^PROJECT_ROOT_ACCOUNTING_(?:UNMEASURABLE|CONFLICT)(?::|$)/
-      .test(String(error?.message || error))) {
-      throw error;
-    }
+  if (!evidence.accounting.ok) {
     return {
       action: 'wait',
       blocker: 'project-root-accounting',
@@ -447,6 +481,48 @@ function diagnosis(candidateRoot, runId, snapshot) {
       loop,
     ),
   };
+}
+
+// Verified read-only diagnosis: evidence is sampled once from the first
+// immutable capture, then the complete run vector is recaptured before the
+// bounded result is returned. A receipt/lock/tree drift therefore discards the
+// diagnosis instead of classifying a stale snapshot.
+export function diagnoseVerifiedProjectRoot(candidateRoot, runId, options = {}) {
+  const candidateCanonical = canonicalCandidate(candidateRoot);
+  const captureOptions = options.captureOptions || {};
+  let first;
+  try {
+    first = captureVerifiedRootRecoverySnapshot(candidateCanonical, runId, captureOptions);
+  } catch (error) {
+    if (/^(?:PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(String(error?.message || error))) {
+      throw error;
+    }
+    return { ok: false, kind: 'integrity-invalid', phase: 'run-snapshot', partial_discarded: true };
+  }
+  if (!first?.ok) return first;
+  let result;
+  try {
+    const evidence = sampleDiagnosisEvidence(candidateCanonical, runId, first.snapshot);
+    options.afterEvidence?.({ snapshot: first.snapshot, evidence });
+    options.afterFirstCapture?.({ snapshot: first.snapshot, evidence });
+    result = diagnosis(candidateCanonical, runId, first.snapshot, evidence);
+  } catch (error) {
+    if (/^(?:PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(String(error?.message || error))) {
+      throw error;
+    }
+    return { ok: false, kind: 'integrity-invalid', phase: 'diagnosis', partial_discarded: true };
+  }
+  let second;
+  try {
+    second = captureVerifiedRootRecoverySnapshot(candidateCanonical, runId, captureOptions);
+  } catch {
+    return { ok: false, kind: 'integrity-invalid', phase: 'diagnosis-recapture', partial_discarded: true };
+  }
+  if (!second?.ok) return second;
+  if (JSON.stringify(first.snapshot.vector) !== JSON.stringify(second.snapshot.vector)) {
+    return { ok: false, kind: 'integrity-invalid', phase: 'diagnosis-recapture', partial_discarded: true };
+  }
+  return result;
 }
 
 export function diagnoseProjectRoot(candidateRoot, runId) {

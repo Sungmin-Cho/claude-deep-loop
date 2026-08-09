@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, unlinkSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
+import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 const FIXED = new Date('2026-07-07T00:00:00Z');
 const NOSLEEP = () => {};
@@ -101,6 +102,130 @@ test('captureLatestInsightsSet freezes artifact enumeration before a concurrent 
   assert.deepEqual(captured.artifactNames, [first]);
   assert.equal(captured.artifacts[inserted], undefined);
   assert.equal(captured.artifacts[first].bytes.toString('utf8'), '{}');
+});
+
+test('captureLatestInsightsSet rejects a regular-to-symlink replacement after enumeration', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-symlink-drift-'));
+  const dir = join(root, '.deep-loop', 'insights');
+  mkdirSync(dir, { recursive: true });
+  const name = '01J00000000000000000000000-insights.json';
+  const path = join(dir, name);
+  const target = join(root, 'outside.json');
+  writeFileSync(path, '{}');
+  writeFileSync(target, '{}');
+  const captured = captureLatestInsightsSet(root, {
+    afterEnumeration() {
+      unlinkSync(path);
+      if (!createFileSymlinkOrSkip(t, target, path)) return;
+    },
+  });
+  assert.deepEqual(captured, {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-read', partial_discarded: true,
+  });
+});
+
+test('captureLatestInsightsSet rejects parent insights-directory replacement after enumeration', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-dir-drift-'));
+  const dir = join(root, '.deep-loop', 'insights');
+  const moved = join(root, '.deep-loop', 'insights-old');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, '01J00000000000000000000000-insights.json'), '{}');
+  const captured = captureLatestInsightsSet(root, {
+    afterEnumeration() {
+      renameSync(dir, moved);
+      mkdirSync(dir);
+    },
+  });
+  assert.deepEqual(captured, {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true,
+  });
+});
+
+test('captureLatestInsightsSet rejects parent real-directory to symlink replacement during read', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-dir-read-drift-'));
+  const dir = join(root, '.deep-loop', 'insights');
+  const moved = join(root, '.deep-loop', 'insights-old');
+  const outside = join(root, 'outside');
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(outside);
+  const name = '01J00000000000000000000000-insights.json';
+  writeFileSync(join(dir, name), '{}');
+  let swapped = false;
+  const captured = captureLatestInsightsSet(root, {
+    readFileFn(path) {
+      const bytes = readFileSync(path);
+      if (!swapped) {
+        swapped = true;
+        renameSync(dir, moved);
+        try {
+          symlinkSync(outside, dir, 'dir');
+        } catch (error) {
+          t.skip(`directory symlinks unavailable: ${error.code || error.message}`);
+        }
+      }
+      return bytes;
+    },
+  });
+  assert.deepEqual(captured, {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true,
+  });
+});
+
+test('partial artifact set is discarded', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-bound-'));
+  const dir = join(root, '.deep-loop', 'insights');
+  mkdirSync(dir, { recursive: true });
+  for (let index = 0; index < 65; index += 1) {
+    writeFileSync(join(dir, `01J0000000000000000000${String(index).padStart(2, '0')}-insights.json`), '{}');
+  }
+  const bounded = captureLatestInsightsSet(root, { nowFn: () => T0, deadlineMs: 500 });
+  assert.equal(bounded.ok, false);
+  assert.equal(bounded.kind, 'insights-artifact-set-bound-exceeded');
+  assert.equal(bounded.partial_discarded, true);
+  assert.equal('artifactNames' in bounded, false);
+  assert.equal('artifacts' in bounded, false);
+});
+
+test('latest uses one absolute deadline', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-deadline-'));
+  const dir = join(root, '.deep-loop', 'insights');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, '01J00000000000000000000000-insights.json'), '{}');
+  let now = T0;
+  const bounded = captureLatestInsightsSet(root, {
+    nowFn: () => now,
+    deadlineMs: 500,
+    afterEnumeration() { now += 501; },
+  });
+  assert.equal(bounded.ok, false);
+  assert.equal(bounded.kind, 'insights-artifact-set-bound-exceeded');
+  assert.equal(bounded.partial_discarded, true);
+});
+
+test('latest final verification crossing discards the complete captured set', () => {
+  const { root, runId, fence } = emitFixture();
+  emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  finishFixture(root, runId);
+  let now = T0;
+  const captured = captureLatestInsightsSet(root, { nowFn: () => now, deadlineMs: 500 });
+  assert.equal(captured.ok, undefined);
+  now = T0 + 501;
+  const result = latestInsightsFromSet(captured);
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'insights-artifact-set-bound-exceeded');
+  assert.equal(result.phase, 'selection');
+  assert.equal(result.partial_discarded, true);
+});
+
+test('no-verb insights preserves project-wide history', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-project-'));
+  const a = initRun(root, { runtime: 'claude', goal: 'a', now: FIXED }).runId;
+  const b = initRun(root, { runtime: 'claude', goal: 'b', now: new Date(T0 + 1) }).runId;
+  const result = cli(root, ['insights', '--run-id', a, '--json']);
+  assert.equal(result.code, 0, result.err);
+  const output = JSON.parse(result.out);
+  assert.ok(output.excluded_active.includes(b));
+  assert.ok(output.per_run[a].self_snapshot);
 });
 
 function loopFixture() {
@@ -554,7 +679,7 @@ test('latest: producer run을 completed로 전환하면 동일 emit artifact가 
   assert.equal(got.path, r.path);
 });
 
-test('latest: anchored 이벤트 없는 고아 파일 불신뢰', () => {
+test('latest: anchored 이벤트 없는 고아 파일은 aggregate integrity failure', () => {
   const { root, runId, fence } = emitFixture();
   emitInsights(root, runId, { fence, now: FIXED.getTime() });
   finishFixture(root, runId);
@@ -563,11 +688,26 @@ test('latest: anchored 이벤트 없는 고아 파일 불신뢰', () => {
   const real = readdirSync(dir).find(f => f.endsWith('-insights.json'));
   writeFileSync(join(dir, 'ZZZZZZZZZZ9999999999999999-insights.json'), readFileSync(join(dir, real)));
   const got = latestInsights(root);
-  assert.notEqual(got.path, '.deep-loop/insights/ZZZZZZZZZZ9999999999999999-insights.json');  // path-binding이 복사본 거부
-  assert.equal(got.path, relInsightsPath(real));   // 원본은 통과 — insights.mjs가 export하는 헬퍼를 import해 사용
+  assert.deepEqual(got, {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'anchor', partial_discarded: true,
+  });
 });
 
-test('latest: sha 불일치 불신뢰 → 유일 파일이면 null', () => {
+test('latest: newer invalid artifact fails closed instead of falling back to an older valid artifact', () => {
+  const { root, runId, fence } = emitFixture();
+  const older = emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  finishFixture(root, runId);
+  const dir = join(root, '.deep-loop', 'insights');
+  writeFileSync(
+    join(dir, 'ZZZZZZZZZZ9999999999999999-insights.json'),
+    readFileSync(join(root, older.path)),
+  );
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'anchor', partial_discarded: true,
+  });
+});
+
+test('latest: sha 불일치 discards the complete artifact set', () => {
   const { root, runId, fence } = emitFixture();
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
   // finish-edge까지 먼저 충족시켜야 한다 — non-terminal이면 producer-terminal 게이트가 먼저 null을 만들어
@@ -575,7 +715,9 @@ test('latest: sha 불일치 불신뢰 → 유일 파일이면 null', () => {
   finishFixture(root, runId);
   const abs = join(root, r.path);
   writeFileSync(abs, readFileSync(abs, 'utf8').replace('"goal": "g"', '"goal": "tampered"'));
-  assert.equal(latestInsights(root), null);
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-hash', partial_discarded: true,
+  });
 });
 
 test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 유효 파일을 반환 (schema 분기 고립 검증)', () => {
@@ -613,17 +755,19 @@ test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 
   assert.equal(got.path, rOld.path);
 });
 
-test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유효 파일 반환', () => {
+test('latest: 깨진 JSON discards the complete artifact set', () => {
   const { root, runId, fence } = emitFixture();
   const ok = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
   finishFixture(root, runId);   // 검사 대상 기제(깨진 JSON)만 고립 — ok는 finish-인접으로 신뢰 전제
   const dir = join(root, '.deep-loop', 'insights');
   writeFileSync(join(dir, 'ZZZZZZZZZZ8888888888888888-insights.json'), '{torn');   // 최신 이름의 깨진 파일
-  const got = latestInsights(root);                          // 크래시 없이
-  assert.equal(got.path, ok.path);                           // 다음 후보(정상본) 반환
+  const got = latestInsights(root);
+  assert.equal(got.ok, false);
+  assert.equal(got.kind, 'insights-artifact-set-integrity');
+  assert.equal(got.partial_discarded, true);
 });
 
-test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 skip, latest null', () => {
+test('latest: 참조 run의 event-log 체인 변조(checksum 불변) discards the complete artifact set', () => {
   const { root, runId, fence } = emitFixture();
   emitInsights(root, runId, { fence, now: FIXED.getTime() });
   finishFixture(root, runId);   // 검사 대상 기제(체인 변조)만 고립 — finish-edge까지 먼저 충족시켜 둔다
@@ -631,7 +775,10 @@ test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 
   const lines = readFileSync(ep, 'utf8').trim().split('\n');
   const first = JSON.parse(lines[0]); first.data = { ...first.data, tampered: true };   // checksum 그대로 → verifyLog가 잡아야 함
   writeFileSync(ep, [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
-  assert.equal(latestInsights(root), null);
+  const result = latestInsights(root);
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'insights-artifact-set-integrity');
+  assert.equal(result.partial_discarded, true);
 });
 
 // ── v1.5.0 (b): finish-edge — 앵커 이후 non-exempt 이벤트가 정확히 finish 하나여야 신뢰 (spec §3) ───
@@ -654,9 +801,11 @@ test('v1.5 (b): mid-run emit(뒤에 business 이벤트) → skip — finish-인�
   const rFinal = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
   finishFixture(root, runId);
   assert.equal(latestInsights(root).path, rFinal.path);          // 최신이자 유일하게 finish-인접
-  // r3 앵커 회귀: rFinal 파일을 지워 순회가 rMid로 폴백해도, rMid는 자기 앵커 기준 인접성 실패 → null
+  // r3 앵커 회귀: rFinal 파일을 지워 순회가 rMid로 폴백해도, rMid is an integrity failure.
   unlinkSync(join(root, rFinal.path));
-  assert.equal(latestInsights(root), null);
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'finish-edge', partial_discarded: true,
+  });
 });
 
 test('v1.5 (b): 동일 path 매칭 insights-emitted 이벤트 2개 → fail-closed skip (r3)', () => {
@@ -668,7 +817,9 @@ test('v1.5 (b): 동일 path 매칭 insights-emitted 이벤트 2개 → fail-clos
   appendAnchored(root, runId, { type: 'insights-emitted', data: { path: r.path, sha256: r.sha256, candidates_count: 0 } },
     undefined, undefined, { floor: 1 });
   finishFixture(root, runId);
-  assert.equal(latestInsights(root), null);                      // 앵커 모호 → fail-closed
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'anchor', partial_discarded: true,
+  });
 });
 
 test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재) → skip (r1 P2)', () => {
@@ -678,7 +829,9 @@ test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   recordCost(root, runId, { turns: 3, tokens: 0, fence: { owner: runId, generation: 1 } });
   finishFixture(root, runId);
-  assert.equal(latestInsights(root), null);
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'finish-edge', partial_discarded: true,
+  });
 });
 
 test('v1.5 (b): finish 후 non-exempt 이벤트(post-finish mutation) → skip (r2 🔴)', () => {
@@ -688,7 +841,9 @@ test('v1.5 (b): finish 후 non-exempt 이벤트(post-finish mutation) → skip (
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   finishFixture(root, runId);
   businessEventFixture(root, runId);
-  assert.equal(latestInsights(root), null);
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'finish-edge', partial_discarded: true,
+  });
 });
 
 test('terminal Codex maker receipt is completion bookkeeping, not a dirty post-finish mutation', () => {
@@ -704,13 +859,15 @@ test('terminal Codex maker receipt is completion bookkeeping, not a dirty post-f
   assert.deepEqual(out.post_finish_mutated, []);
 });
 
-test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
+test('v1.5 (b): finish 이벤트 부재(status만 terminal) → aggregate integrity failure', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe5-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   toTerminal(root, runId);                                       // finish 이벤트 없이 status만 전이(레거시/드리프트)
-  assert.equal(latestInsights(root), null);
+  assert.deepEqual(latestInsights(root), {
+    ok: false, kind: 'insights-artifact-set-integrity', phase: 'finish-edge', partial_discarded: true,
+  });
 });
 
 // ── v1.5.0 (b′): post_finish_mutated 라벨 — 집계 유지 + 노출 (spec §3, r5 리뷰 라벨 방식) ───
@@ -753,17 +910,31 @@ test('v1.5 (b′): finish 이벤트 없는 terminal 로그(레거시)는 판정 
 // CLI tests
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
 function cli(root, args, opts = {}) {
-  try { return { code: 0, out: execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8', ...opts }) }; }
+  let effective = args;
+  if (args[0] === 'insights' && args[1] === 'emit'
+    && !args.some(arg => arg === '--run-id' || arg.startsWith('--run-id='))) {
+    const current = readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim();
+    effective = [...args, '--run-id', current];
+  }
+  try { return { code: 0, out: execFileSync('node', [CLI, ...effective, '--project-root', root], { encoding: 'utf8', ...opts }) }; }
   catch (e) { return { code: e.status, out: String(e.stdout || ''), err: String(e.stderr || '') }; }
 }
 
 test('CLI insights: read-only 계산 (fence 불필요) + invalid run exit 1 + unknown verb exit 2', () => {
   const { root, runId, fence } = emitFixture();
-  const r = cli(root, ['insights', '--json']);
+  const r = cli(root, ['insights', '--run-id', runId, '--json']);
   assert.equal(r.code, 0);
   assert.ok(JSON.parse(r.out).per_run[runId]);              // self(current) 포함
-  assert.equal(cli(root, ['insights', '--run', 'NOPE', '--json']).code, 1);
+  assert.equal(cli(root, ['insights', '--run-id', runId, '--run', 'NOPE', '--json']).code, 1);
   assert.equal(cli(root, ['insights', 'bogus-verb']).code, 2);
+});
+
+test('CLI insights no-verb requires explicit self identity and never falls back to current', () => {
+  const { root, runId } = emitFixture();
+  unlinkSync(join(root, '.deep-loop', 'current'));
+  assert.equal(cli(root, ['insights', '--json']).code, 2);
+  assert.equal(cli(root, ['insights', '--run-id', '../unsafe', '--json']).code, 1);
+  assert.equal(cli(root, ['insights', '--run-id', runId, '--json']).code, 0);
 });
 
 test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환', () => {
@@ -871,8 +1042,8 @@ test('integrity: verifyLines/verifyHeadLines가 in-memory 라인 배열을 검�
 
 // ── impl-R2 ℹ️7: malformed run id도 clean 에러 exit 1 (uncaught RUN_ID_INVALID 스택 금지) ───
 test('CLI insights --run: malformed run id는 clean RUN_NOT_FOUND exit 1', () => {
-  const { root } = emitFixture();
-  const r = cli(root, ['insights', '--run', '../nope', '--json']);
+  const { root, runId } = emitFixture();
+  const r = cli(root, ['insights', '--run-id', runId, '--run', '../nope', '--json']);
   assert.equal(r.code, 1);
   assert.match(String(r.err), /RUN_NOT_FOUND/);
 });

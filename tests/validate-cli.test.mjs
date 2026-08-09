@@ -47,6 +47,16 @@ test('validate exits 0 for a freshly initialized run', () => {
   assert.equal(runValidate(['--project-root', root, '--run-id', runId]), 0);
 });
 
+test('active A+B keeps run-independent validate green and exact validate reads only A', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-validate-multi-'));
+  const a = initRun(root, { runtime: 'claude', goal: 'a', detected: {}, now: new Date('2026-06-24T00:00:00Z') });
+  const b = initRun(root, { runtime: 'claude', goal: 'b', detected: {}, now: new Date('2026-06-24T00:00:01Z') });
+  writeFileSync(join(runDir(root, b.runId), 'loop.json'), '{tampered');
+  assert.equal(runValidate(['--project-root', root]), 0);
+  assert.equal(runValidate(['--project-root', root, '--run-id', a.runId]), 0);
+  assert.notEqual(runValidate(['--project-root', root, '--run-id', b.runId]), 0);
+});
+
 test('validate exits nonzero when loop.json is corrupted (hash anchor fires)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'x', detected: {}, now: new Date() });

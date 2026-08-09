@@ -21,6 +21,7 @@ import {
   emitLegacyCompactCheckpointFromTrustedHook,
   inspectCompactCheckpoint,
   restoreCompactCheckpoint,
+  selectVerifiedCheckpointDescriptor,
   selectCheckpoint as selectCheckpointFromSet,
 } from '../scripts/lib/checkpoint.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
@@ -607,6 +608,34 @@ test('strict inspect orders two equal-time checkpoints by checkpoint_rel without
     inspected.checkpoint_rel,
     [first.checkpoint_rel, second.checkpoint_rel].sort()[0],
   );
+});
+
+test('pure verified checkpoint projection selects newest generated_at and retains the full bounded descriptor', () => {
+  const fixture = seedBound();
+  emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const newest = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 2000,
+  });
+  const captured = captureVerifiedCheckpointSet({ root: fixture.root, runId: fixture.runId, now: NOW_MS + 2000 });
+  const descriptor = selectVerifiedCheckpointDescriptor(captured);
+  assert.equal(descriptor.ok, true);
+  assert.equal(descriptor.checkpoint_rel, newest.checkpoint_rel);
+  assert.equal(descriptor.owner_run_id, fixture.runId);
+  assert.equal(typeof descriptor.generation, 'number');
+  assert.ok(descriptor.scope && descriptor.workstream && descriptor.current_episode && descriptor.next_action);
+  assert.ok(descriptor.provider_evidence);
+  const providerPresent = descriptor.provider_evidence.present;
+  assert.equal(Object.hasOwn(captured.checkpoints[0], 'validation'), false);
+  assert.equal(Object.isFrozen(descriptor), true);
+  assert.equal(Object.isFrozen(descriptor.provider_evidence), true);
+  try { descriptor.provider_evidence.present = false; } catch { /* strict frozen projection */ }
+  assert.equal(selectVerifiedCheckpointDescriptor(captured).provider_evidence.present, providerPresent);
 });
 
 test('strict retention validates chronology, keeps the newest five, and removes malformed pressure first', () => {

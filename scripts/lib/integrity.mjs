@@ -1161,7 +1161,9 @@ function verifiedCaptureLocked(root, runId, guard, options) {
     };
   }
   if (transactionEntries.length === 0) {
-    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId));
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), {
+      requireProjectBinding: options.requireProjectBinding !== false,
+    });
     const artifacts = captureArtifactsLocked(root, runId, options.artifactRels);
     const finalVector = captureVerifiedDurableVectorLocked(
       dir,
@@ -1208,14 +1210,18 @@ function verifiedCaptureLocked(root, runId, guard, options) {
   let error = null;
   try {
     checkDeadline();
-    classified = classifyPreparedRun(root, runId, guard, prepared);
+    classified = classifyPreparedRun(root, runId, guard, prepared, {
+      rootRecovery: options.rootRecovery === true,
+    });
   } catch (caught) {
     error = caught;
   }
   checkDeadline();
   const inspection = inspectAnchoredPublication({ operationId, marker, classified, error });
   if (!inspection.ok) return inspection;
-  const snapshot = snapshotRaw(root, runId, classified.raw);
+  const snapshot = snapshotRaw(root, runId, classified.raw, {
+    requireProjectBinding: options.requireProjectBinding !== false,
+  });
   const artifacts = captureArtifactsLocked(root, runId, options.artifactRels);
   const finalVector = captureVerifiedDurableVectorLocked(
     dir,
@@ -1310,6 +1316,38 @@ export function captureVerifiedRunSnapshot(root, runId, options = {}) {
         operation_id: null,
         phase: 'verified-vector',
       };
+    }
+    throw error;
+  }
+}
+
+// Root-recovery diagnosis is a verified read of a relocated run. It deliberately
+// keeps the transaction/vector classification above while relaxing only the
+// ordinary project-root binding check; no reconciler or writer is reachable.
+export function captureVerifiedRootRecoverySnapshot(root, runId, options = {}) {
+  try {
+    const vectorDeadlineAtMs = readDeadlineAtMs(options);
+    return withReadLock(
+      root,
+      runId,
+      guard => verifiedCaptureLocked(root, runId, guard, {
+        ...options,
+        requireProjectBinding: false,
+        rootRecovery: true,
+        vectorDeadlineAtMs,
+      }),
+      {
+        ...options.lockOptions,
+        ...(options.lockOptions?.nowFn === undefined && typeof options.nowFn === 'function'
+          ? { nowFn: options.nowFn } : {}),
+        ...(vectorDeadlineAtMs === undefined ? {} : { deadlineAtMs: vectorDeadlineAtMs }),
+      },
+    );
+  } catch (error) {
+    if (error?.code === 'VERIFIED_READ_INTEGRITY_INVALID'
+      || String(error?.message || '').startsWith('LOG_TAMPERED')
+      || error?.message === 'LOCK_DEADLINE_EXCEEDED') {
+      return { ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'verified-vector' };
     }
     throw error;
   }

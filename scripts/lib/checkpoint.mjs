@@ -730,6 +730,18 @@ function descriptor(rel, key, validation) {
   return result;
 }
 
+function frozenSafeDescriptor(value) {
+  const clone = JSON.parse(JSON.stringify(value));
+  const freeze = item => {
+    if (item && typeof item === 'object') {
+      for (const child of Object.values(item)) freeze(child);
+      Object.freeze(item);
+    }
+    return item;
+  };
+  return freeze(clone);
+}
+
 export function inspectCompactCheckpoint(root, runId, {
   hostSessionEvidence,
   now = Date.now(),
@@ -922,7 +934,7 @@ function verifiedCheckpointEntries(root, runId, snapshot) {
       name,
       path: join(runDir(root, runId), rel),
       bytes,
-      ...(match ? { key: match[1] } : { legacy: true }),
+      ...(match ? { key: match[1], rel } : { legacy: true }),
     });
   }
   entries.sort((left, right) => right.name.localeCompare(left.name));
@@ -967,6 +979,8 @@ export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg
       ? captureArtifactEvidence(root, artifactRels, options)
       : normalizeArtifactEvidence(options.artifactEvidence, artifactRels);
     for (const entry of verifiedCheckpointEntries(root, runId, snapshot)) {
+      let safeDescriptor = null;
+      let generatedAt = null;
       if (entry.legacy) {
         validateLegacyBytes(entry.bytes, {
           root, runId, snapshot, artifactRels, artifactEvidence, name: entry.name,
@@ -974,7 +988,7 @@ export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg
       } else {
         const env = JSON.parse(entry.bytes.toString('utf8'));
         validateStrictSelf(env, { runId, key: entry.key });
-        validateStrictBytes(entry.bytes, {
+        const validation = validateStrictBytes(entry.bytes, {
           root,
           runId,
           key: entry.key,
@@ -984,10 +998,18 @@ export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg
           verifiedOnly: true,
           artifactEvidence,
         });
+        generatedAt = validation.env.envelope.generated_at;
+        safeDescriptor = frozenSafeDescriptor(descriptor(entry.rel, entry.key, validation));
       }
       checkpoints.push(Object.freeze({
         path: entry.path,
         bytes: Buffer.from(entry.bytes),
+        ...(safeDescriptor ? {
+          rel: entry.rel,
+          key: entry.key,
+          generatedAt,
+          descriptor: safeDescriptor,
+        } : {}),
       }));
     }
   } catch (error) {
@@ -998,6 +1020,28 @@ export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg
     });
   }
   return Object.freeze({ ok: true, snapshot, checkpoints: Object.freeze(checkpoints) });
+}
+
+// Pure projection for read-only consumers. Every selected field is derived from
+// the immutable checkpoint bytes/validation captured above; this function never
+// opens the live checkpoint directory and therefore cannot reconcile or replay it.
+export function selectVerifiedCheckpointDescriptor(captured) {
+  if (captured?.ok === false) return captured;
+  if (!captured || !Array.isArray(captured.checkpoints)) {
+    return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
+  }
+  const candidates = captured.checkpoints
+    .filter(item => item?.descriptor && typeof item.rel === 'string' && typeof item.key === 'string')
+    .map(item => ({
+      rel: item.rel,
+      key: item.key,
+      generatedAt: item.generatedAt,
+      descriptor: item.descriptor,
+  }))
+    .sort(compareNewest);
+  if (candidates.length === 0) return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
+  const selected = candidates[0];
+  return frozenSafeDescriptor(selected.descriptor);
 }
 
 function listLegacyCheckpoints(root, runId) {

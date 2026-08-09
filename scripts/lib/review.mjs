@@ -424,6 +424,11 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     //    (ledger 항목의 insights_ref/insights_sha256, design/plan은 문서의 인용)과 대조하고 mismatch를
     //    criterion (a) 위반으로 판정한다(v1 바인딩 메커니즘 — 커널은 T1 ledger를 파싱하지 않는다).
     const li = latestInsights(captureLatestInsightsSet(root));
+    if (li?.ok === false) {
+      const kind = typeof li.kind === 'string' ? li.kind : 'insights-unavailable';
+      const phase = typeof li.phase === 'string' ? li.phase : 'unknown';
+      throw new Error(`INSIGHTS_UNAVAILABLE: ${kind} phase=${phase}`);
+    }
     evidence = li ? {
       insights_path: li.path,
       emit_ulid: li.path.replace(/^.*\//, '').replace(/-insights\.json$/, ''),
