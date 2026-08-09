@@ -158,6 +158,31 @@ function lease(root, runId) {
   return readState(root, runId).data.session_chain.lease;
 }
 
+function seedResumeActivationLabel(kind) {
+  const f = seedReviewed();
+  const { data } = readState(f.root, f.runId);
+  if (kind === 'legacy-unprotected') {
+    delete data.session_chain.lease.activation_deadline_at;
+  } else {
+    data.session_chain.lease.activation_deadline_at = kind === 'expired-pending'
+      ? '2000-01-01T00:00:00.000Z'
+      : '2999-01-01T00:00:00.000Z';
+  }
+  writeState(f.root, f.runId, data);
+  return f;
+}
+
+for (const label of ['activation-pending', 'expired-pending', 'legacy-unprotected']) {
+  test(`SLICE-008 resume-command labels ${label} read-only`, () => {
+    const f = seedResumeActivationLabel(label);
+    const before = anchoredBytes(f.root, f.runId);
+    const shown = runReadCli(f.root, f.runId, ['resume-command']);
+    assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+    assert.match(shown.stdout, new RegExp(`Activation: ${label}`));
+    assert.deepEqual(anchoredBytes(f.root, f.runId), before);
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // T1 — (a) + B-2 부정: resume-command acquired 브랜치
 // ─────────────────────────────────────────────────────────────────────────────

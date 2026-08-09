@@ -154,6 +154,17 @@ function renderNextAction(result) {
   };
 }
 
+function activationStatusLabel(loop, now = Date.now()) {
+  const lease = loop.session_chain?.lease;
+  if (lease?.state !== 'active') return null;
+  if (!Object.hasOwn(lease, 'activation_deadline_at')) return 'legacy-unprotected';
+  if (lease.activation_deadline_at === null) return null;
+  const deadline = Date.parse(lease.activation_deadline_at);
+  return Number.isFinite(deadline) && now >= deadline
+    ? 'expired-pending'
+    : 'activation-pending';
+}
+
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
 // ② ISO-8601: date-only(YYYY-MM-DD, UTC 자정 해석) 또는 tz 지정자 필수 datetime(YYYY-MM-DDTHH:mm[:ss[.sss]](Z|±HH:MM)).
 // 그 외 전부 INVALID_NOW exit 1 (dispatcher 말미의 좁은 catch가 변환; 불변식 #2: 1 = invalid value).
@@ -613,6 +624,8 @@ const handlers = {
     });
     const { data } = snapshot;
     const lease = data.session_chain?.lease || {};
+    const activationLabel = activationStatusLabel(data);
+    const activationLine = activationLabel === null ? null : `Activation: ${activationLabel}`;
     const childRunId = typeof lease.handoff_child_run_id === 'string'
       ? lease.handoff_child_run_id
       : null;
@@ -643,6 +656,7 @@ const handlers = {
         head,
         `Consumed: takeover_kind=${receipt.takeover_kind} superseded_owner=${receipt.superseded_owner_run_id} transition=${receipt.from_generation}->${receipt.to_generation} at=${receipt.at}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
+        ...(activationLine === null ? [] : [activationLine]),
         // 이 줄은 `Handoff:`/`Recovery:` 헤드와 **공유**되므로(§3.3) 어느 방향으로도 무조건 단정할 수
         // 없다. 무조건 `proceed:false` 는 같은-attempt replay 에 대해 거짓이고(라운드 5 F5-2), 무조건
         // "같은 attempt_id는 replay" 는 영수증에 attempt_id 가 없는 소비 — `recovery acquire` /
@@ -660,7 +674,7 @@ const handlers = {
       return 0;
     }
     if (!childRunId || !['reserved', 'emitted', 'spawned'].includes(lease.handoff_phase)) {
-      process.stdout.write('no pending handoff\n');
+      process.stdout.write(`${activationLine === null ? '' : `${activationLine}\n`}no pending handoff\n`);
       return 0;
     }
 
@@ -688,6 +702,7 @@ const handlers = {
           `${descriptor.resumeInvocation} --attempt-id ${child.root_recovery_operation_id}`,
           `Recovery: kind=project-root capsule=${child.recovery_rel}`,
           `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+          ...(activationLine === null ? [] : [activationLine]),
           'Status: exact root recovery child acquisition is required',
           '',
         ].join('\n'));
@@ -716,6 +731,7 @@ const handlers = {
         `${descriptor.resumeInvocation} --attempt-id ${lease.recovery_discriminator ?? lease.handoff_idempotency_key}`,
         `Recovery: kind=${child.recovery_kind} capsule=${child.recovery_rel}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+        ...(activationLine === null ? [] : [activationLine]),
         'Status: exact recovery child acquisition is required',
         '',
       ].join('\n'));
@@ -786,6 +802,7 @@ const handlers = {
       descriptor.resumeInvocation,
       launcherGuidance,
       `Lease: owner=${lease.owner_run_id}${leaseState} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+      ...(activationLine === null ? [] : [activationLine]),
       'Status: 인수 확인은 /deep-loop-status',
       '',
     ].join('\n'));

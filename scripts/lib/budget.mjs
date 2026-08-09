@@ -752,6 +752,18 @@ function safeIncrement(current, delta) {
   return next;
 }
 
+function rearmedActivationDeadline(loop, clock, context) {
+  const safetyNow = new Date(typeof clock === 'function' ? clock() : Number.NaN).getTime();
+  if (!Number.isSafeInteger(safetyNow) || safetyNow < 0) {
+    throw new Error(`INVALID_NOW: ${context}`);
+  }
+  const seconds = loop.session_chain?.activation_deadline_sec ?? 900;
+  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 86400) {
+    throw new Error('INVALID_ACTIVATION_DEADLINE_CONFIG');
+  }
+  return new Date(safetyNow + seconds * 1_000).toISOString();
+}
+
 export function extendBudget(root, runId, {
   turns,
   tokens,
@@ -760,6 +772,7 @@ export function extendBudget(root, runId, {
   confirm,
   fence,
   now = Date.now(),
+  clock = Date.now,
 } = {}) {
   if (confirm !== true) throw new Error('BUDGET_EXTENSION_CONFIRM_REQUIRED');
   if (typeof reason !== 'string' || reason.trim().length === 0
@@ -794,6 +807,15 @@ export function extendBudget(root, runId, {
       if (recoveryReservationKind(loop) === null) {
         loop.status = 'running';
         loop.pause_reason = null;
+        const lease = loop.session_chain?.lease;
+        if (lease?.activation_deadline_at !== null
+          && lease?.activation_deadline_at !== undefined) {
+          lease.activation_deadline_at = rearmedActivationDeadline(
+            loop,
+            clock,
+            'budget extension activation rearm',
+          );
+        }
       }
       resultStatus = loop.status;
     },

@@ -4,6 +4,18 @@ import { recoveryReservationKind } from './budget.mjs';
 
 const THRESHOLD = 3;
 
+function rearmedActivationDeadline(loop, clock) {
+  const safetyNow = new Date(typeof clock === 'function' ? clock() : Number.NaN).getTime();
+  if (!Number.isSafeInteger(safetyNow) || safetyNow < 0) {
+    throw new Error('INVALID_NOW: breaker reset activation rearm');
+  }
+  const seconds = loop.session_chain?.activation_deadline_sec ?? 900;
+  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 86400) {
+    throw new Error('INVALID_ACTIVATION_DEADLINE_CONFIG');
+  }
+  return new Date(safetyNow + seconds * 1_000).toISOString();
+}
+
 export function checkBreaker(loop) {
   const cb = loop.circuit_breaker || {};
   if (cb.tripped) return { tripped: true, reason: cb.trip_reason || 'tripped' };
@@ -21,7 +33,7 @@ export function tripBreaker(root, runId, reason) {
   });
 }
 
-export function resetBreaker(root, runId, { fence } = {}) {
+export function resetBreaker(root, runId, { fence, clock = Date.now } = {}) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const recoveryKind = recoveryReservationKind(data);
     if (recoveryKind !== null) {
@@ -38,7 +50,14 @@ export function resetBreaker(root, runId, { fence } = {}) {
     if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: resetBreaker');
     const wasBreaker = data.status === 'paused' && /request-changes|consecutive/.test(data.circuit_breaker?.trip_reason || '');
     data.circuit_breaker = { consecutive_request_changes: 0, tripped: false, trip_reason: null };
-    if (wasBreaker && recoveryKind === null) data.status = 'running';
+    if (wasBreaker && recoveryKind === null) {
+      data.status = 'running';
+      const lease = data.session_chain?.lease;
+      if (lease?.activation_deadline_at !== null
+        && lease?.activation_deadline_at !== undefined) {
+        lease.activation_deadline_at = rearmedActivationDeadline(data, clock);
+      }
+    }
     writeState(root, runId, data);
     return { ok: true, status: data.status };
   });

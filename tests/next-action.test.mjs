@@ -55,6 +55,46 @@ function migratedLegacyLoop(policy) {
 const NOW = Date.parse('2026-06-24T00:00:00Z');
 const BOUNDARY = Object.freeze({ seq: 41, checksum: 'a'.repeat(64) });
 
+test('SLICE-008 next-action labels an unexpired activation pending lease read-only', () => {
+  const l = loop();
+  l.session_chain.lease.activation_deadline_at = '2026-06-24T00:15:00.000Z';
+  const before = structuredClone(l);
+  const result = nextAction(l, { now: NOW });
+  assert.equal(result.gate.activation, 'activation-pending');
+  assert.deepEqual(l, before);
+});
+
+test('SLICE-008 next-action labels an expired activation pending lease read-only', () => {
+  const l = loop();
+  l.session_chain.lease.activation_deadline_at = '2026-06-23T23:59:59.999Z';
+  const before = structuredClone(l);
+  const result = nextAction(l, { now: NOW });
+  assert.equal(result.gate.activation, 'expired-pending');
+  assert.deepEqual(l, before);
+});
+
+test('SLICE-008 F17 next-action labels only an active lease with the deadline key absent as legacy-unprotected', () => {
+  const l = loop();
+  delete l.session_chain.lease.activation_deadline_at;
+  const before = structuredClone(l);
+  assert.equal(nextAction(l, { now: NOW }).gate.activation, 'legacy-unprotected');
+  assert.deepEqual(l, before);
+
+  l.session_chain.lease.activation_deadline_at = null;
+  assert.equal(nextAction(l, { now: NOW }).gate.activation, undefined);
+  delete l.session_chain.lease.activation_deadline_at;
+  l.session_chain.lease.state = 'released';
+  assert.equal(nextAction(l, { now: NOW }).gate.activation, undefined);
+});
+
+test('SLICE-008 activation labels preserve the next-action descriptor grammar', () => {
+  const l = loop();
+  l.session_chain.lease.activation_deadline_at = '2026-06-24T00:15:00.000Z';
+  assert.deepEqual(Object.keys(nextAction(l, { now: NOW })).sort(), [
+    'action', 'gate', 'next_command',
+  ]);
+});
+
 function scopedRoutingLoop({ closed = false, sibling = true, bound = true } = {}) {
   const l = loop();
   const scope = l.session_chain.sessions[0].scope;

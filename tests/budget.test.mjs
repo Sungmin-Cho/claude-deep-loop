@@ -22,7 +22,11 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
-import { releaseLease } from '../scripts/lib/lease.mjs';
+import {
+  acquireLease as acquirePendingLease,
+  reapLease,
+  releaseLease,
+} from '../scripts/lib/lease.mjs';
 import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -184,6 +188,71 @@ test('confirmed positive extension clears every hard predicate and resumes the s
   assert.equal(after.budget.tokens_total, before.budget.tokens_total);
   assert.equal(after.budget.max_wallclock_sec, before.budget.max_wallclock_sec);
   assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'budget-extended').length, 1);
+});
+
+function activationPendingBudgetPause() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-budget-pending-'));
+  const now = Date.parse('2026-07-23T00:00:00.000Z');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date(now),
+  });
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  const owner = 'SLICE008BUDGETOWNER';
+  const acquired = acquirePendingLease(root, runId, {
+    owner,
+    expectGeneration: 1,
+    runtime: 'claude',
+    attemptId: 'SLICE008BUDGETATTEMPT',
+    now,
+    clock: () => Date.parse('2000-01-01T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'gate:budget';
+  data.budget.total = 2;
+  data.budget.spent = 2;
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(root, runId, data);
+  return {
+    root, runId, owner, generation: acquired.generation, now,
+    fence: { owner, generation: acquired.generation },
+  };
+}
+
+test('SLICE-008 F20 budget unpause rearms activation from the private safety clock, not public now', () => {
+  const f = activationPendingBudgetPause();
+  const safetyNow = Date.parse('2026-08-09T10:00:00.000Z');
+  budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'rearm the pending principal after budget relief',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+    clock: () => safetyNow,
+  });
+  assert.equal(
+    readState(f.root, f.runId).data.session_chain.lease.activation_deadline_at,
+    '2026-08-09T10:15:00.000Z',
+  );
+});
+
+test('SLICE-008 F20 budget unpause cannot immediately reap the rearmed principal', () => {
+  const f = activationPendingBudgetPause();
+  const safetyNow = Date.parse('2026-08-09T10:00:00.000Z');
+  budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'rearm before immediate expiry evaluation',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+    clock: () => safetyNow,
+  });
+  assert.deepEqual(reapLease(f.root, f.runId, {
+    owner: f.owner,
+    generation: f.generation,
+    clock: () => safetyNow,
+  }), { ok: false, reason: 'deadline-not-expired' });
 });
 
 test('budget extension rejects zero, negative, unsafe, absent-wallclock, wrong-pause, stale-fence, and insufficient deltas without mutation', () => {

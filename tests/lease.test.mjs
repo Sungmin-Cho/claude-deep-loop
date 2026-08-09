@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { patch, readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { patch, pauseRun, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { setSessionProfile } from '../scripts/lib/session-profile.mjs';
@@ -20,6 +20,7 @@ import { readLines } from '../scripts/lib/integrity.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 import * as leaseModule from '../scripts/lib/lease.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
+import { recoverRun } from '../scripts/lib/recover.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -1457,4 +1458,149 @@ test('SLICE-007 actual expiry receipt and event data share exact schema rejectio
       assert.equal(validate(candidate).ok, false, `${label}:${source}`);
     }
   }
+});
+
+function sameAttemptAfterPause(fixture) {
+  return acquireLease(fixture.root, fixture.runId, {
+    owner: fixture.owner,
+    expectGeneration: 1,
+    runtime: 'claude',
+    attemptId: ACTIVATION_ATTEMPT,
+  });
+}
+
+test('SLICE-008 F5 old principal return after reap is denied across replay, activation, and business write', () => {
+  const f = seedReapPending();
+  reap(f);
+  assert.deepEqual(sameAttemptAfterPause(f), {
+    ok: true, generation: 2, reason: 'already-owned',
+    proceed: false, consumed: null, replayed: false,
+  });
+  assert.deepEqual(activate(f), { ok: false, reason: 'RUN_PAUSED' });
+  assert.throws(() => patch(f.root, f.runId, 'discovered_items', ['double-progress'], {
+    fence: activationFence(f),
+  }), /RUN_PAUSED/);
+  assert.equal(activationExpiredEvents(f).length, 1);
+});
+
+test('SLICE-008 F8 a live principal that lost the acquire response cannot replay after reap', () => {
+  const f = seedReapPending();
+  assert.equal(readState(f.root, f.runId).data.session_chain.lease.acquisition_receipt.attempt_id, ACTIVATION_ATTEMPT);
+  reap(f);
+  const retry = sameAttemptAfterPause(f);
+  assert.equal(retry.proceed, false);
+  assert.equal(retry.replayed, false);
+  assert.equal(activationExpiredEvents(f).length, 1);
+});
+
+test('SLICE-008 F18 human preserve-pause revokes replay without changing the pending lease', () => {
+  const f = seedActivationPending();
+  const deadline = readState(f.root, f.runId).data.session_chain.lease.activation_deadline_at;
+  pauseRun(f.root, f.runId, {
+    reason: 'human-hold', mode: 'preserve',
+    expect: activationFence(f), now: ACTIVATED_AT,
+  });
+  assert.equal(readState(f.root, f.runId).data.session_chain.lease.activation_deadline_at, deadline);
+  assert.equal(sameAttemptAfterPause(f).replayed, false);
+});
+
+test('SLICE-008 F18 automation-host fail-closed preserve-pause revokes replay origin-neutrally', () => {
+  const f = seedActivationPending();
+  pauseRun(f.root, f.runId, {
+    reason: 'usage-unmeasurable', mode: 'preserve',
+    expect: activationFence(f), now: ACTIVATED_AT,
+  });
+  const retry = sameAttemptAfterPause(f);
+  assert.equal(retry.proceed, false);
+  assert.equal(retry.replayed, false);
+});
+
+test('SLICE-008 F18 kernel expiry preserve-pause revokes replay origin-neutrally', () => {
+  const f = seedReapPending();
+  reap(f);
+  const retry = sameAttemptAfterPause(f);
+  assert.equal(retry.proceed, false);
+  assert.equal(retry.replayed, false);
+});
+
+function rotateActivatedGeneration() {
+  const f = seedActivationPending();
+  activate(f);
+  assert.deepEqual(releaseLease(f.root, f.runId, {
+    owner: f.owner, generation: f.generation,
+  }), { ok: true, reason: 'released' });
+  const nextOwner = 'SLICE008GEN3OWNER';
+  const nextAttempt = 'SLICE008GEN3ATTEMPT';
+  const acquired = acquireLease(f.root, f.runId, {
+    owner: nextOwner,
+    expectGeneration: f.generation,
+    runtime: 'claude',
+    attemptId: nextAttempt,
+    clock: () => Date.parse('2026-08-09T12:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  return { ...f, nextOwner, nextAttempt, nextGeneration: acquired.generation };
+}
+
+test('SLICE-008 F21 generation rotation clears activation and expiry receipts and creates a fresh deadline', () => {
+  const f = rotateActivatedGeneration();
+  const current = readState(f.root, f.runId).data.session_chain.lease;
+  assert.equal(Object.hasOwn(current, 'activation'), false);
+  assert.equal(Object.hasOwn(current, 'expiry_receipt'), false);
+  assert.equal(current.activation_deadline_at, '2026-08-09T12:15:00.000Z');
+});
+
+test('SLICE-008 F21 an old generation token cannot consume the new generation', () => {
+  const f = rotateActivatedGeneration();
+  assert.throws(() => leaseModule.activateLease(f.root, f.runId, {
+    owner: f.owner,
+    generation: f.generation,
+    runtime: 'claude',
+    attemptId: ACTIVATION_ATTEMPT,
+    activationToken: ACTIVATION_TOKEN,
+  }), /LEASE_FENCED/);
+  assert.equal(Object.hasOwn(readState(f.root, f.runId).data.session_chain.lease, 'activation'), false);
+});
+
+test('SLICE-008 F21 recover then fresh acquire clears the prior expiry receipt', () => {
+  const f = seedReapPending();
+  reap(f);
+  assert.equal(Object.hasOwn(readState(f.root, f.runId).data.session_chain.lease, 'expiry_receipt'), true);
+  recoverRun(f.root, f.runId, {
+    expect: activationFence(f),
+    confirm: true,
+    now: REAP_DECIDED,
+  });
+  const acquired = acquireLease(f.root, f.runId, {
+    owner: 'SLICE008RECOVEREDOWNER',
+    expectGeneration: f.generation,
+    runtime: 'claude',
+    attemptId: 'SLICE008RECOVERATTEMPT',
+    clock: () => Date.parse('2026-08-09T13:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  assert.equal(Object.hasOwn(readState(f.root, f.runId).data.session_chain.lease, 'expiry_receipt'), false);
+});
+
+test('SLICE-008 F17 legacy active lease validates, reads, does not reap or replay, and remains byte-stable', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.acquisition_receipt.attempt_id = null;
+  delete data.session_chain.lease.activation_deadline_at;
+  delete data.session_chain.lease.activation;
+  delete data.session_chain.lease.expiry_receipt;
+  writeState(f.root, f.runId, data);
+  assert.equal(validate(readState(f.root, f.runId).data).ok, true);
+  assert.equal(Object.hasOwn(readState(f.root, f.runId).data.session_chain.lease, 'activation_deadline_at'), false);
+  const before = durableLeaseBytes(f.root, f.runId);
+  assert.deepEqual(reapLease(f.root, f.runId, {
+    owner: f.owner, generation: f.generation,
+    clock: () => Date.parse(REAP_DECIDED),
+  }), { ok: false, reason: 'no-expiry-pending' });
+  const retry = acquireLease(f.root, f.runId, {
+    owner: f.owner, expectGeneration: 1, runtime: 'claude', attemptId: ACTIVATION_ATTEMPT,
+  });
+  assert.equal(retry.proceed, false);
+  assert.equal(retry.replayed, false);
+  assert.deepEqual(durableLeaseBytes(f.root, f.runId), before);
 });
