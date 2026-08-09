@@ -392,6 +392,10 @@ function trustedWorkflowSource() {
   assert.equal([...extracted.matchAll(testEnvSentinel)].length, 1,
     'production test-environment authority must be a single null sentinel');
   extracted = extracted.replace(testEnvSentinel, 'const TEST_ENV = process.env;');
+  const runChildrenSentinel = /const RUN_CHILDREN = true;/g;
+  assert.equal([...extracted.matchAll(runChildrenSentinel)].length, 1,
+    'production child execution authority must be a single true sentinel');
+  extracted = extracted.replace(runChildrenSentinel, "const RUN_CHILDREN = testEnv('DEEP_LOOP_RUN_CHILDREN') === '1';");
   const platformGuard = /if \(process\.platform !== 'linux' \|\| process\.arch !== 'x64' \|\| Number\(process\.versions\.node\.split\('\.'\)\[0\]\) < 20\)\n\s*throw new Error\('unsupported provisioned Linux\/x64 Node topology'\);/g;
   assert.equal([...extracted.matchAll(platformGuard)].length, 1, 'production platform guard must be exact and singular');
   extracted = extracted.replace(platformGuard, "if (false) throw new Error('unsupported provisioned Linux/x64 Node topology');");
@@ -461,6 +465,9 @@ test('trusted bootstrap imports only FD-bound V1', () => {
   assert.doesNotMatch(production, /process\.env\.(?:DEEP_LOOP_TEST|DEEP_LOOP_CHILD|DEEP_LOOP_RUN_CHILDREN)/,
     'production source must not read ambient fault-injection variables');
   assert.match(source, /const TEST_ENV = process\.env;/);
+  assert.equal((production.match(/const RUN_CHILDREN = true;/g) || []).length, 1,
+    'production must retain one true child-execution authority');
+  assert.match(source, /const RUN_CHILDREN = testEnv\('DEEP_LOOP_RUN_CHILDREN'\) === '1';/);
   assert.match(production, /const TEST_CHILD_TIMEOUT_MS = null;/);
   assert.match(source, /const TEST_CHILD_TIMEOUT_MS = Number\(process\.env\.DEEP_LOOP_TEST_CHILD_TIMEOUT_MS\)/);
   assert.match(production, /const TEST_PROBE_PROJECT_ROOT = null;[\s\S]*const TEST_PROBE_RUN_ID = null;/);
@@ -554,8 +561,16 @@ test('A-only driver uses the real staged production source and leaves persistent
   writeFileSync(join(fixture.project, '.deep-loop', 'current'), `${siblingRunId}\n`);
   const beforeA = durableRunSnapshot(fixture.project, fixture.runId);
   const beforeB = durableRunSnapshot(fixture.project, siblingRunId);
-  const result = runTrustedVerifier(fixture, {
-    DEEP_LOOP_RUN_CHILDREN: '1',
+  const beforeCandidate = byteSnapshot(fixture.candidate);
+  const beforeProject = byteSnapshot(fixture.project);
+  const beforeWorkspace = byteSnapshot(fixture.workspace);
+  const result = runProductionWorkflowForTest(fixture, {
+    DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE: '1',
+    DEEP_LOOP_TEST_RUN_DIRECTORY_SWAP: '1',
+    DEEP_LOOP_TEST_CANDIDATE_SWAP: '1',
+    DEEP_LOOP_TEST_BARRIER: 'before-token',
+    DEEP_LOOP_TEST_WRONG_HEADER: '1',
+    DEEP_LOOP_CHILD_V1_MARKER: join(fixture.base, 'ambient-marker'),
   });
   assert.equal(result.status, 0, result.stdout);
   const output = JSON.parse(result.stdout.trim());
@@ -564,7 +579,11 @@ test('A-only driver uses the real staged production source and leaves persistent
   assert.equal(output.project_root, fixture.project);
   assert.equal(output.probe, 1);
   assert.equal(output.driver, 1);
+  assert.equal(output.spawn, 2);
   assert.equal(output.mutation, 0);
+  assert.deepEqual(byteSnapshot(fixture.candidate), beforeCandidate);
+  assert.deepEqual(byteSnapshot(fixture.project), beforeProject);
+  assert.deepEqual(byteSnapshot(fixture.workspace), beforeWorkspace);
   assert.deepEqual(durableRunSnapshot(fixture.project, fixture.runId), beforeA);
   assert.deepEqual(durableRunSnapshot(fixture.project, siblingRunId), beforeB);
   assert.deepEqual(readdirSync(fixture.workspace), [], 'ordinary target workspace remains source-empty');
@@ -616,6 +635,10 @@ test('post-final-parent swap does not import V2', () => {
   const source = trustedWorkflowSource();
   assert.match(source, /verifyCandidateStillMatches\(\);[\s\S]{0,500}verifyStage\(\);/);
   assert.match(source, /DEEP_LOOP_TEST_POST_FINAL_SWAP/);
+  assert.match(source, /const v2Marker = testEnv\('DEEP_LOOP_CHILD_V1_MARKER'\)/);
+  assert.match(source, /const marker =/);
+  assert.doesNotMatch(source, /fs\.appendFileSync\(testEnv\('DEEP_LOOP_CHILD_V1_MARKER'\)/,
+    'generated V2 must not depend on a free testEnv binding');
   assert.match(source, /DEEP_LOOP_ROOT\s*=\s*fdRoot/);
   assert.doesNotMatch(source, /DEEP_LOOP_CANDIDATE_ROOT[\s\S]{0,120}import/);
 });
@@ -623,6 +646,11 @@ test('post-final-parent swap does not import V2', () => {
 test('post-final-parent V2 pathname swap remains V1-bound', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
   const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
   const marker = join(fixture.base, 'child-v1.log');
+  const source = trustedWorkflowSource();
+  assert.match(source, /const v2Marker = testEnv\('DEEP_LOOP_CHILD_V1_MARKER'\)/);
+  assert.match(source, /const marker =/);
+  assert.doesNotMatch(source, /fs\.appendFileSync\(testEnv\('DEEP_LOOP_CHILD_V1_MARKER'\)/,
+    'generated V2 must not depend on a free testEnv binding');
   const result = runTrustedVerifier(fixture, {
     DEEP_LOOP_RUN_CHILDREN: '1',
     DEEP_LOOP_CHILD_V1_MARKER: marker,
@@ -1031,41 +1059,6 @@ test('source identity positive 17-record fixture', () => {
   assert.ok(records.includes('c0:e0'), 'À/à fold is pinned');
   assert.ok(records.includes('3a3:3c3'), 'Σ/σ fold is pinned');
   assert.ok(records.includes('df:73.73'), 'ß/ss fold is pinned');
-});
-
-test('production verifier ignores ambient fault seams and preserves all durable vectors', () => {
-  const fixture = seedTrustedFixture();
-  const { runId: siblingRunId } = initRun(fixture.project, {
-    runtime: 'claude', goal: 'ambient seam sibling', detected: {},
-    now: new Date('2026-06-24T00:00:03.000Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
-  });
-  const beforeA = durableRunSnapshot(fixture.project, fixture.runId);
-  const beforeB = durableRunSnapshot(fixture.project, siblingRunId);
-  const beforeCandidate = byteSnapshot(fixture.candidate);
-  const beforeProject = byteSnapshot(fixture.project);
-  const beforeWorkspace = byteSnapshot(fixture.workspace);
-  const result = runProductionWorkflowForTest(fixture, {
-    DEEP_LOOP_RUN_CHILDREN: '1',
-    DEEP_LOOP_TEST_RUN_DIRECTORY_SWAP: '1',
-    DEEP_LOOP_TEST_CANDIDATE_SWAP: '1',
-    DEEP_LOOP_TEST_BARRIER: 'before-token',
-    DEEP_LOOP_TEST_STAGE_BARRIER: '1',
-    DEEP_LOOP_TEST_WRONG_HEADER: '1',
-    DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE: '1',
-    DEEP_LOOP_CHILD_V1_MARKER: join(fixture.base, 'ambient-marker'),
-  });
-  assert.equal(result.status, 0, result.stdout);
-  const verified = JSON.parse(result.stdout.trim());
-  assert.equal(verified.ok, true);
-  assert.equal(verified.probe, 0);
-  assert.equal(verified.driver, 0);
-  assert.equal(verified.spawn, 0);
-  assert.equal(verified.mutation, 0);
-  assert.deepEqual(byteSnapshot(fixture.candidate), beforeCandidate);
-  assert.deepEqual(byteSnapshot(fixture.project), beforeProject);
-  assert.deepEqual(byteSnapshot(fixture.workspace), beforeWorkspace);
-  assert.deepEqual(durableRunSnapshot(fixture.project, fixture.runId), beforeA);
-  assert.deepEqual(durableRunSnapshot(fixture.project, siblingRunId), beforeB);
 });
 
 test('authentic anchored event-log chain and head are accepted', () => {

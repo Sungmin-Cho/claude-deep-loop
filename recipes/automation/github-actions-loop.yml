@@ -81,6 +81,9 @@ jobs:
           // single exact sentinel in an extracted copy only.
           const TEST_ENV = null;
           const testEnv = name => TEST_ENV?.[name];
+          // Official workflow execution is production-owned and always enabled.
+          // Tests rewrite this exact sentinel in their extracted harness only.
+          const RUN_CHILDREN = true;
           // Production keeps child timeout overrides disabled; tests rewrite this exact
           // null sentinel in the extracted workflow source only.
           const TEST_CHILD_TIMEOUT_MS = null;
@@ -114,7 +117,7 @@ jobs:
             "for (const record of records) { const before = fs.lstatSync(record.path, { bigint: true }); const rel = Buffer.from(record.rel); const frameBytes = 16 + rel.length + Number(before.size); if (!before.isFile() || before.size > 16n * 1024n * 1024n || before.dev !== BigInt(record.dev) || before.ino !== BigInt(record.ino) || (before.mode & 0o777n) !== BigInt(record.mode) || before.nlink !== BigInt(record.nlink) || pathBytes + rel.length > 16 * 1024 * 1024 || framedBytes + frameBytes > 512 * 1024 * 1024 || contentBytes + Number(before.size) > 256 * 1024 * 1024) throw new Error('bootstrap aggregate bound exceeded'); const rfd = fs.openSync(record.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); let bytes; try { const opened = fs.fstatSync(rfd, { bigint: true }); if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.nlink !== before.nlink || (opened.mode & 0o777n) !== (before.mode & 0o777n)) throw new Error('bootstrap file identity drift'); bytes = Buffer.alloc(Number(opened.size)); let offset = 0; while (offset < bytes.length) { const read = fs.readSync(rfd, bytes, offset, bytes.length - offset, offset); if (read === 0) throw new Error('bootstrap short read'); offset += read; } } finally { fs.closeSync(rfd); } const after = fs.lstatSync(record.path, { bigint: true }); if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.nlink !== before.nlink || (after.mode & 0o777n) !== (before.mode & 0o777n)) throw new Error('bootstrap file changed after read'); contentBytes += bytes.length; pathBytes += rel.length; framedBytes += frameBytes; const pLen = Buffer.alloc(8); pLen.writeBigUInt64BE(BigInt(rel.length)); const cLen = Buffer.alloc(8); cLen.writeBigUInt64BE(BigInt(bytes.length)); hash.update(pLen); hash.update(rel); hash.update(cLen); hash.update(bytes); }",
             "if (hash.digest('hex') !== expectedDigest) throw new Error('bootstrap stage digest mismatch');",
             "const publicEntry = path.join(publicReal, ...entrypoint.split('/')); const fdEntry = path.join(fdRoot, ...entrypoint.split('/')); const publicEntryStat = fs.lstatSync(publicEntry); const fdEntryStat = fs.lstatSync(fdEntry); if (!publicEntryStat.isFile() || publicEntryStat.isSymbolicLink() || !fdEntryStat.isFile() || fdEntryStat.isSymbolicLink() || publicEntryStat.dev !== fdEntryStat.dev || publicEntryStat.ino !== fdEntryStat.ino) throw new Error('bootstrap entrypoint identity mismatch');",
-            "let postSwapOld = null; if (testEnv('DEEP_LOOP_TEST_POST_FINAL_SWAP') === '1') { postSwapOld = publicRoot + '.post-final-old'; fs.renameSync(publicRoot, postSwapOld); fs.cpSync(postSwapOld, publicRoot, { recursive: true, errorOnExist: true, force: false }); if (testEnv('DEEP_LOOP_TEST_POST_FINAL_V2') === '1') { const v2Path = path.join(publicRoot, 'scripts/lib/child-transitive.mjs'); fs.chmodSync(v2Path, 0o644); fs.writeFileSync(v2Path, \"import fs from 'node:fs'; export function record() { if (testEnv('DEEP_LOOP_CHILD_V1_MARKER')) fs.appendFileSync(testEnv('DEEP_LOOP_CHILD_V1_MARKER'), 'v2-imported\\\\n'); }\\n\"); fs.chmodSync(v2Path, 0o444); } }",
+            "let postSwapOld = null; if (testEnv('DEEP_LOOP_TEST_POST_FINAL_SWAP') === '1') { postSwapOld = publicRoot + '.post-final-old'; fs.renameSync(publicRoot, postSwapOld); fs.cpSync(postSwapOld, publicRoot, { recursive: true, errorOnExist: true, force: false }); if (testEnv('DEEP_LOOP_TEST_POST_FINAL_V2') === '1') { const v2Marker = testEnv('DEEP_LOOP_CHILD_V1_MARKER'); const v2Path = path.join(publicRoot, 'scripts/lib/child-transitive.mjs'); fs.chmodSync(v2Path, 0o644); fs.writeFileSync(v2Path, \"import fs from 'node:fs'; const marker = \" + JSON.stringify(v2Marker ?? null) + \"; export function record() { if (marker) fs.appendFileSync(marker, 'v2-imported\\\\n'); }\\n\"); fs.chmodSync(v2Path, 0o444); } }",
             "process.argv = [process.execPath, fdEntry, ...publicArgv]; process.env.DEEP_LOOP_ROOT = fdRoot; await import(pathToFileURL(fdEntry).href); if (postSwapOld) { const retainedPost = `${publicRoot}.post-new-${process.pid}`; fs.renameSync(publicRoot, retainedPost); fs.renameSync(postSwapOld, publicRoot); }",
           ];
           // Unicode 15.1.0 CaseFolding.txt, statuses C and F; F supersedes S, T excluded.
@@ -1182,7 +1185,7 @@ jobs:
                 else terminate('child-termination-failed');
               });
             });
-            if (testEnv('DEEP_LOOP_RUN_CHILDREN') === '1') {
+            if (RUN_CHILDREN) {
               if (testEnv('DEEP_LOOP_TEST_STAGE_HARDLINK_REPLACE') === '1') {
                 const metadataDir = path.join(stage, '.codex-plugin');
                 const metadataTarget = path.join(metadataDir, 'plugin.json');
