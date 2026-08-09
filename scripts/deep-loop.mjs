@@ -16,6 +16,7 @@ import {
   runDir,
   findRoot,
 } from './lib/state.mjs';
+import { captureVerifiedRunSnapshot } from './lib/integrity.mjs';
 import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
@@ -656,9 +657,14 @@ const handlers = {
     const root = rootOf(f);
     const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const snapshot = captureReconciledRunSnapshot(root, runId, {
+    const captured = captureVerifiedRunSnapshot(root, runId, {
       artifactRels: ['terminal/launch-command.txt', 'terminal/launch-command.meta.json'],
     });
+    if (captured?.ok === false) {
+      error(`${captured.kind || 'integrity-invalid'}:${captured.operation_id || 'none'}:${captured.phase || 'verified-vector'}`);
+      return 1;
+    }
+    const snapshot = captured.snapshot;
     const { data } = snapshot;
     const lease = data.session_chain?.lease || {};
     const childRunId = typeof lease.handoff_child_run_id === 'string'
