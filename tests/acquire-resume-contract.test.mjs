@@ -4,7 +4,7 @@
 // 모든 시간은 고정 NOW 주입 — CLAUDE.md Determinism.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync,
 } from 'node:fs';
@@ -20,11 +20,19 @@ import {
 } from '../scripts/lib/state.mjs';
 import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, activateLease, reapLease, releaseLease } from '../scripts/lib/lease.mjs';
+import {
+  acquireLease, activateLease, leaseCheck, reapLease, releaseLease,
+} from '../scripts/lib/lease.mjs';
 import { acquireRecovery, recoverBoundary, supersedeAffinity } from '../scripts/lib/recover.mjs';
 import { acquireRootRecovery, recoverRelocatedRoot } from '../scripts/lib/project-root-recovery.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import {
+  terminateExactChild,
+  terminationContract,
+  waitForDurableAcquireMarker,
+  writeDurableAcquireMarker,
+} from './helpers/acquire-then-wait.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -34,6 +42,7 @@ const T2 = '2026-07-27T00:20:00.000Z';
 const RECOVERY_ATTEMPT = 'RECOVERYATTEMPT01';
 const ROOT_RECOVERY_ATTEMPT = 'ROOTRECOVERYATTEMPT01';
 const FIXTURE = join(REPO_ROOT, 'tests', 'fixtures', 'acquire-resume-conformance.json');
+const ACQUIRE_THEN_WAIT_HELPER = join(REPO_ROOT, 'tests', 'helpers', 'acquire-then-wait.mjs');
 
 function fence(runId, generation = 1) {
   return { owner: runId, generation, intent: 'business' };
@@ -1170,6 +1179,10 @@ function seedRelocatedRootReservation(runtime = 'claude') {
 }
 
 test('T9 root recovery path: reason acquired, proceed true, receipt without an event', () => {
+  // SLICE-009 scope boundary: root recovery intentionally has no appendAnchored transaction, so
+  // there is no B1/B2 event:appended/state:written seam to inject here. It is excluded from those
+  // seam fixtures; its post-commit principal-death state uses the same deadline + reap settlement
+  // already exercised by F2. This direct contract must not be generalized into a nonexistent seam.
   const f = seedRelocatedRootReservation();
   const before = readStateForRootRecovery(f.root, f.runId).data;
   const child = before.session_chain.sessions.find(
@@ -1885,4 +1898,182 @@ test('SLICE-004 F7 different replacement attempts yield at most one proceeding c
     ['already-owned', false, false],
     ['already-owned', false, false],
   ]);
+});
+
+// ── SLICE-009: process-death barrier (F1 regression above + F3a/F3b) ──────────
+
+test('SLICE-009 helper has IPC-bounded waiting and no fixed-sleep mechanism', () => {
+  const source = readFileSync(ACQUIRE_THEN_WAIT_HELPER, 'utf8');
+  assert.doesNotMatch(source, /\b(?:setTimeout|setInterval|Atomics\.wait)\s*\(/);
+  assert.match(source, /AbortSignal\.timeout\(timeoutMs\)/);
+  assert.doesNotMatch(source, /\bactivateLease\b/,
+    'the death helper must stop between acquire and activation');
+  assert.match(source, /writeFileSync\(fd, bytes\);\s+fsyncSync\(fd\);/,
+    'the marker bytes must be flushed before the writer reports success');
+  const markerWrite = source.indexOf('const marker = writeDurableAcquireMarker(');
+  const ipcSend = source.indexOf('process.send({', markerWrite);
+  assert.ok(markerWrite >= 0 && ipcSend > markerWrite,
+    'the child must finish the durable marker write before sending the success IPC');
+});
+
+test('SLICE-009 durable marker writer exposes complete bytes only after fsync', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-f3b-marker-'));
+  const markerPath = join(root, 'acquired.json');
+  const payload = {
+    schema_version: 1,
+    phase: 'acquire-returned-before-activation',
+    pid: process.pid,
+  };
+  const written = writeDurableAcquireMarker(markerPath, payload);
+  assert.deepEqual(JSON.parse(readFileSync(markerPath, 'utf8')), payload);
+  assert.deepEqual(readFileSync(markerPath), written.bytes);
+  assert.match(written.sha256, /^[0-9a-f]{64}$/);
+  assert.throws(() => writeDurableAcquireMarker(markerPath, payload), /EEXIST/,
+    'exclusive creation prevents a stale marker from being mistaken for this child');
+});
+
+test('SLICE-009 termination contract distinguishes Windows forceful termination from POSIX SIGKILL', () => {
+  assert.deepEqual(terminationContract('win32'), {
+    request: 'SIGKILL',
+    mechanism: 'windows-forceful-abrupt-termination',
+    expected_exit: { code: null, signal: 'SIGKILL' },
+  });
+  assert.deepEqual(terminationContract('darwin'), {
+    request: 'SIGKILL',
+    mechanism: 'posix-sigkill',
+    expected_exit: { code: null, signal: 'SIGKILL' },
+  });
+});
+
+test('SLICE-009 F3a injected death before activate event append leaves activation wholly absent', () => {
+  const f = seedReleased();
+  const owner = 'F3ALOGICALDEATHOWNER';
+  const attemptId = 'F3ALOGICALDEATHATTEMPT';
+  const acquired = acquireLease(f.root, f.runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    now: Date.parse(T2), clock: () => Date.parse(T2),
+  });
+  assert.equal(acquired.proceed, true);
+  const beforeDeath = anchoredBytes(f.root, f.runId);
+
+  // B3 is the boundary immediately before activate's appendAnchored event append. A process death
+  // here means the activate transaction is never entered; F3b below exercises that boundary with
+  // an actual killed process, while this seam model proves its exact durable precondition.
+  const enterActivateTransaction = (beforeEventAppend) => {
+    beforeEventAppend('activate:event:appended:before');
+    return activateLease(f.root, f.runId, {
+      owner, generation: acquired.generation, runtime: 'claude', attemptId,
+      activationToken: 'F3ALogicalActivationToken', now: Date.parse(T2) + 1,
+    });
+  };
+  assert.throws(() => enterActivateTransaction((barrier) => {
+    assert.equal(barrier, 'activate:event:appended:before');
+    throw new Error('SIMULATED_B3_PRINCIPAL_DEATH');
+  }), /SIMULATED_B3_PRINCIPAL_DEATH/);
+
+  assert.equal(Object.hasOwn(lease(f.root, f.runId), 'activation'), false);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 0);
+  assert.deepEqual(anchoredBytes(f.root, f.runId), beforeDeath);
+  assert.deepEqual(leaseCheck(readState(f.root, f.runId).data, {
+    owner, generation: acquired.generation, intent: 'business', runtime: 'claude',
+  }), { ok: false, reason: 'ACTIVATION_PENDING' });
+});
+
+test('SLICE-009 F3a reap settles the pre-activation death model with a subject-bound receipt', () => {
+  const f = seedReleased();
+  const owner = 'F3AREAPDEATHOWNER';
+  const attemptId = 'F3AREAPDEATHATTEMPT';
+  const acquired = acquireLease(f.root, f.runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    now: Date.parse(T2), clock: () => Date.parse(T2),
+  });
+  const pending = lease(f.root, f.runId);
+  assert.equal(Object.hasOwn(pending, 'activation'), false);
+
+  assert.deepEqual(reapLease(f.root, f.runId, {
+    owner,
+    generation: acquired.generation,
+    clock: () => Date.parse(pending.activation_deadline_at) + 1,
+  }), { ok: true, reason: 'activation-expired', transition: 'preserve-pause' });
+  const settled = readState(f.root, f.runId).data;
+  assert.equal(settled.status, 'paused');
+  assert.equal(settled.pause_reason, 'activation-expired');
+  assert.equal(settled.session_chain.lease.activation_deadline_at, null);
+  assert.equal(settled.session_chain.lease.expiry_receipt.subject_owner_run_id, owner);
+  assert.equal(settled.session_chain.lease.expiry_receipt.subject_attempt_id, attemptId);
+  assert.equal(settled.session_chain.lease.expiry_receipt.subject_to_generation, acquired.generation);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'activation-expired').length, 1);
+});
+
+test('SLICE-009 F3b exact acquired child death is reaped after durable IPC observation', async (t) => {
+  const f = seedReleased();
+  const owner = 'F3BREALDEATHOWNER';
+  const attemptId = 'F3BREALDEATHATTEMPT';
+  const markerPath = join(f.root, 'f3b-acquired-marker.json');
+  const safetyNow = Date.parse(T2);
+  const child = fork(ACQUIRE_THEN_WAIT_HELPER, [
+    f.root,
+    f.runId,
+    owner,
+    '1',
+    attemptId,
+    String(Date.parse(T2)),
+    String(safetyNow),
+    markerPath,
+  ], {
+    cwd: REPO_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk.toString('utf8'); });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      await terminateExactChild(child).catch(() => {});
+    }
+  });
+
+  const observed = await waitForDurableAcquireMarker(child, markerPath, { timeoutMs: 30_000 });
+  assert.equal(stderr, '');
+  assert.equal(observed.message.pid, child.pid);
+  assert.equal(observed.marker.pid, child.pid);
+  assert.equal(observed.marker.owner_run_id, owner);
+  assert.equal(observed.marker.attempt_id, attemptId);
+  assert.equal(observed.marker.proceed, true);
+  assert.equal(observed.marker.replayed, false);
+  assert.equal(observed.marker.to_generation, 2);
+
+  const termination = await terminateExactChild(child, {
+    platform: process.platform,
+    timeoutMs: 30_000,
+  });
+  assert.equal(termination.target_pid, child.pid, 'only the exact acquired child PID is targeted');
+  assert.equal(termination.sent, true);
+  assert.deepEqual(
+    { code: termination.code, signal: termination.signal },
+    termination.expected_exit,
+    `${termination.mechanism}: ${stderr}`,
+  );
+  assert.deepEqual(readFileSync(markerPath), observed.bytes,
+    'the acquire marker remains durable after its writer is dead');
+
+  const pending = lease(f.root, f.runId);
+  assert.equal(pending.owner_run_id, owner);
+  assert.equal(pending.generation, 2);
+  assert.equal(pending.acquisition_receipt.attempt_id, attemptId);
+  assert.equal(Object.hasOwn(pending, 'activation'), false);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 0);
+  assert.equal(readState(f.root, f.runId).data.status, 'running');
+
+  assert.deepEqual(reapLease(f.root, f.runId, {
+    owner,
+    generation: 2,
+    clock: () => Date.parse(pending.activation_deadline_at) + 1,
+  }), { ok: true, reason: 'activation-expired', transition: 'preserve-pause' });
+  const settled = readState(f.root, f.runId).data;
+  assert.equal(settled.status, 'paused');
+  assert.equal(settled.pause_reason, 'activation-expired');
+  assert.equal(settled.session_chain.lease.expiry_receipt.subject_owner_run_id, owner);
+  assert.equal(settled.session_chain.lease.expiry_receipt.subject_attempt_id, attemptId);
+  assert.equal(settled.session_chain.lease.expiry_receipt.subject_to_generation, 2);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'activation-expired').length, 1);
 });
