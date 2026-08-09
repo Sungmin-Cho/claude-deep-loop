@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, unlinkSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
-import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { createDirectoryJunction, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 const FIXED = new Date('2026-07-07T00:00:00Z');
 const NOSLEEP = () => {};
@@ -158,7 +158,7 @@ test('captureLatestInsightsSet rejects parent real-directory to symlink replacem
         swapped = true;
         renameSync(dir, moved);
         try {
-          symlinkSync(outside, dir, 'dir');
+          createDirectoryJunction(outside, dir);
         } catch (error) {
           t.skip(`directory symlinks unavailable: ${error.code || error.message}`);
         }

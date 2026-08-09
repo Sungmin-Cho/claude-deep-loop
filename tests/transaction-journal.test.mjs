@@ -11,7 +11,6 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +25,7 @@ import * as stateApi from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import * as integrityApi from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { createDirectoryJunction, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { createDirectoryJunction, createFileSymlink, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 test('transaction journal exports the locked preparation surface', () => {
   assert.equal(typeof journal.preparePublicationStagesLocked, 'function');
@@ -2151,7 +2150,7 @@ test('verified vector binds the initial regular-file identity against a symlink 
         if (path === target && !swapped) {
           swapped = true;
           rmSync(target);
-          symlinkSync(outside, target);
+          createFileSymlink(outside, target);
         }
         return stat;
       },
@@ -2194,7 +2193,7 @@ test('verified transaction inspection binds the initial directory identity befor
         if (path === transactions && !swapped) {
           swapped = true;
           rmSync(transactions, { recursive: true });
-          symlinkSync(outside, transactions, 'dir');
+          createDirectoryJunction(outside, transactions);
         }
         return captureStableFileIdentity(path);
       },

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, lstatSync, realpathSync, readdirSync, rmSync, symlinkSync, linkSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, lstatSync, realpathSync, readdirSync, rmSync, linkSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-
 import { pauseRun } from '../scripts/lib/state.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { createDirectoryJunction, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1002,7 +1003,7 @@ test('source inventory rejects changed extra missing symlink and hardlink entrie
     DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: fixtureDigest(),
   }));
   const symlinkFixture = seedTrustedFixture();
-  symlinkSync(symlinkFixture.workspace, join(symlinkFixture.candidate, 'scripts', 'alias'));
+  createDirectoryJunction(symlinkFixture.workspace, join(symlinkFixture.candidate, 'scripts', 'alias'));
   assertConfigurationInvalid(runTrustedVerifier(symlinkFixture));
   const hardlinkFixture = seedTrustedFixture();
   linkSync(join(hardlinkFixture.candidate, 'scripts', 'deep-loop.mjs'), join(hardlinkFixture.candidate, 'scripts', 'hardlink.mjs'));
@@ -1013,7 +1014,7 @@ test('source inventory rejects changed extra missing symlink and hardlink entrie
 
 test('source preflight rejects retained-stage aliases, target-log residue, and directory over-cap', () => {
   const retained = seedTrustedFixture();
-  symlinkSync(retained.workspace, join(retained.stageParent, 'deep-loop-stage-foreign'));
+  createDirectoryJunction(retained.workspace, join(retained.stageParent, 'deep-loop-stage-foreign'));
   assertConfigurationInvalid(runTrustedVerifier(retained));
 
   const badLog = seedTrustedFixture();
@@ -1066,12 +1067,12 @@ test('root tokens reject candidate and initial-stage same-byte swaps', () => {
   assertConfigurationInvalid(runTrustedVerifier(seedTrustedFixture(), { DEEP_LOOP_TEST_STAGE_INITIAL_SWAP: '1' }));
 });
 
-test('run containment rejects symlinked run directories and prepared residue', () => {
+test('run containment rejects symlinked run directories and prepared residue', (t) => {
   const symlinked = seedTrustedFixture();
   const runDirectory = join(symlinked.project, '.deep-loop', 'runs', symlinked.runId);
   const moved = `${runDirectory}.real`;
   renameSync(runDirectory, moved);
-  symlinkSync(moved, runDirectory);
+  createDirectoryJunction(moved, runDirectory);
   assertConfigurationInvalid(runTrustedVerifier(symlinked));
 
   const prepared = seedTrustedFixture();
@@ -1083,7 +1084,7 @@ test('run containment rejects symlinked run directories and prepared residue', (
   const dangling = seedTrustedFixture();
   const danglingTransactions = join(dangling.project, '.deep-loop', 'runs', dangling.runId, 'transactions');
   mkdirSync(danglingTransactions, { recursive: true });
-  symlinkSync('missing-operation', join(danglingTransactions, 'op-dangling'));
+  createDirectoryJunction('missing-operation', join(danglingTransactions, 'op-dangling'));
   assertConfigurationInvalid(runTrustedVerifier(dangling));
 
   const committedOnly = seedTrustedFixture();
@@ -1157,7 +1158,7 @@ test('run containment rejects symlinked run directories and prepared residue', (
   const nestedStages = join(nestedSymlink.project, '.deep-loop', 'runs', nestedSymlink.runId, 'transactions', nestedOperation, 'stages');
   const nestedStage = join(nestedStages, readdirSync(nestedStages)[0]);
   renameSync(nestedStage, `${nestedStage}.real`);
-  symlinkSync(`${nestedStage}.real`, nestedStage);
+  if (!createFileSymlinkOrSkip(t, `${nestedStage}.real`, nestedStage)) return;
   assertConfigurationInvalid(runTrustedVerifier(nestedSymlink));
 
   const missingTargetDone = seedTrustedFixture({ committedPublication: true });
