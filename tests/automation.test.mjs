@@ -790,7 +790,8 @@ function seedTrustedFixture({
       if (stat.isDirectory() && (stat.mode & 0o022) === 0) fixtureParent = home;
     } catch { /* portable fallback keeps non-Linux fixtures available */ }
   }
-  const base = mkdtempSync(join(fixtureParent, 'dl-github-source-'));
+  const canonicalFixturePath = realpathSync.native || realpathSync;
+  const base = canonicalFixturePath(mkdtempSync(join(fixtureParent, 'dl-github-source-')));
   const candidate = join(base, 'candidate'); const stageParent = join(base, 'stage-parent');
   const project = join(base, 'project'); const workspace = workspaceOverlap ? project : join(base, 'workspace');
   mkdirSync(candidate, { recursive: true }); mkdirSync(stageParent); mkdirSync(project, { recursive: true });
@@ -857,7 +858,6 @@ function seedTrustedFixture({
     });
     if (!emitted.ok) throw new Error(`failed to create committed fixture: ${JSON.stringify(emitted)}`);
   }
-  const canonicalFixturePath = realpathSync.native || realpathSync;
   return { base: canonicalFixturePath(base), candidate: canonicalFixturePath(candidate), stageParent: canonicalFixturePath(stageParent),
     project: canonicalFixturePath(project), workspace: canonicalFixturePath(workspace), runId, digest: fixtureDigest(records) };
 }
