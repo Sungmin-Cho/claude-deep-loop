@@ -1,4 +1,13 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  opendirSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import {
@@ -11,6 +20,9 @@ import { findRoot } from '../lib/state.mjs';
 
 const CAP = 3072;
 export const MAX_COMPACT_CAPSULE_WIRE_BYTES = 2048;
+export const MAX_SESSIONSTART_RUN_ENTRIES = 256;
+export const MAX_SESSIONSTART_LOOP_BYTES = 1024 * 1024;
+const SAFE_RUN_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function clamp(value) {
   if (Buffer.byteLength(value, 'utf8') <= CAP) return value;
@@ -20,9 +32,130 @@ function clamp(value) {
   return `${cut}...`;
 }
 
-function currentRunId(root) {
-  const path = join(root, '.deep-loop', 'current');
-  return existsSync(path) ? readFileSync(path, 'utf8').trim() : null;
+function safeRunId(value) {
+  return typeof value === 'string'
+    && value.length <= 200
+    && value !== '.'
+    && value !== '..'
+    && SAFE_RUN_SEGMENT.test(value);
+}
+
+function canonicalExactDirectory(value) {
+  try {
+    return typeof value === 'string'
+      && resolve(value) === value
+      && realpathSync(value) === value
+      && lstatSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function boundedDirectoryNames(path, maxEntries) {
+  let directory;
+  try {
+    directory = opendirSync(path);
+    const names = [];
+    while (true) {
+      const entry = directory.readSync();
+      if (entry === null) return names;
+      if (names.length >= maxEntries) return null;
+      names.push(entry.name);
+    }
+  } catch {
+    return null;
+  } finally {
+    try { directory?.closeSync(); } catch { /* best effort */ }
+  }
+}
+
+function readBoundedExactRegular(path, maxBytes) {
+  let descriptor;
+  try {
+    const entry = lstatSync(path);
+    if (entry.isSymbolicLink() || !entry.isFile() || realpathSync(path) !== path) return null;
+    descriptor = openSync(path, 'r');
+    const stat = fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.size < 1n || stat.size > BigInt(maxBytes)) return null;
+    const expected = Number(stat.size);
+    const bytes = Buffer.allocUnsafe(expected + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return offset === expected ? bytes.subarray(0, offset) : null;
+  } catch {
+    return null;
+  } finally {
+    try { if (descriptor !== undefined) closeSync(descriptor); } catch { /* best effort */ }
+  }
+}
+
+function sessionStartRunCandidate(root, runId, canonicalCwd) {
+  const runPath = join(root, '.deep-loop', 'runs', runId);
+  if (!canonicalExactDirectory(runPath)) return null;
+  const bytes = readBoundedExactRegular(join(runPath, 'loop.json'), MAX_SESSIONSTART_LOOP_BYTES);
+  if (bytes === null) return null;
+  let loop;
+  try { loop = JSON.parse(bytes.toString('utf8')); } catch { return null; }
+  if (loop?.run_id !== runId) return null;
+  try { if (realpathSync(loop?.project?.root) !== root) return null; } catch { return null; }
+
+  let cwdBound = false;
+  const owner = loop?.session_chain?.lease?.owner_run_id;
+  const session = Array.isArray(loop?.session_chain?.sessions)
+    ? loop.session_chain.sessions.find(item => item?.run_id === owner)
+    : null;
+  const workstreamId = session?.scope?.kind === 'workstream'
+    ? session.scope.workstream_id
+    : null;
+  const workstream = typeof workstreamId === 'string' && Array.isArray(loop?.workstreams)
+    ? loop.workstreams.find(item => item?.id === workstreamId)
+    : null;
+  if (typeof workstream?.worktree === 'string') {
+    const worktreePath = resolve(root, workstream.worktree);
+    if (canonicalExactDirectory(worktreePath)) {
+      const rootRelative = relative(root, worktreePath);
+      const cwdRelative = relative(worktreePath, canonicalCwd);
+      cwdBound = Boolean(rootRelative)
+        && !rootRelative.startsWith('..')
+        && !rootRelative.split(sep).includes('..')
+        && (cwdRelative === ''
+          || (!cwdRelative.startsWith('..') && !cwdRelative.split(sep).includes('..')));
+    }
+  }
+  return { runId, active: loop.status === 'running', cwdBound };
+}
+
+export function resolveSessionStartRunId(root, cwd = root) {
+  let canonicalRoot;
+  let canonicalCwd;
+  try {
+    canonicalRoot = realpathSync(root);
+    canonicalCwd = realpathSync(cwd);
+  } catch {
+    return null;
+  }
+  if (!canonicalExactDirectory(canonicalRoot) || !canonicalExactDirectory(canonicalCwd)) return null;
+  const cwdWithinRoot = relative(canonicalRoot, canonicalCwd);
+  if (cwdWithinRoot.startsWith('..') || cwdWithinRoot.split(sep).includes('..')) return null;
+  const runsPath = join(canonicalRoot, '.deep-loop', 'runs');
+  if (!canonicalExactDirectory(runsPath)) return null;
+  const entries = boundedDirectoryNames(runsPath, MAX_SESSIONSTART_RUN_ENTRIES);
+  if (entries === null) return null;
+  const candidates = entries
+    .filter(safeRunId)
+    .sort()
+    .map(runId => sessionStartRunCandidate(canonicalRoot, runId, canonicalCwd))
+    .filter(Boolean);
+  const cwdBound = candidates.filter(candidate => candidate.cwdBound);
+  if (cwdBound.length === 1) return cwdBound[0].runId;
+  if (cwdBound.length > 1) return null;
+  const active = candidates.filter(candidate => candidate.active);
+  if (active.length === 1) return active[0].runId;
+  return active.length === 0 && candidates.length === 1 ? candidates[0].runId : null;
 }
 
 function hostSessionIdentityInput(input) {
@@ -123,6 +256,7 @@ export function resolveSessionStartProjectRoot(cwd, { expectedRoot } = {}) {
 // Read-only restore glue (spec §4.2). No branch mutates durable state.
 export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
+  cwd = root,
   now = Date.now(),
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
   inspectCompact = inspectCompactForSessionStart,
@@ -131,7 +265,7 @@ export function runSessionStartRestore(input = {}, {
   if (input.source !== 'compact') {
     return { ok: true, branch: 'source-other', additionalContext: null };
   }
-  const runId = currentRunId(root);
+  const runId = resolveSessionStartRunId(root, cwd);
   if (!runId) return { ok: true, branch: 'no-run', additionalContext: null };
 
   let hostSessionIdentity;
@@ -288,6 +422,7 @@ export async function main() {
     if (root === null) return;
     const result = runSessionStartRestore(input ?? {}, {
       root,
+      cwd,
       runtimeHint: process.env.CLAUDE_PLUGIN_ROOT ? 'claude' : 'codex',
     });
     if (!result.ok) throw new Error('restore-context-invalid');

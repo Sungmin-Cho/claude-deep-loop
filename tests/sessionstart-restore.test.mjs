@@ -23,6 +23,8 @@ import { advanceHandoffPhase, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { pauseRun, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import {
   MAX_COMPACT_CAPSULE_WIRE_BYTES,
+  MAX_SESSIONSTART_LOOP_BYTES,
+  MAX_SESSIONSTART_RUN_ENTRIES,
   resolveSessionStartProjectRoot,
   runSessionStartRestore,
 } from '../scripts/hooks-impl/sessionstart-restore.mjs';
@@ -434,6 +436,71 @@ test('SessionStart root mapping accepts only canonical base or contained worktre
   assert.equal(resolveSessionStartProjectRoot(nested, { expectedRoot: base }), null);
 });
 
+test('SessionStart resolves the unique cwd-bound run and fails closed on project-wide ambiguity', () => {
+  const root = freshRoot();
+  const first = initBound(root, 'claude');
+  const second = initBound(root, 'codex');
+  const firstCwd = join(root, '.claude', 'worktrees', 'sessionstart-claude', 'src');
+  const secondCwd = join(root, '.claude', 'worktrees', 'sessionstart-codex', 'src');
+  mkdirSync(firstCwd, { recursive: true });
+  mkdirSync(secondCwd, { recursive: true });
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim(), second.runId);
+
+  const selected = [];
+  const inspectCompact = (_root, runId) => {
+    selected.push(runId);
+    return { ok: false, reason: 'checkpoint-not-found' };
+  };
+  const bound = runSessionStartRestore({
+    hook_event_name: 'SessionStart',
+    source: 'compact',
+  }, { root, cwd: firstCwd, now: NOW_MS, inspectCompact });
+  assert.equal(bound.branch, 'no-checkpoint');
+  assert.deepEqual(selected, [first.runId],
+    'a newer project-wide current run must not steal the originating worktree SessionStart');
+
+  selected.length = 0;
+  const ambiguous = runSessionStartRestore({
+    hook_event_name: 'SessionStart',
+    source: 'compact',
+  }, { root, cwd: root, now: NOW_MS, inspectCompact });
+  assert.deepEqual(ambiguous, { ok: true, branch: 'no-run', additionalContext: null });
+  assert.deepEqual(selected, [], 'ambiguous base-root SessionStart must not inspect either run');
+});
+
+test('SessionStart run resolution bounds run inventory and loop bytes before inspection', () => {
+  assert.equal(MAX_SESSIONSTART_RUN_ENTRIES, 256);
+  assert.equal(MAX_SESSIONSTART_LOOP_BYTES, 1024 * 1024);
+  let inspections = 0;
+  const inspectCompact = () => {
+    inspections += 1;
+    return { ok: false, reason: 'checkpoint-not-found' };
+  };
+
+  const inventoryRoot = freshRoot();
+  initBound(inventoryRoot);
+  const runs = join(inventoryRoot, '.deep-loop', 'runs');
+  for (let index = 0; index < MAX_SESSIONSTART_RUN_ENTRIES; index += 1) {
+    writeFileSync(join(runs, `junk-${String(index).padStart(3, '0')}`), 'x');
+  }
+  assert.deepEqual(runSessionStartRestore({
+    hook_event_name: 'SessionStart', source: 'compact',
+  }, { root: inventoryRoot, inspectCompact }), {
+    ok: true, branch: 'no-run', additionalContext: null,
+  });
+  assert.equal(inspections, 0);
+
+  const loopRoot = freshRoot();
+  const { runId } = initBound(loopRoot);
+  writeFileSync(loopPathOf(loopRoot, runId), ' '.repeat(MAX_SESSIONSTART_LOOP_BYTES + 1));
+  assert.deepEqual(runSessionStartRestore({
+    hook_event_name: 'SessionStart', source: 'compact',
+  }, { root: loopRoot, inspectCompact }), {
+    ok: true, branch: 'no-run', additionalContext: null,
+  });
+  assert.equal(inspections, 0);
+});
+
 test('no run / terminal / paused → no injection', () => {
   const noRunRoot = freshRoot();
   assert.deepEqual(restore(noRunRoot), { ok: true, branch: 'no-run', additionalContext: null });
@@ -454,12 +521,12 @@ test('no run / terminal / paused → no injection', () => {
   assert.deepEqual(restore(stoppedRoot), { ok: true, branch: 'terminal-or-paused', additionalContext: null });
 });
 
-test('corrupt loop.json → unreadable with null context', () => {
+test('corrupt unattributable loop.json → no-run with null context', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
   writeFileSync(loopPathOf(root, runId), '{');
 
-  assert.deepEqual(restore(root), { ok: true, branch: 'unreadable', additionalContext: null });
+  assert.deepEqual(restore(root), { ok: true, branch: 'no-run', additionalContext: null });
 });
 
 test('bare reserved(active) → recovery capsule, not resume', () => {
