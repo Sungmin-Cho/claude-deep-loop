@@ -37,6 +37,7 @@ function resolve(runs, options = {}) {
     root: ROOT,
     realpathFn,
     captureRunSet: captureSet(runs, options.errors),
+    platform: options.platform ?? 'linux',
     ...(options.current !== undefined ? { currentRunIdFn: () => options.current } : {}),
     ...options,
   });

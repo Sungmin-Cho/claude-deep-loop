@@ -370,7 +370,9 @@ test('cron-shaped explicit missing run fails closed with routing-invalid exit 1'
 });
 
 function trustedWorkflowSource() {
-  const source = readFileSync(GITHUB_WORKFLOW, 'utf8');
+  // GitHub checks out YAML with CRLF on Windows; normalize only this
+  // line-oriented test extraction boundary.
+  const source = readFileSync(GITHUB_WORKFLOW, 'utf8').replace(/\r\n?/g, '\n');
   const match = source.match(/node\s+--input-type=module\s+<<'NODE'\n([\s\S]*?)\n\s*NODE/);
   assert.ok(match, 'GitHub workflow must carry the trusted inline Node preflight');
   let extracted = match[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
@@ -1576,7 +1578,7 @@ test('driveHeadless: 2nd-gen no-acquire must fail-close (not falsely resumed) �
   const budgetBefore = readState(root, runId).data.budget.spent;
 
   const r = driveHeadless({
-    root, now: NOW1 + 2000,
+    root, runId, now: NOW1 + 2000,
     // child2 exits 0 with usage but NEVER calls /deep-loop-resume — lease stays on child1.
     spawnFn: () => ({ ok: true, usage: { num_turns: 3, tokens: 75 } }),
   });
@@ -1601,7 +1603,7 @@ test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded 
   const { root, runId, child2RunId } = seedRun2ndGenHandoff();
 
   const r = driveHeadless({
-    root, now: NOW1 + 2000,
+    root, runId, now: NOW1 + 2000,
     spawnFn: () => {
       // child2 calls /deep-loop-resume → acquires the lease (generation 2→3).
       const acq = acquireLease(root, runId, { owner: child2RunId, expectGeneration: 2, runtime: 'claude', now: NOW1 + 3000 });

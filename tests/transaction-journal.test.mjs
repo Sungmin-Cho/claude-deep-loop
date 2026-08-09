@@ -1469,7 +1469,8 @@ function durableRunVector(root, runId, expectedAbsent = []) {
     for (const name of readdirSync(current).sort()) {
       if (name === '.lock') continue;
       const path = join(current, name);
-      const rel = path.slice(base.length + 1);
+      // The verified vector contract is portable-root-relative and always uses '/'.
+      const rel = path.slice(base.length + 1).split('\\').join('/');
       const stat = lstatSync(path);
       present.add(rel);
       if (stat.isDirectory()) {
