@@ -30,8 +30,8 @@ function seed({ status = 'running', phase = 'idle', leaseState = 'active' } = {}
   };
 }
 
-function cli(root, args) {
-  return spawnSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+function cli(root, runId, args) {
+  return spawnSync(process.execPath, [CLI, ...args, '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
 }
 
 test('attendedLaunchAuthorized accepts only the exact nested style-bound canonical approval', async () => {
@@ -157,21 +157,21 @@ test('revoke rejects every in-flight handoff shape without mutation', async () =
 
 test('attended-launch CLI exposes confirmation, desktop guidance, and stale-fence exits', () => {
   const f = seed();
-  const missing = cli(f.root, [
+  const missing = cli(f.root, f.runId, [
     'attended-launch', 'approve', '--style', 'visible',
     '--owner', f.fence.owner, '--generation', String(f.fence.generation),
   ]);
   assert.equal(missing.status, 2, missing.stderr);
   assert.match(missing.stderr, /CONFIRM_REQUIRED/);
 
-  const desktop = cli(f.root, [
+  const desktop = cli(f.root, f.runId, [
     'attended-launch', 'approve', '--style', 'desktop', '--confirm',
     '--owner', f.fence.owner, '--generation', String(f.fence.generation),
   ]);
   assert.equal(desktop.status, 1, desktop.stderr);
   assert.match(desktop.stderr, /spawn-style.*confirm-desktop/i);
 
-  const stale = cli(f.root, [
+  const stale = cli(f.root, f.runId, [
     'attended-launch', 'approve', '--style', 'visible', '--confirm',
     '--owner', 'stale-owner', '--generation', String(f.fence.generation),
   ]);
@@ -181,7 +181,7 @@ test('attended-launch CLI exposes confirmation, desktop guidance, and stale-fenc
 
 test('attended-launch CLI approve then revoke is symmetric; revoke terminal and missing-confirm exits are exact', () => {
   const f = seed();
-  const approve = cli(f.root, [
+  const approve = cli(f.root, f.runId, [
     'attended-launch', 'approve', '--style', 'visible', '--confirm',
     '--owner', f.fence.owner, '--generation', String(f.fence.generation),
     '--now', String(Date.parse(APPROVED_AT)),
@@ -191,14 +191,14 @@ test('attended-launch CLI approve then revoke is symmetric; revoke terminal and 
     style: 'visible', approved_at: APPROVED_AT,
   });
 
-  const missing = cli(f.root, [
+  const missing = cli(f.root, f.runId, [
     'attended-launch', 'revoke',
     '--owner', f.fence.owner, '--generation', String(f.fence.generation),
   ]);
   assert.equal(missing.status, 2, missing.stderr);
   assert.match(missing.stderr, /CONFIRM_REQUIRED/);
 
-  const revoke = cli(f.root, [
+  const revoke = cli(f.root, f.runId, [
     'attended-launch', 'revoke', '--confirm',
     '--owner', f.fence.owner, '--generation', String(f.fence.generation),
     '--now', String(Date.parse(APPROVED_AT)),
@@ -209,7 +209,7 @@ test('attended-launch CLI approve then revoke is symmetric; revoke terminal and 
   assert.equal(after.autonomy.attended_launch_approval, null);
 
   const terminal = seed({ status: 'completed' });
-  const rejected = cli(terminal.root, [
+  const rejected = cli(terminal.root, terminal.runId, [
     'attended-launch', 'revoke', '--confirm',
     '--owner', terminal.fence.owner, '--generation', String(terminal.fence.generation),
   ]);
