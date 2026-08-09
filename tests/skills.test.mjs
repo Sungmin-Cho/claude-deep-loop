@@ -1072,16 +1072,25 @@ test('compact restore directly dispatches exactly one qualified continue tick af
   const body = readFileSync(skillPath('deep-loop-compact'), 'utf8');
   const restore = body.match(/## Restore([\s\S]*)/i)?.[1] ?? '';
   const rejection = restore.indexOf('deep-loop-compact-preserve-pause-only');
-  const inspect = restore.indexOf('checkpoint inspect --json');
+  const inspect = restore.indexOf('deep-loop.mjs" checkpoint inspect --json');
+  const prepared = restore.indexOf('trusted SessionStart `prepared` capsule');
   const observation = restore.indexOf('--admission postcompact-observation');
   const manual = restore.indexOf('--admission human-attested');
   const direct = restore.indexOf('Direct dispatch boundary');
-  const fallback = restore.indexOf('For a stale, corrupt, foreign, or missing checkpoint');
+  const fallback = restore.indexOf('### Fresh-affinity fallback');
 
   assert.ok(rejection >= 0 && rejection < inspect,
     'trusted rejection marker must route before evidence-free inspect');
   assert.ok(inspect >= 0 && inspect < observation && observation < manual && manual < direct,
     'inspect and mutually exclusive admissions must precede the direct dispatch boundary');
+  assert.ok(prepared >= 0 && prepared < inspect && inspect < fallback,
+    'trusted prepared SessionStart capsules must branch before checkpoint inspection and restore');
+  const preparedBranch = restore.slice(prepared, inspect);
+  assert.match(preparedBranch, /route[\s\S]{0,180}Fresh-affinity fallback/i);
+  assert.match(preparedBranch, /(?:must not|never)[\s\S]{0,180}checkpoint restore/i,
+    'prepared SessionStart has no PostCompact authority and must not call restore');
+  assert.match(preparedBranch, /(?:must not|never)[\s\S]{0,180}(?:restored capsule|provider evidence)/i,
+    'prepared SessionStart must not fabricate restored provenance');
   assert.match(restore, /Direct dispatch boundary[\s\S]{0,2400}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
   assert.match(restore, /same model turn/i);
   assert.doesNotMatch(restore, /On success, continue[\s\S]{0,120}(?:invokes|print)/i,
@@ -1105,6 +1114,8 @@ test('compact restore directly dispatches exactly one qualified continue tick af
   ]) assert.match(fallbackBody, new RegExp(`state get --field ${field.replace('.', '\\.')}`));
   assert.match(fallbackBody, /open, non-terminal bound Workstream/i);
   assert.match(fallbackBody, /capsule-free[\s\S]{0,240}exactly once/i);
+  assert.match(fallbackBody, /otherwise[\s\S]{0,240}(?:execute|invoke)[\s\S]{0,180}public fenced preserve-pause/i,
+    'failed prepared affinity proof must preserve-pause');
 });
 
 test('continue validates SessionStart and direct-human restored capsules against provenance, cursor, and event head before mutation', () => {

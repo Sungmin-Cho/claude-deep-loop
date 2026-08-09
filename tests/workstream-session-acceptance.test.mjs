@@ -267,6 +267,35 @@ for (const runtime of ['claude', 'codex']) {
         : '$deep-loop:deep-loop-compact restore',
     );
 
+    // A trusted prepared SessionStart capsule has no PostCompact receipt and
+    // therefore takes the capsule-free public fallback. The four views prove
+    // fresh affinity; the single routing read must not restore or mutate.
+    const preparedViews = Object.fromEntries([
+      'session_chain.lease',
+      'session_chain.sessions',
+      'workstreams',
+      'current_episode',
+    ].map(field => [field, jsonResult(cli(root, [
+      'state', 'get', '--field', field, '--run-id', runId,
+    ]), `prepared fallback ${field}`)]));
+    assert.equal(preparedViews['session_chain.lease'].owner_run_id, runId);
+    assert.equal(preparedViews['session_chain.lease'].generation, 1);
+    assert.ok(preparedViews['session_chain.sessions']
+      .some(session => session.run_id === runId
+        && session.scope.workstream_id === workstreamA));
+    assert.equal(preparedViews.workstreams
+      .find(workstream => workstream.id === workstreamA).status, 'planned');
+    assert.equal(preparedViews.current_episode, makerA);
+    const beforePreparedFallback = durableInventory(root, runId);
+    const preparedContinuation = jsonResult(cli(root, [
+      'next-action', '--json', '--now', FIXED_NOW, '--run-id', runId,
+    ]), 'prepared capsule-free continuation tick');
+    assert.equal(preparedContinuation.action.episode_id, makerA);
+    assert.notEqual(preparedContinuation.action.type, 'handoff');
+    assert.deepEqual(durableInventory(root, runId), beforePreparedFallback);
+    assert.equal(eventLog(root, runId)
+      .filter(event => event.type === 'compact-restored').length, 0);
+
     const inspected = jsonResult(cli(root, [
       'checkpoint', 'inspect',
       '--json',
@@ -603,6 +632,88 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(final.session_chain.sessions
       .find(session => session.run_id === handoff.childRunId)
       .scope.workstream_id, workstreamB);
+  });
+}
+
+for (const runtime of ['claude', 'codex']) {
+  test(`${runtime} prepared SessionStart proof failure uses fenced preserve-pause without restore`, () => {
+    const root = mkdtempSync(join(tmpdir(), `deep-loop-prepared-pause-${runtime}-`));
+    mkdirSync(join(root, '.claude', 'worktrees', 'prepared-pause'), { recursive: true });
+    const initialized = jsonResult(cli(root, [
+      'init-run',
+      '--runtime', runtime,
+      '--goal', `Prepared fallback pause ${runtime}`,
+      '--continuation', 'workstream-session',
+      '--now', FIXED_NOW,
+    ]), 'prepared pause init-run');
+    const runId = initialized.run_id;
+    const fence = mutationArgs(runId, runId, 1);
+    const workstreamId = jsonResult(cli(root, [
+      'workstream', 'new',
+      '--title', 'Prepared pause',
+      '--branch', `prepared-pause-${runtime}`,
+      '--worktree', '.claude/worktrees/prepared-pause',
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause workstream').id;
+    const episodeId = jsonResult(cli(root, [
+      'episode', 'new',
+      '--plugin', 'deep-work',
+      '--role', 'maker',
+      '--kind', 'implementation',
+      '--point', 'implementation',
+      '--workstream', workstreamId,
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause episode').id;
+    jsonResult(cli(root, [
+      'episode', 'record',
+      '--id', episodeId,
+      '--status', 'in_progress',
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause bind');
+    jsonResult(cli(root, [
+      'checkpoint', 'emit',
+      '--runtime', runtime,
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause checkpoint');
+    const hook = runSessionStart(root, runtime);
+    assert.equal(hook.status, 0, hook.stderr);
+    const capsule = JSON.parse(
+      JSON.parse(hook.stdout).hookSpecificOutput.additionalContext,
+    ).capsule;
+    assert.equal(capsule.phase, 'prepared');
+
+    // Model a legitimate race after SessionStart injection: one fresh view no
+    // longer proves the received episode affinity. Test setup alone edits the
+    // fixture; recovery still goes through the public fenced pause route.
+    const drifted = readKernelState(root, runId).data;
+    drifted.current_episode = null;
+    writeState(root, runId, drifted);
+    const currentEpisode = jsonResult(cli(root, [
+      'state', 'get', '--field', 'current_episode', '--run-id', runId,
+    ]), 'prepared pause failed proof');
+    assert.equal(currentEpisode, null);
+
+    const paused = jsonResult(cli(root, [
+      'pause',
+      '--mode', 'preserve',
+      '--reason', 'host-session-lost',
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared fallback preserve-pause');
+    assert.deepEqual(paused, { ok: true, status: 'paused' });
+    const after = state(root, runId);
+    assert.equal(after.status, 'paused');
+    assert.equal(after.pause_reason, 'host-session-lost');
+    assert.equal(after.session_chain.lease.owner_run_id, runId);
+    assert.equal(after.session_chain.lease.generation, 1);
+    assert.equal(eventLog(root, runId)
+      .filter(event => event.type === 'compact-restored').length, 0);
+    assert.equal(eventLog(root, runId)
+      .filter(event => event.type === 'run-paused').length, 1);
   });
 }
 

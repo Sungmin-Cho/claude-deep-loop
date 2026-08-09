@@ -88,6 +88,12 @@ with another identity; state that ownership changed and print native host
 resume guidance. After a successful pause, print the same host resume
 guidance. Do not claim same-chat identity in either case.
 
+A trusted SessionStart `prepared` capsule has no PostCompact restore authority.
+Never invoke `checkpoint inspect` or `checkpoint restore` for this branch.
+Route it directly to the **Fresh-affinity fallback** below. Never construct a
+restored capsule or provider evidence from the prepared capsule, and never
+select `human-attested` for it.
+
 For the successful same-owner restore path, freshly read
 `session_chain.lease` and `session_chain.sessions` as above. Inspect through
 the public reader even when trusted SessionStart context names a relative
@@ -153,6 +159,8 @@ restored capsule as input:
 This is an actual skill dispatch, not a printed command or a request for a later
 turn. Stop the compact skill after the invoked continue tick returns. Do not
 pre-read `next-action --json`; `deep-loop-continue` alone owns fresh routing.
+
+### Fresh-affinity fallback
 
 For a stale, corrupt, foreign, or missing checkpoint without a trusted
 evidence rejection, do not retry restore. Freshly re-read all four state views:
