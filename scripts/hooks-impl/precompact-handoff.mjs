@@ -1,8 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { captureReconciledRunSnapshot, findRoot } from '../lib/state.mjs';
+import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
 import {
   emitCompactCheckpoint,
   emitLegacyCompactCheckpointFromTrustedHook,
@@ -24,11 +23,6 @@ import { isOpenScope, ownerSession } from '../lib/session-scope.mjs';
  * - sync spawn would block the hook (compaction delayed indefinitely on long runs)
  * - detached spawn can't measure turns/tokens → violates spec §9 fail-closed requirement
  */
-
-function currentRunId(root) {
-  const p = join(root, '.deep-loop', 'current');
-  return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
-}
 
 function strictHostSessionEvidence(input, runtime) {
   if (input.hook_event_name !== 'PreCompact'
@@ -90,11 +84,38 @@ export async function runPreCompactHandoff(input = {}, {
   cleanupFn = rollbackHandoff,
   emitFn = emitHandoff,
   checkpointFn = emitLegacyCompactCheckpointFromTrustedHook,
+  resolveContextFn = resolveRunContext,
 } = {}) {
-  const runId = currentRunId(root);
-  if (!runId) return { ok: true, action: 'no-run' };
-  let loop;
-  try { ({ data: loop } = captureReconciledRunSnapshot(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
+  const selection = resolveContextFn({
+    root,
+    cwd: typeof input.cwd === 'string' ? input.cwd : process.cwd(),
+    purpose: 'hook-checkpoint',
+    nowFn: () => (now instanceof Date ? now.getTime() : now),
+  });
+  if (!selection?.ok || selection.kind !== 'selected') {
+    if (selection?.kind === 'none'
+      && ['no-runs', 'no-current', 'no-active-run', 'terminal-residue'].includes(selection.reason)) {
+      return { ok: true, action: 'no-run' };
+    }
+    const action = selection?.kind === 'ambiguous' ? 'ambiguous-run' : 'routing-failed';
+    return {
+      ok: false,
+      action,
+      reason: selection?.reason || selection?.kind || 'invalid',
+      ...(Array.isArray(selection?.candidates) ? { candidates: selection.candidates } : {}),
+      ...(Number.isSafeInteger(selection?.total) ? { total: selection.total } : {}),
+      ...(selection?.max_run_ids !== undefined ? { max_run_ids: selection.max_run_ids } : {}),
+      ...(selection?.deadline_ms !== undefined ? { deadline_ms: selection.deadline_ms } : {}),
+      ...(selection?.observed_count !== undefined ? { observed_count: selection.observed_count } : {}),
+      ...(selection?.total_is_lower_bound !== undefined
+        ? { total_is_lower_bound: selection.total_is_lower_bound } : {}),
+      ...(selection?.errors && typeof selection.errors === 'object' && !Array.isArray(selection.errors)
+        ? { errors: selection.errors } : {}),
+    };
+  }
+  const runId = selection.runId;
+  const loop = selection.snapshot.data;
+  const finish = result => ({ ...result, run_id: runId, selection_source: selection.source });
 
   const policy = loop.autonomy?.continuation_policy;
   if (policy === 'workstream-session') {
@@ -109,13 +130,13 @@ export async function runPreCompactHandoff(input = {}, {
       runtime = sessionRuntime(loop);
       hostSessionEvidence = strictHostSessionEvidence(input, runtime);
     } catch {
-      return {
+      return finish({
         ok: false,
         action: 'checkpoint-failed',
         reason: 'host-evidence-invalid',
-      };
+      });
     }
-    if (!hasOpenAffinity(loop)) return { ok: true, action: 'no-affinity' };
+    if (!hasOpenAffinity(loop)) return finish({ ok: true, action: 'no-affinity' });
     const headless = resolveSpawnMode(loop, { headless: false, env }) === 'headless';
     try {
       emitCompactCheckpoint(root, runId, {
@@ -125,9 +146,9 @@ export async function runPreCompactHandoff(input = {}, {
         now,
       });
     } catch {
-      return { ok: false, action: 'checkpoint-failed', reason: 'checkpoint-write-failed' };
+      return finish({ ok: false, action: 'checkpoint-failed', reason: 'checkpoint-write-failed' });
     }
-    return { ok: true, action: 'checkpointed', headless };
+    return finish({ ok: true, action: 'checkpointed', headless });
   }
 
   const lease = loop.session_chain?.lease || {};
@@ -142,9 +163,9 @@ export async function runPreCompactHandoff(input = {}, {
   if (loop.status === 'completed' || loop.status === 'stopped') {
     if (lease.handoff_phase !== 'idle' || lease.handoff_idempotency_key || lease.handoff_child_run_id) {
       const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
-      if (fenced) return fenced;
+      if (fenced) return finish(fenced);
     }
-    return { ok: true, action: 'no-run-terminal' };
+    return finish({ ok: true, action: 'no-run-terminal' });
   }
 
   // spec §3.4.1: paused 정리 범위 한정 — 정리 대상은 오직 phase='reserved'(중단·실패 emit의 stale
@@ -154,9 +175,9 @@ export async function runPreCompactHandoff(input = {}, {
   if (loop.status === 'paused') {
     if (lease.handoff_phase === 'reserved') {
       const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
-      if (fenced) return fenced;
+      if (fenced) return finish(fenced);
     }
-    return { ok: true, action: 'no-run-paused' };
+    return finish({ ok: true, action: 'no-run-paused' });
   }
 
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
@@ -166,12 +187,12 @@ export async function runPreCompactHandoff(input = {}, {
   const phase = lease.handoff_phase;
   // Completed in-flight handoffs are harmless no-ops under every policy and must not re-evaluate gates.
   if (phase === 'emitted' || phase === 'spawned') {
-    return { ok: true, action: 'handoff-in-flight' };
+    return finish({ ok: true, action: 'handoff-in-flight' });
   }
   // acquireLease leaves the phase at acquired, so both idle and acquired are valid in-place checkpoint states.
   if (policy === 'compact-in-place' && !headless && (phase === 'idle' || phase === 'acquired')) {
     try { checkpointFn(root, runId, { now }); } catch { /* best-effort: compaction must never be blocked */ }
-    return { ok: true, action: 'checkpointed', headless };
+    return finish({ ok: true, action: 'checkpointed', headless });
   }
   let em;
   try {
@@ -181,15 +202,15 @@ export async function runPreCompactHandoff(input = {}, {
     // (appendAnchored preCheck). reservation(phase/key/child)을 정리한 뒤에만 benign — 정리 없이
     // 정규화만 하면 이후 handoff가 handoff-in-flight로 거부되는 교착이 남는다.
     if (!String(e?.message || e).startsWith('RUN_PAUSED')) throw e;
-    return normalizePausedEmit(root, runId, expect, cleanupFn);
+    return finish(normalizePausedEmit(root, runId, expect, cleanupFn));
   }
   if (!em.ok) {
     // spec §3.4.1: emit-시점 reason-특정 정규화(체크와 emit 사이 상태 전이 경합) — RUN_TERMINAL 반환은
     // emitHandoff가 내부 rollback을 이미 수행(reserve-거부 sweep 또는 보상 rollback). fenced는 진짜
     // lease 이상 신호이므로 정규화 대상이 아니다.
-    if (em.reason === 'RUN_TERMINAL') return { ok: true, action: 'no-run-terminal' };
-    if (em.reason === 'RUN_PAUSED') return normalizePausedEmit(root, runId, expect, cleanupFn);
-    return { ok: false, action: 'fenced', reason: em.reason };
+    if (em.reason === 'RUN_TERMINAL') return finish({ ok: true, action: 'no-run-terminal' });
+    if (em.reason === 'RUN_PAUSED') return finish(normalizePausedEmit(root, runId, expect, cleanupFn));
+    return finish({ ok: false, action: 'fenced', reason: em.reason });
   }
 
   if (headless && loop.autonomy?.auto_handoff) {
@@ -197,7 +218,9 @@ export async function runPreCompactHandoff(input = {}, {
     // sessions.length grew — respawnGate must see the fresh state or max_sessions is off-by-one.
     let fresh;
     try { fresh = captureReconciledRunSnapshot(root, runId).data; }
-    catch (error) { return { ok: false, action: 'error', reason: String(error?.message || error) }; }
+    catch (error) {
+      return finish({ ok: false, action: 'error', reason: String(error?.message || error) });
+    }
     const gate = respawnGate(fresh, { now });
     if (!gate.ok) {
       // R12-LL fix: gate-blocked must ROLLBACK (invalidate reserved child), not merely set status=paused.
@@ -209,14 +232,20 @@ export async function runPreCompactHandoff(input = {}, {
         eventData: { child_run_id: em.childRunId, gate: gate.reason, trigger: 'pre-compact' },
         pauseReason: `gate:${gate.reason}`,
       });
-      if (res.terminal) return { ok: true, action: 'no-run-terminal' };   // spec §3.4.1: rollback 중 terminal 판명 → benign
-      if (res.fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
-      return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId, headless };
+      if (res.terminal) return finish({ ok: true, action: 'no-run-terminal' });   // spec §3.4.1: rollback 중 terminal 판명 → benign
+      if (res.fenced) return finish({
+        ok: false,
+        action: 'fenced',
+        reason: 'lease-changed-before-pause',
+        childRunId: em.childRunId,
+        headless,
+      });
+      return finish({ ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId, headless });
     }
     // Gate open: handoff emitted with lease=releasing; measured cron driveHeadless will resume via round-2 handshake.
-    return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };
+    return finish({ ok: true, action: 'emitted', childRunId: em.childRunId, headless });
   }
-  return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };   // interactive → human uses terminal/launch-command.txt
+  return finish({ ok: true, action: 'emitted', childRunId: em.childRunId, headless });   // interactive → human uses terminal/launch-command.txt
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.
@@ -228,7 +257,22 @@ export async function main() {
     const cwd = input.cwd ?? process.cwd();
     if (typeof cwd !== 'string' || cwd.length === 0) throw new Error('root-invalid');
     const response = await runPreCompactHandoff(input, { root: findRoot(cwd) });
-    if (!response?.ok) throw new Error('driver-failed');
+    if (!response?.ok) {
+      const detail = formatBoundedRoutingDiagnostic({
+        action: response.action,
+        reason: response.reason,
+        ...(response.errors && typeof response.errors === 'object' && !Array.isArray(response.errors)
+          ? { errors: response.errors } : {}),
+        ...(response.candidates ? { candidates: response.candidates } : {}),
+        ...(response.total !== undefined ? { total: response.total } : {}),
+        ...(response.max_run_ids !== undefined ? { max_run_ids: response.max_run_ids } : {}),
+        ...(response.deadline_ms !== undefined ? { deadline_ms: response.deadline_ms } : {}),
+        ...(response.observed_count !== undefined ? { observed_count: response.observed_count } : {}),
+        ...(response.total_is_lower_bound !== undefined
+          ? { total_is_lower_bound: response.total_is_lower_bound } : {}),
+      });
+      process.stderr.write(`deep-loop: precompact ${detail}\n`);
+    }
   } catch {
     process.stderr.write('deep-loop: precompact hook failed\n');
   }

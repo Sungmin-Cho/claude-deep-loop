@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -90,6 +91,88 @@ const restore = root => runSessionStartRestore({}, { root, now: NOW_MS });
 const fence = runId => ({ owner: runId, generation: 1 });
 const loopPathOf = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPathOf = (root, runId) => join(runDir(root, runId), '.loop.hash');
+
+test('worktree A restores only A', () => {
+  const root = freshRoot();
+  const a = initBound(root, 'claude');
+  const b = initBound(root, 'claude');
+  emitCompactCheckpoint(root, a.runId, {
+    fence: a.fence,
+    runtime: 'claude',
+    now: NOW_MS,
+  });
+  const snapshot = readState(root, a.runId);
+  const checkpointPath = join(runDir(root, a.runId), 'checkpoints');
+  const checkpointName = readdirSync(checkpointPath)[0];
+  const bytes = readFileSync(join(checkpointPath, checkpointName));
+  const result = runSessionStartRestore({
+    hook_event_name: 'SessionStart',
+    session_id: 'session-a',
+    cwd: join(root, '.claude', 'worktrees', 'a'),
+  }, {
+    root,
+    now: NOW_MS,
+    resolveContextFn: () => ({ ok: true, kind: 'selected', runId: a.runId, source: 'worktree', status: 'running', snapshot }),
+    captureVerifiedCheckpointSetFn: () => ({
+      ok: true,
+      snapshot,
+      checkpoints: [{ path: join(runDir(root, a.runId), 'checkpoints', checkpointName), bytes }],
+    }),
+  });
+  assert.equal(result.ok, true);
+  assert.match(result.additionalContext, new RegExp(`run=${a.runId}`));
+  assert.doesNotMatch(result.additionalContext, new RegExp(b.runId));
+});
+
+test('prepared A returns null', () => {
+  const root = freshRoot();
+  const a = initBound(root, 'claude');
+  const snapshot = readState(root, a.runId);
+  const result = runSessionStartRestore({}, {
+    root,
+    now: NOW_MS,
+    resolveContextFn: () => ({ ok: true, kind: 'selected', runId: a.runId, source: 'explicit', status: 'running', snapshot }),
+    captureVerifiedCheckpointSetFn: () => ({ ok: false, kind: 'reconciliation-required', phase: 'run-snapshot' }),
+  });
+  assert.equal(result.additionalContext, null);
+});
+
+test('SessionStart routing diagnostics preserve bounded object-shaped resolver errors', () => {
+  const root = freshRoot();
+  const errors = Object.freeze({
+    alpha: Object.freeze({ kind: 'integrity-invalid' }),
+  });
+  const result = runSessionStartRestore({}, {
+    root,
+    resolveContextFn: () => ({
+      ok: false,
+      kind: 'invalid',
+      reason: 'run-set-integrity',
+      errors,
+      total: 1,
+      max_run_ids: 64,
+      deadline_ms: 500,
+      observed_count: 1,
+      total_is_lower_bound: false,
+    }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.additionalContext, null);
+  assert.deepEqual(JSON.parse(result.diagnostic), {
+    kind: 'invalid', reason: 'run-set-integrity', errors,
+    total: 1, max_run_ids: 64, deadline_ms: 500, observed_count: 1,
+    total_is_lower_bound: false,
+  });
+});
+
+test('terminal residue returns null', () => {
+  const root = freshRoot();
+  const result = runSessionStartRestore({}, {
+    root,
+    resolveContextFn: () => ({ ok: true, kind: 'none', reason: 'terminal-residue' }),
+  });
+  assert.equal(result.additionalContext, null);
+});
 
 function assertAdvisory(context, runId, generation = 1) {
   assert.ok(context.startsWith('deep-loop lease '), 'lease advisory must be placed first');
@@ -234,7 +317,7 @@ test('strict SessionStart labels supplied evidence unverified when the stored ch
   assert.doesNotMatch(context, /evidence-verified/);
 });
 
-test('strict SessionStart trusted-evidence rejection invokes runtime-correct restore and status guidance read-only', () => {
+test('strict SessionStart trusted-evidence rejection returns null read-only context', () => {
   for (const [runtime, provider, restoreToken, statusToken, oppositeRestore, oppositeStatus] of [
     ['claude', 'claude-code', '/deep-loop-compact restore', '/deep-loop-status',
       '$deep-loop:deep-loop-compact restore', '$deep-loop:deep-loop-status'],
@@ -260,24 +343,15 @@ test('strict SessionStart trusted-evidence rejection invokes runtime-correct res
     }, runtime);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stderr, '');
-    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
-    assert.match(context, /checkpoint-unavailable-with-trusted-evidence/);
-    assert.match(context, /preserve-pause/);
-    assert.match(context, /host resume/i);
-    assert.match(context, /do not retry without trusted evidence/i);
-    assert.ok(context.includes(restoreToken), `${runtime}: missing ${restoreToken}`);
-    assert.ok(context.includes(statusToken), `${runtime}: missing ${statusToken}`);
-    assert.equal(context.includes(oppositeRestore), false);
-    assert.equal(context.includes(oppositeStatus), false);
-    assert.doesNotMatch(context, /lease acquire|handoff emit|\brespawn\b|workstream terminal|\bfinish\b/i);
-    assert.equal(context.includes(root), false);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /^deep-loop: sessionstart \{"kind":"integrity-invalid"/);
+    assert.ok(Buffer.byteLength(result.stderr, 'utf8') <= 256);
     assert.deepEqual(stateBytes(root, fixture.runId), before);
     assert.deepEqual(readState(root, fixture.runId).data, beforeState);
   }
 });
 
-test('strict SessionStart evidence-unverified absence invokes runtime-correct restore and status fallback read-only', () => {
+test('strict SessionStart evidence-unverified absence returns null until a verified checkpoint exists', () => {
   for (const [runtime, restoreToken, statusToken, oppositeRestore, oppositeStatus] of [
     ['claude', '/deep-loop-compact restore', '/deep-loop-status',
       '$deep-loop:deep-loop-compact restore', '$deep-loop:deep-loop-status'],
@@ -297,15 +371,7 @@ test('strict SessionStart evidence-unverified absence invokes runtime-correct re
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stderr, '');
-    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
-    assert.match(context, /checkpoint-unavailable/);
-    assert.match(context, /evidence-unverified/);
-    assert.doesNotMatch(context, /checkpoint-unavailable-with-trusted-evidence/);
-    assert.ok(context.includes(restoreToken), `${runtime}: missing ${restoreToken}`);
-    assert.ok(context.includes(statusToken), `${runtime}: missing ${statusToken}`);
-    assert.equal(context.includes(oppositeRestore), false);
-    assert.equal(context.includes(oppositeStatus), false);
-    assert.equal(context.includes(root), false);
+    assert.equal(result.stdout, '');
     assert.deepEqual(stateBytes(root, fixture.runId), before);
     assert.deepEqual(readState(root, fixture.runId).data, beforeState);
   }
@@ -355,7 +421,7 @@ test('no run / terminal / paused → no injection', () => {
     status: 'stopped', proof: { human_reason: 'test' }, confirm: true,
     fence: fence(stoppedRunId), now: NOW_MS + 1,
   });
-  assert.deepEqual(restore(stoppedRoot), { ok: true, branch: 'terminal-or-paused', additionalContext: null });
+  assert.deepEqual(restore(stoppedRoot), { ok: true, branch: 'terminal-residue', additionalContext: null });
 });
 
 test('corrupt loop.json → unreadable with null context', () => {
@@ -363,7 +429,11 @@ test('corrupt loop.json → unreadable with null context', () => {
   const { runId } = initClaude(root);
   writeFileSync(loopPathOf(root, runId), '{');
 
-  assert.deepEqual(restore(root), { ok: true, branch: 'unreadable', additionalContext: null });
+  const result = restore(root);
+  assert.equal(result.ok, true);
+  assert.equal(result.branch, 'unreadable');
+  assert.equal(result.additionalContext, null);
+  assert.match(result.diagnostic, /run-set-integrity/);
 });
 
 test('bare reserved(active) → recovery capsule, not resume', () => {
@@ -461,7 +531,7 @@ test('UTF-8 clamp preserves code points and the owner advisory within 3072 bytes
   assertAdvisory(r.additionalContext, runId);
 });
 
-test('all checkpoints stale after state advances → degrade to status guidance', () => {
+test('stale legacy checkpoint is integrity-invalid without live fallback', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
   emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
@@ -471,9 +541,8 @@ test('all checkpoints stale after state advances → degrade to status guidance'
 
   const r = restore(root);
 
-  assert.equal(r.branch, 'no-checkpoint');
-  assert.match(r.additionalContext, /deep-loop-status/);
-  assertAdvisory(r.additionalContext, runId);
+  assert.equal(r.branch, 'integrity-invalid');
+  assert.equal(r.additionalContext, null);
 });
 
 test('checkpoint parse failure after selection → no-checkpoint with advisory', () => {
@@ -484,7 +553,11 @@ test('checkpoint parse failure after selection → no-checkpoint with advisory',
   const r = runSessionStartRestore({}, {
     root,
     now: NOW_MS,
-    readCheckpoint: path => path === checkpoint.path ? '{' : readFileSync(path, 'utf8'),
+    captureVerifiedCheckpointSetFn: ({ snapshot }) => ({
+      ok: true,
+      snapshot,
+      checkpoints: [{ path: checkpoint.path, bytes: Buffer.from('{') }],
+    }),
   });
 
   assert.equal(r.branch, 'no-checkpoint');

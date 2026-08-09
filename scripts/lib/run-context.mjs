@@ -31,6 +31,66 @@ function compareCodeUnits(left, right) {
   return a.length - b.length;
 }
 
+function diagnosticFits(value, maxChars) {
+  const encoded = JSON.stringify(value);
+  return encoded.length <= maxChars ? encoded : null;
+}
+
+// Public hook diagnostics are deliberately a valid, deterministic JSON prefix of the
+// bounded resolver result. Optional entries are added whole, so a diagnostic can never
+// end in a partial object/array/token. The full resolver result remains untruncated.
+export function formatBoundedRoutingDiagnostic(detail, { maxChars = 220 } = {}) {
+  const limit = Number.isSafeInteger(maxChars) && maxChars > 32 ? maxChars : 220;
+  const result = {};
+  const scalarKeys = ['action', 'kind', 'reason'];
+  const boundKeys = ['max_run_ids', 'deadline_ms', 'observed_count', 'total_is_lower_bound'];
+  const addScalar = key => {
+    if (detail?.[key] === undefined) return;
+    const next = { ...result, [key]: detail[key] };
+    if (diagnosticFits(next, limit) !== null) Object.assign(result, { [key]: detail[key] });
+  };
+  // Keep total first and always retain it when supplied, even if other verbose fields do not fit.
+  addScalar('total');
+  for (const key of scalarKeys) addScalar(key);
+
+  const addMap = (key, values) => {
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return;
+    const map = {};
+    for (const id of Object.keys(values).sort(compareCodeUnits)) {
+      const value = values[id];
+      const entry = value && typeof value === 'object' ? {
+        ...(typeof value.kind === 'string' ? { kind: value.kind } : {}),
+        ...(typeof value.operation_id === 'string' ? { operation_id: value.operation_id } : {}),
+        ...(typeof value.phase === 'string' ? { phase: value.phase } : {}),
+      } : value;
+      const next = { ...result, [key]: { ...map, [id]: entry } };
+      if (diagnosticFits(next, limit) === null) break;
+      map[id] = entry;
+    }
+    if (Object.keys(map).length > 0) result[key] = map;
+  };
+  addMap('errors', detail?.errors);
+
+  if (Array.isArray(detail?.candidates)) {
+    const candidates = [];
+    const sorted = [...detail.candidates].sort((left, right) => (
+      compareCodeUnits(left?.run_id, right?.run_id)
+    ));
+    for (const candidate of sorted) {
+      const item = {
+        ...(typeof candidate?.run_id === 'string' ? { run_id: candidate.run_id } : {}),
+        ...(typeof candidate?.status === 'string' ? { status: candidate.status } : {}),
+      };
+      const next = { ...result, candidates: [...candidates, item] };
+      if (diagnosticFits(next, limit) === null) break;
+      candidates.push(item);
+    }
+    if (candidates.length > 0) result.candidates = candidates;
+  }
+  for (const key of boundKeys) addScalar(key);
+  return JSON.stringify(result);
+}
+
 function boundedCandidates(values) {
   const sorted = [...values].sort((left, right) => compareCodeUnits(left.run_id, right.run_id));
   return Object.freeze(sorted.slice(0, 5).map(value => Object.freeze({
@@ -47,7 +107,7 @@ function none(reason) {
   return Object.freeze({ ok: true, kind: 'none', reason });
 }
 
-function selected(source, run, snapshot, matchedWorktree) {
+function selected(source, run, snapshot, matchedWorktree, extra = {}) {
   return Object.freeze({
     ok: true,
     kind: 'selected',
@@ -56,6 +116,7 @@ function selected(source, run, snapshot, matchedWorktree) {
     status: run.status,
     snapshot,
     ...(matchedWorktree ? { matchedWorktree } : {}),
+    ...extra,
   });
 }
 
@@ -338,7 +399,8 @@ export function resolveRunContext({
       return invalid('identity-invalid', { errors: Object.freeze({ [identityRunId]: { kind: 'integrity-invalid' } }), total: 1 });
     }
     const run = { run_id: identityRunId, status: snapshot.data.status };
-    return selected(hasExplicit ? 'explicit' : 'env', run, snapshot);
+    return selected(hasExplicit ? 'explicit' : 'env', run, snapshot, undefined,
+      env ? { expect: Object.freeze({ owner: env.owner, generation: env.generation }) } : {});
   }
 
   let capturedSet;

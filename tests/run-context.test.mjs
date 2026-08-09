@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, win32 as win32Path } from 'node:path';
-import { resolveRunContext } from '../scripts/lib/run-context.mjs';
+import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../scripts/lib/run-context.mjs';
 import { appendAnchored, captureVerifiedRunSet, captureVerifiedRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { recordedClaimKey } from '../scripts/lib/fs-safe.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -233,6 +233,7 @@ test('complete headless env identity selects A', () => {
   });
   assert.equal(result.source, 'env');
   assert.equal(result.runId, 'A');
+  assert.deepEqual(result.expect, { owner: 'A', generation: 1 });
 });
 
 test('partial headless env markers are ignored', () => {
@@ -393,6 +394,27 @@ test('error diagnostics cap at five entries', () => {
   const result = resolve({}, { errors });
   assert.equal(Object.keys(result.errors).length, 5);
   assert.equal(result.total, 7);
+});
+
+test('public routing diagnostics stay valid and preserve total under five verbose errors', () => {
+  const errors = Object.fromEntries(['E', 'D', 'C', 'B', 'A'].map(runId => [runId, {
+    kind: 'reconciliation-required',
+    operation_id: 'operation-id-0123456789012345678901234567',
+    phase: 'prepared',
+  }]));
+  const diagnostic = formatBoundedRoutingDiagnostic({
+    action: 'ambiguous-run',
+    reason: 'run-set-bound-exceeded',
+    errors,
+    total: 5,
+    max_run_ids: 64,
+    deadline_ms: 500,
+    observed_count: 5,
+    total_is_lower_bound: true,
+  });
+  assert.equal(JSON.parse(diagnostic).total, 5);
+  assert.ok(diagnostic.length <= 220);
+  assert.ok(Buffer.byteLength(`deep-loop: precompact ${diagnostic}\n`, 'utf8') <= 256);
 });
 
 test('ambiguity candidates are capped in fixed UTF-16 code-unit order', () => {

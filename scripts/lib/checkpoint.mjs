@@ -28,6 +28,8 @@ const KEEP = 5;
 const STRICT_SCHEMA_VERSION = '2.0';
 const STRICT_CONTEXT_DOMAIN = 'deep-loop-compact-checkpoint-v2';
 const STRICT_FILE = /^([0-9a-f]{64})-compact\.json$/;
+const LEGACY_FILE = /^[0-9A-HJKMNP-TV-Z]{26}-compact\.json$/;
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const MAX_CHECKPOINT_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_ARTIFACTS = 256;
@@ -914,12 +916,13 @@ function verifiedCheckpointEntries(root, runId, snapshot) {
     }
     const name = rel.slice('checkpoints/'.length);
     const match = name.match(STRICT_FILE);
-    if (!match) throw new Error('CHECKPOINT_INVALID');
+    const legacy = !match && LEGACY_FILE.test(name);
+    if (!match && !legacy) throw new Error('CHECKPOINT_INVALID');
     entries.push({
       name,
       path: join(runDir(root, runId), rel),
       bytes,
-      key: match[1],
+      ...(match ? { key: match[1] } : { legacy: true }),
     });
   }
   entries.sort((left, right) => right.name.localeCompare(left.name));
@@ -964,18 +967,24 @@ export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg
       ? captureArtifactEvidence(root, artifactRels, options)
       : normalizeArtifactEvidence(options.artifactEvidence, artifactRels);
     for (const entry of verifiedCheckpointEntries(root, runId, snapshot)) {
-      const env = JSON.parse(entry.bytes.toString('utf8'));
-      validateStrictSelf(env, { runId, key: entry.key });
-      validateStrictBytes(entry.bytes, {
-        root,
-        runId,
-        key: entry.key,
-        snapshot,
-        now: options.now ?? Date.now(),
-        hostSessionEvidence: options.hostSessionEvidence,
-        verifiedOnly: true,
-        artifactEvidence,
-      });
+      if (entry.legacy) {
+        validateLegacyBytes(entry.bytes, {
+          root, runId, snapshot, artifactRels, artifactEvidence, name: entry.name,
+        });
+      } else {
+        const env = JSON.parse(entry.bytes.toString('utf8'));
+        validateStrictSelf(env, { runId, key: entry.key });
+        validateStrictBytes(entry.bytes, {
+          root,
+          runId,
+          key: entry.key,
+          snapshot,
+          now: options.now ?? Date.now(),
+          hostSessionEvidence: options.hostSessionEvidence,
+          verifiedOnly: true,
+          artifactEvidence,
+        });
+      }
       checkpoints.push(Object.freeze({
         path: entry.path,
         bytes: Buffer.from(entry.bytes),
@@ -1008,6 +1017,74 @@ function validLegacy(env, runId) {
     && env.envelope.schema?.version === '1.0'
     && env.envelope.run_id === runId
     && exactKeys(env.payload, LEGACY_PAYLOAD_KEYS);
+}
+
+function decodeLegacyTimestamp(name) {
+  const prefix = name.slice(0, 10);
+  if (prefix.length !== 10) throw new Error('CHECKPOINT_INVALID');
+  let timestamp = 0;
+  for (const character of prefix) {
+    const digit = ULID_ALPHABET.indexOf(character);
+    if (digit < 0) throw new Error('CHECKPOINT_INVALID');
+    timestamp = timestamp * 32 + digit;
+  }
+  // ULID timestamps are 48 bits; the first 50-bit digit must therefore be 0..7.
+  if (ULID_ALPHABET.indexOf(prefix[0]) > 7
+    || !Number.isSafeInteger(timestamp)
+    || timestamp < 0) {
+    throw new Error('CHECKPOINT_INVALID');
+  }
+  try { new Date(timestamp).toISOString(); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  return timestamp;
+}
+
+function validateLegacyBytes(bytes, { root, runId, snapshot, artifactRels, artifactEvidence, name }) {
+  let env;
+  try { env = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  if (!validLegacy(env, runId)) throw new Error('CHECKPOINT_INVALID');
+  if (!canonicalIso(env.envelope.generated_at)) throw new Error('CHECKPOINT_INVALID');
+  const timestamp = decodeLegacyTimestamp(name);
+  if (new Date(timestamp).toISOString() !== env.envelope.generated_at) {
+    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
+  }
+  const payload = env.payload;
+  const loop = snapshot.data;
+  const lease = loop.session_chain?.lease || {};
+  const episode = (loop.episodes || []).find(item => item.id === loop.current_episode) || null;
+  const expectedArtifacts = Array.isArray(episode?.expected_artifacts)
+    ? episode.expected_artifacts : [];
+  const expectedEpisodeDetail = episode ? {
+    id: episode.id,
+    role: episode.role,
+    status: episode.status,
+    point: episode.point,
+    workstream_id: episode.workstream_id,
+  } : null;
+  const expectedNextAction = nextAction(loop, {
+    now: Date.parse(env.envelope.generated_at),
+    unattended: false,
+  });
+  const expectedNextActionHint = {
+    type: expectedNextAction.action.type,
+    next_command: expectedNextAction.next_command,
+  };
+  if (payload.owner_run_id !== lease.owner_run_id
+    || payload.generation !== lease.generation
+    || payload.loop_hash !== snapshot.hash
+    || payload.current_episode !== loop.current_episode
+    || JSON.stringify(payload.current_episode_detail) !== JSON.stringify(expectedEpisodeDetail)
+    || JSON.stringify(payload.active_workstreams) !== JSON.stringify(loop.active_workstreams || [])
+    || JSON.stringify(payload.next_action_hint) !== JSON.stringify(expectedNextActionHint)
+    || JSON.stringify(payload.artifacts) !== JSON.stringify(expectedArtifacts)) {
+    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
+  }
+  for (const rel of artifactRels) {
+    const evidence = artifactEvidence?.[rel];
+    if (!evidence || !['absent', 'present'].includes(evidence.state)) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+  }
+  void root;
 }
 
 function legacyPrune(root, runId, owner, generation) {

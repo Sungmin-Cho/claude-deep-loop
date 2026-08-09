@@ -460,6 +460,82 @@ test('verified checkpoint capture never calls reconcile', () => {
   assert.deepEqual(durableRunBytes(fixture), residueBefore);
 });
 
+test('verified checkpoint capture accepts legacy ULID bytes from the immutable vector', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const emitted = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS });
+  const expected = readFileSync(emitted.path);
+  const captured = captureVerifiedCheckpointSet({
+    root,
+    runId,
+    now: NOW_MS,
+    afterRunSnapshotCapture() {
+      writeFileSync(emitted.path, 'live replacement must not affect frozen bytes');
+    },
+  });
+  assert.equal(captured.ok, true);
+  assert.equal(captured.checkpoints.length, 1);
+  assert.deepEqual(captured.checkpoints[0].bytes, expected);
+});
+
+test('verified legacy capture binds every restore-bearing payload field to the immutable snapshot', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS });
+  const capturedSnapshot = captureVerifiedRunSnapshot(root, runId);
+  assert.equal(capturedSnapshot.ok, true);
+  const snapshot = capturedSnapshot.snapshot;
+  const checkpointIndex = snapshot.vector.findIndex(entry => (
+    entry[0] === runId && entry[1].startsWith('checkpoints/') && entry[2] === 'file'
+  ));
+  assert.notEqual(checkpointIndex, -1);
+
+  for (const [field, forge] of [
+    ['current_episode_detail', value => ({ ...value, status: 'forged' })],
+    ['active_workstreams', value => [...value, 'forged-workstream']],
+    ['next_action_hint', value => ({ ...value, type: 'forged-action' })],
+  ]) {
+    const envelope = JSON.parse(Buffer.from(snapshot.vector[checkpointIndex][3].base64, 'base64'));
+    envelope.payload[field] = forge(envelope.payload[field]);
+    const bytes = Buffer.from(JSON.stringify(envelope, null, 2));
+    const vector = snapshot.vector.map(entry => [...entry]);
+    vector[checkpointIndex][3] = {
+      base64: bytes.toString('base64'),
+      sha256: contentHash(bytes),
+      size: bytes.length,
+    };
+    const forged = { ...snapshot, vector };
+    assert.deepEqual(captureVerifiedCheckpointSet({ root, runId, snapshot: forged }), {
+      ok: false,
+      kind: 'integrity-invalid',
+      phase: 'checkpoint',
+    }, field);
+  }
+
+  const futureMs = NOW_MS + 86_400_000;
+  const futureEnvelope = JSON.parse(Buffer.from(snapshot.vector[checkpointIndex][3].base64, 'base64'));
+  futureEnvelope.envelope.generated_at = new Date(futureMs).toISOString();
+  const futureNext = nextAction(snapshot.data, { now: futureMs, unattended: false });
+  futureEnvelope.payload.next_action_hint = {
+    type: futureNext.action.type,
+    next_command: futureNext.next_command,
+  };
+  const futureBytes = Buffer.from(JSON.stringify(futureEnvelope, null, 2));
+  const futureVector = snapshot.vector.map(entry => [...entry]);
+  futureVector[checkpointIndex][3] = {
+    base64: futureBytes.toString('base64'),
+    sha256: contentHash(futureBytes),
+    size: futureBytes.length,
+  };
+  assert.deepEqual(captureVerifiedCheckpointSet({
+    root, runId, snapshot: { ...snapshot, vector: futureVector },
+  }), {
+    ok: false,
+    kind: 'integrity-invalid',
+    phase: 'checkpoint',
+  });
+});
+
 test('verified checkpoint capture rejects a same-run-id snapshot from another root before observing artifacts', () => {
   const source = seedBound();
   const emitted = emitCompactCheckpoint(source.root, source.runId, {
