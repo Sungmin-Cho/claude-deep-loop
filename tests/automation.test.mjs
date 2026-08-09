@@ -398,6 +398,14 @@ function trustedWorkflowSource() {
     'stage-parent ancestor guard must be exact and singular');
   extracted = extracted.replace(ancestorWriteGuard,
     "if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink()\n                || (process.platform !== 'win32' && ((ancestorStat.mode & 0o020) !== 0\n                  || ((ancestorStat.mode & 0o002) !== 0 && (ancestorStat.mode & 0o1000) === 0))))\n                throw new Error('stage parent ancestor is writable or aliased');");
+  const stageFileSealGuard = "if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o777) !== 0o444) throw new Error('stage file seal mismatch');";
+  assert.equal(extracted.split(stageFileSealGuard).length - 1, 1, 'stage-file seal guard must be exact and singular');
+  extracted = extracted.replace(stageFileSealGuard,
+    "if (!file.isFile() || file.isSymbolicLink()\n                  || (process.platform !== 'win32' && (file.mode & 0o777) !== 0o444)) throw new Error('stage file seal mismatch');");
+  const stageDirectorySealGuard = "if (!sealed.isDirectory() || sealed.isSymbolicLink() || (sealed.mode & 0o777) !== 0o555) throw new Error('stage directory seal mismatch');";
+  assert.equal(extracted.split(stageDirectorySealGuard).length - 1, 1, 'stage-directory seal guard must be exact and singular');
+  extracted = extracted.replace(stageDirectorySealGuard,
+    "if (!sealed.isDirectory() || sealed.isSymbolicLink()\n                || (process.platform !== 'win32' && (sealed.mode & 0o777) !== 0o555)) throw new Error('stage directory seal mismatch');");
   const probeFailure = "if (!probe.ok) throw new Error(probe.reason);";
   const driverFailure = "if (!driver.ok) throw new Error(driver.reason);";
   assert.equal(extracted.split(probeFailure).length - 1, 1, 'probe failure seam must remain singular');
@@ -423,6 +431,10 @@ test('Windows verifier extraction neutralizes only POSIX stage-parent write guar
   assert.match(source, /process\.platform !== 'win32'[\s\S]{0,180}stageParentStat\.mode & 0o022/);
   assert.match(source, /process\.platform !== 'win32'[\s\S]{0,220}ancestorStat\.mode & 0o020/);
   assert.match(source, /ancestorStat\.mode & 0o002/);
+  assert.match(workflow, /file\.mode & 0o777\) !== 0o444/);
+  assert.match(workflow, /sealed\.mode & 0o777\) !== 0o555/);
+  assert.match(source, /process\.platform !== 'win32'[\s\S]{0,140}file\.mode & 0o777\) !== 0o444/);
+  assert.match(source, /process\.platform !== 'win32'[\s\S]{0,160}sealed\.mode & 0o777\) !== 0o555/);
 });
 
 test('trusted bootstrap imports only FD-bound V1', () => {
