@@ -369,6 +369,30 @@ function pruneEnvelope(runId, key, checkpointSha256, contextSha256, receiptSha25
   });
 }
 
+function capturePruneArtifact(path, { optional = false } = {}) {
+  try {
+    const { bytes, identity } = readStableRegular(path, 'COMPACT_PRUNE_INVALID');
+    return { bytes, identity, sha256: contentHash(bytes) };
+  } catch (error) {
+    if (optional && error?.message === 'CHECKPOINT_NOT_FOUND') return null;
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+}
+
+function assertPruneArtifactUnchanged(path, captured) {
+  if (captured === null) {
+    if (existsSync(path)) throw new Error('COMPACT_PRUNE_INVALID');
+    return;
+  }
+  let current;
+  try { current = readStableRegular(path, 'COMPACT_PRUNE_INVALID'); }
+  catch { throw new Error('COMPACT_PRUNE_INVALID'); }
+  if (!matchingStableFileIdentity(captured.identity, current.identity)
+    || contentHash(current.bytes) !== captured.sha256) {
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+}
+
 function pruneCheckpointPairLocked(root, runId, metadata, guard, {
   now,
   faultAt = () => {},
@@ -379,17 +403,16 @@ function pruneCheckpointPairLocked(root, runId, metadata, guard, {
   const checkpoint = strictPath(root, runId, key);
   const receipt = receiptPath(root, runId, key);
   const tombstone = prunePath(root, runId, key);
-  let checkpointSha256 = null;
+  const capturedCheckpoint = capturePruneArtifact(checkpoint);
+  const checkpointSha256 = capturedCheckpoint.sha256;
   let contextSha256 = null;
   try {
-    const checkpointBytes = readFileSync(checkpoint);
-    checkpointSha256 = contentHash(checkpointBytes);
-    const env = JSON.parse(checkpointBytes.toString('utf8'));
+    const env = JSON.parse(capturedCheckpoint.bytes.toString('utf8'));
     validateStrictSelf(env, { runId, key });
     contextSha256 = env.payload.context_sha256;
   } catch { /* invalid checkpoints are still pair-pruned */ }
-  let receiptSha256 = null;
-  try { receiptSha256 = contentHash(readFileSync(receipt)); } catch { /* optional */ }
+  const capturedReceipt = capturePruneArtifact(receipt, { optional: true });
+  const receiptSha256 = capturedReceipt?.sha256 ?? null;
   durableAtomicWrite(
     tombstone,
     JSON.stringify(pruneEnvelope(
@@ -401,20 +424,27 @@ function pruneCheckpointPairLocked(root, runId, metadata, guard, {
       now,
     ), null, 2),
   );
+  const capturedTombstone = capturePruneArtifact(tombstone);
   guard.renew();
   testFault(faultAt, 'prune:tombstone-written');
-  if (existsSync(receipt)) {
+  assertPruneArtifactUnchanged(tombstone, capturedTombstone);
+  assertPruneArtifactUnchanged(checkpoint, capturedCheckpoint);
+  assertPruneArtifactUnchanged(receipt, capturedReceipt);
+  if (capturedReceipt !== null) {
+    assertPruneArtifactUnchanged(receipt, capturedReceipt);
     rmSync(receipt, { force: true });
     flushDirectory(dir);
   }
   guard.renew();
   testFault(faultAt, 'prune:receipt-unlinked');
-  if (existsSync(checkpoint)) {
+  assertPruneArtifactUnchanged(checkpoint, capturedCheckpoint);
+  if (capturedCheckpoint !== null) {
     rmSync(checkpoint, { force: true });
     flushDirectory(dir);
   }
   guard.renew();
   testFault(faultAt, 'prune:checkpoint-unlinked');
+  assertPruneArtifactUnchanged(tombstone, capturedTombstone);
   rmSync(tombstone, { force: true });
   flushDirectory(dir);
   guard.renew();

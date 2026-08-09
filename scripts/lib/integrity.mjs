@@ -100,11 +100,35 @@ function compactCheckpointDirectory(root, runId) {
   return dir;
 }
 
+function captureCompactPruneArtifact(path, { optional = false } = {}) {
+  try {
+    const { bytes, identity } = readStableRegular(path, 'COMPACT_PRUNE_INVALID');
+    return { bytes, identity, sha256: contentHash(bytes) };
+  } catch (error) {
+    if (optional && error?.message === 'CHECKPOINT_NOT_FOUND') return null;
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+}
+
+function assertCompactPruneArtifactUnchanged(path, captured) {
+  if (captured === null) {
+    if (existsSync(path)) throw new Error('COMPACT_PRUNE_INVALID');
+    return;
+  }
+  let current;
+  try { current = readStableRegular(path, 'COMPACT_PRUNE_INVALID'); }
+  catch { throw new Error('COMPACT_PRUNE_INVALID'); }
+  if (!matchingStableFileIdentity(captured.identity, current.identity)
+    || contentHash(current.bytes) !== captured.sha256) {
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+}
+
 export function reconcileCompactPruneTombstonesLocked(
   root,
   runId,
   guard,
-  { checkpointKey } = {},
+  { checkpointKey, faultAt = () => {} } = {},
 ) {
   const dir = compactCheckpointDirectory(root, runId);
   if (dir === null) return false;
@@ -115,17 +139,20 @@ export function reconcileCompactPruneTombstonesLocked(
     guard.assertOwned(runDir(root, runId));
     const key = match[1];
     const tombstonePath = join(dir, name);
+    const checkpointPath = join(dir, `${key}-compact.json`);
+    const observationPath = join(dir, `${key}-compact-observation.json`);
+    let capturedTombstone;
+    let capturedCheckpoint;
+    let capturedObservation;
     let payload;
     try {
-      payload = validateCompactPruneBytes(
-        readStableRegular(tombstonePath, 'COMPACT_PRUNE_INVALID').bytes,
-        { runId, key },
-      );
-      const checkpointPath = join(dir, `${key}-compact.json`);
-      if (existsSync(checkpointPath)) {
-        const checkpointBytes = readStableRegular(checkpointPath, 'COMPACT_PRUNE_INVALID').bytes;
+      capturedTombstone = captureCompactPruneArtifact(tombstonePath);
+      payload = validateCompactPruneBytes(capturedTombstone.bytes, { runId, key });
+      capturedCheckpoint = captureCompactPruneArtifact(checkpointPath, { optional: true });
+      if (capturedCheckpoint !== null) {
+        const checkpointBytes = capturedCheckpoint.bytes;
         if (payload.checkpoint_sha256 === null
-          || contentHash(checkpointBytes) !== payload.checkpoint_sha256) {
+          || capturedCheckpoint.sha256 !== payload.checkpoint_sha256) {
           throw new Error('COMPACT_PRUNE_INVALID');
         }
         let checkpoint;
@@ -145,11 +172,10 @@ export function reconcileCompactPruneTombstonesLocked(
           }
         }
       }
-      const observationPath = join(dir, `${key}-compact-observation.json`);
-      if (existsSync(observationPath)) {
-        const observationBytes = readStableRegular(observationPath, 'COMPACT_PRUNE_INVALID').bytes;
+      capturedObservation = captureCompactPruneArtifact(observationPath, { optional: true });
+      if (capturedObservation !== null) {
         if (payload.receipt_sha256 === null
-          || contentHash(observationBytes) !== payload.receipt_sha256) {
+          || capturedObservation.sha256 !== payload.receipt_sha256) {
           throw new Error('COMPACT_PRUNE_INVALID');
         }
       }
@@ -157,13 +183,18 @@ export function reconcileCompactPruneTombstonesLocked(
       if (error?.message === 'COMPACT_PRUNE_INVALID') throw error;
       throw new Error('COMPACT_PRUNE_INVALID');
     }
+    if (typeof faultAt === 'function') faultAt('prune:reconcile-validated');
     guard.renew();
-    for (const path of [
-      join(dir, `${key}-compact-observation.json`),
-      join(dir, `${key}-compact.json`),
-      tombstonePath,
+    assertCompactPruneArtifactUnchanged(tombstonePath, capturedTombstone);
+    assertCompactPruneArtifactUnchanged(checkpointPath, capturedCheckpoint);
+    assertCompactPruneArtifactUnchanged(observationPath, capturedObservation);
+    for (const [path, captured] of [
+      [observationPath, capturedObservation],
+      [checkpointPath, capturedCheckpoint],
+      [tombstonePath, capturedTombstone],
     ]) {
-      if (!existsSync(path) && path !== join(dir, name)) continue;
+      if (captured === null) continue;
+      assertCompactPruneArtifactUnchanged(path, captured);
       rmSync(path, { force: true });
       flushDirectory(dir);
     }

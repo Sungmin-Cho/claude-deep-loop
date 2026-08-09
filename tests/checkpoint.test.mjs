@@ -39,7 +39,10 @@ import {
   writeState,
 } from '../scripts/lib/state.mjs';
 import { contentHash, ulid, wrap } from '../scripts/lib/envelope.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import {
+  appendAnchored,
+  reconcileCompactPruneTombstonesLocked,
+} from '../scripts/lib/integrity.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import {
   acquireRootRecovery,
@@ -2119,6 +2122,83 @@ test('compact prune reconciliation rejects a malformed checkpoint replaced after
     now: NOW_MS + 200,
   }), /COMPACT_PRUNE_INVALID/);
   assert.deepEqual(durableInventory(fixture), before);
+});
+
+test('compact prune writer revalidates surviving pair bytes after tombstone publication before unlink', () => {
+  for (const target of ['checkpoint', 'receipt']) {
+    const fixture = seedBound();
+    const emitted = [];
+    for (let index = 0; index < 5; index += 1) {
+      emitted.push(__testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+        fence: fixture.fence,
+        runtime: fixture.runtime,
+        hostSessionEvidence: hostEvidence('claude-code', `writer-race-${target}-${index}`),
+        now: NOW_MS + index + 1,
+      }));
+    }
+    seedCompactObservation(fixture, emitted[0]);
+    const dir = checkpointDirOf(fixture.root, fixture.runId);
+    const checkpoint = strictCheckpointPath(fixture.root, fixture.runId, emitted[0]);
+    const receipt = join(dir, `${emitted[0].checkpoint_key}-compact-observation.json`);
+    const tombstone = join(dir, `${emitted[0].checkpoint_key}-compact-prune.json`);
+    const replacementPath = target === 'checkpoint' ? checkpoint : receipt;
+    const replacement = Buffer.from(`replacement-${target}-after-tombstone`);
+
+    assert.throws(() => __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `writer-race-${target}-trigger`),
+      now: NOW_MS + 100,
+      faultAt: seam => {
+        if (seam === 'prune:tombstone-written') writeFileSync(replacementPath, replacement);
+      },
+    }), /COMPACT_PRUNE_INVALID/, target);
+    assert.deepEqual(readFileSync(replacementPath), replacement, `${target} replacement must survive`);
+    assert.equal(existsSync(checkpoint), true, `${target} race must not partially unlink checkpoint`);
+    assert.equal(existsSync(receipt), true, `${target} race must not partially unlink receipt`);
+    assert.equal(existsSync(tombstone), true, `${target} race must preserve tombstone evidence`);
+  }
+});
+
+test('compact prune reconciliation revalidates surviving bytes after validation before unlink', () => {
+  for (const target of ['checkpoint', 'receipt']) {
+    const fixture = seedBound();
+    const emitted = [];
+    for (let index = 0; index < 5; index += 1) {
+      emitted.push(__testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+        fence: fixture.fence,
+        runtime: fixture.runtime,
+        hostSessionEvidence: hostEvidence('claude-code', `reconcile-race-${target}-${index}`),
+        now: NOW_MS + index + 1,
+      }));
+    }
+    seedCompactObservation(fixture, emitted[0]);
+    assert.throws(() => __testEmitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `reconcile-race-${target}-trigger`),
+      now: NOW_MS + 100,
+      faultAt: seam => { if (seam === 'prune:tombstone-written') throw new Error(seam); },
+    }), /prune:tombstone-written/);
+    const dir = checkpointDirOf(fixture.root, fixture.runId);
+    const checkpoint = strictCheckpointPath(fixture.root, fixture.runId, emitted[0]);
+    const receipt = join(dir, `${emitted[0].checkpoint_key}-compact-observation.json`);
+    const tombstone = join(dir, `${emitted[0].checkpoint_key}-compact-prune.json`);
+    const replacementPath = target === 'checkpoint' ? checkpoint : receipt;
+    const replacement = Buffer.from(`replacement-${target}-after-reconcile-validation`);
+
+    assert.throws(() => withLock(fixture.root, fixture.runId, guard =>
+      reconcileCompactPruneTombstonesLocked(fixture.root, fixture.runId, guard, {
+        checkpointKey: emitted[0].checkpoint_key,
+        faultAt: seam => {
+          if (seam === 'prune:reconcile-validated') writeFileSync(replacementPath, replacement);
+        },
+      })), /COMPACT_PRUNE_INVALID/, target);
+    assert.deepEqual(readFileSync(replacementPath), replacement, `${target} replacement must survive`);
+    assert.equal(existsSync(checkpoint), true, `${target} race must not partially unlink checkpoint`);
+    assert.equal(existsSync(receipt), true, `${target} race must not partially unlink receipt`);
+    assert.equal(existsSync(tombstone), true, `${target} race must preserve tombstone evidence`);
+  }
 });
 
 test('compact prune retry converges a parseable invalid checkpoint with a plausible context digest', () => {
