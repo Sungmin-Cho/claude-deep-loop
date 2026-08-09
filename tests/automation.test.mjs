@@ -857,8 +857,9 @@ function seedTrustedFixture({
     });
     if (!emitted.ok) throw new Error(`failed to create committed fixture: ${JSON.stringify(emitted)}`);
   }
-  return { base: realpathSync(base), candidate: realpathSync(candidate), stageParent: realpathSync(stageParent),
-    project: realpathSync(project), workspace: realpathSync(workspace), runId, digest: fixtureDigest(records) };
+  const canonicalFixturePath = realpathSync.native || realpathSync;
+  return { base: canonicalFixturePath(base), candidate: canonicalFixturePath(candidate), stageParent: canonicalFixturePath(stageParent),
+    project: canonicalFixturePath(project), workspace: canonicalFixturePath(workspace), runId, digest: fixtureDigest(records) };
 }
 function runTrustedVerifier(fixture, options = {}) {
   const env = {
