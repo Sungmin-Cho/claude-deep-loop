@@ -369,13 +369,29 @@ test('cron-shaped explicit missing run fails closed with routing-invalid exit 1'
   assert.equal(result.total, 1);
 });
 
-function trustedWorkflowSource() {
+function workflowInlineSource() {
   // GitHub checks out YAML with CRLF on Windows; normalize only this
   // line-oriented test extraction boundary.
   const source = readFileSync(GITHUB_WORKFLOW, 'utf8').replace(/\r\n?/g, '\n');
   const match = source.match(/node\s+--input-type=module\s+<<'NODE'\n([\s\S]*?)\n\s*NODE/);
   assert.ok(match, 'GitHub workflow must carry the trusted inline Node preflight');
-  let extracted = match[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+  return match[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+}
+
+function productionWorkflowSourceForTest() {
+  let extracted = workflowInlineSource();
+  const platformGuard = /if \(process\.platform !== 'linux' \|\| process\.arch !== 'x64' \|\| Number\(process\.versions\.node\.split\('\.'\)\[0\]\) < 20\)\n\s*throw new Error\('unsupported provisioned Linux\/x64 Node topology'\);/g;
+  assert.equal([...extracted.matchAll(platformGuard)].length, 1,
+    'production platform guard must be exact and singular');
+  return extracted.replace(platformGuard, "if (false) throw new Error('unsupported provisioned Linux/x64 Node topology');");
+}
+
+function trustedWorkflowSource() {
+  let extracted = workflowInlineSource();
+  const testEnvSentinel = /const TEST_ENV = null;/g;
+  assert.equal([...extracted.matchAll(testEnvSentinel)].length, 1,
+    'production test-environment authority must be a single null sentinel');
+  extracted = extracted.replace(testEnvSentinel, 'const TEST_ENV = process.env;');
   const platformGuard = /if \(process\.platform !== 'linux' \|\| process\.arch !== 'x64' \|\| Number\(process\.versions\.node\.split\('\.'\)\[0\]\) < 20\)\n\s*throw new Error\('unsupported provisioned Linux\/x64 Node topology'\);/g;
   assert.equal([...extracted.matchAll(platformGuard)].length, 1, 'production platform guard must be exact and singular');
   extracted = extracted.replace(platformGuard, "if (false) throw new Error('unsupported provisioned Linux/x64 Node topology');");
@@ -439,10 +455,16 @@ test('Windows verifier extraction neutralizes only POSIX stage-parent write guar
 
 test('trusted bootstrap imports only FD-bound V1', () => {
   const source = trustedWorkflowSource();
-  assert.match(readFileSync(GITHUB_WORKFLOW, 'utf8'), /const TEST_CHILD_TIMEOUT_MS = null;/);
+  const production = readFileSync(GITHUB_WORKFLOW, 'utf8');
+  assert.equal((production.match(/const TEST_ENV = null;/g) || []).length, 1,
+    'production must have one immutable null test seam authority');
+  assert.doesNotMatch(production, /process\.env\.(?:DEEP_LOOP_TEST|DEEP_LOOP_CHILD|DEEP_LOOP_RUN_CHILDREN)/,
+    'production source must not read ambient fault-injection variables');
+  assert.match(source, /const TEST_ENV = process\.env;/);
+  assert.match(production, /const TEST_CHILD_TIMEOUT_MS = null;/);
   assert.match(source, /const TEST_CHILD_TIMEOUT_MS = Number\(process\.env\.DEEP_LOOP_TEST_CHILD_TIMEOUT_MS\)/);
-  assert.match(readFileSync(GITHUB_WORKFLOW, 'utf8'), /const TEST_PROBE_PROJECT_ROOT = null;[\s\S]*const TEST_PROBE_RUN_ID = null;/);
-  assert.doesNotMatch(readFileSync(GITHUB_WORKFLOW, 'utf8'), /process\.env\.DEEP_LOOP_TEST_PROBE_/);
+  assert.match(production, /const TEST_PROBE_PROJECT_ROOT = null;[\s\S]*const TEST_PROBE_RUN_ID = null;/);
+  assert.doesNotMatch(production, /process\.env\.DEEP_LOOP_TEST_PROBE_/);
   assert.match(source, /const TEST_PROBE_PROJECT_ROOT = process\.env\.DEEP_LOOP_TEST_PROBE_PROJECT_ROOT/);
   assert.match(source, /const TEST_PROBE_RUN_ID = process\.env\.DEEP_LOOP_TEST_PROBE_RUN_ID/);
   assert.match(source, /TRUSTED_CHILD_BOOTSTRAP_SOURCE/);
@@ -916,6 +938,27 @@ function runTrustedVerifier(fixture, options = {}) {
     rmSync(sourceDir, { recursive: true, force: true });
   }
 }
+function runProductionWorkflowForTest(fixture, options = {}) {
+  const env = {
+    ...process.env,
+    DEEP_LOOP_CANDIDATE_ROOT: fixture.candidate, DEEP_LOOP_STAGE_PARENT: fixture.stageParent,
+    DEEP_LOOP_PROJECT_ROOT: fixture.project, DEEP_LOOP_CANONICAL_PROJECT_ROOT: fixture.project,
+    GITHUB_WORKSPACE: fixture.workspace, DEEP_LOOP_RUN_ID: fixture.runId,
+    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.14.0',
+    DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: fixture.digest, ...options,
+  };
+  const sourceDir = mkdtempSync(join(tmpdir(), 'dl-production-source-'));
+  const sourcePath = join(sourceDir, 'production-workflow.mjs');
+  writeFileSync(sourcePath, productionWorkflowSourceForTest(), { mode: 0o600 });
+  try {
+    const stdout = execFileSync(process.execPath, [sourcePath], { encoding: 'utf8', env });
+    return { status: 0, stdout };
+  } catch (error) {
+    return { status: error.status, stdout: String(error.stdout || '') };
+  } finally {
+    rmSync(sourceDir, { recursive: true, force: true });
+  }
+}
 function durableRunSnapshot(project, runId) {
   const root = join(project, '.deep-loop', 'runs', runId);
   const files = [];
@@ -928,6 +971,18 @@ function durableRunSnapshot(project, runId) {
   };
   walk(root);
   return files.sort((a, b) => a[0].localeCompare(b[0]));
+}
+function byteSnapshot(root) {
+  const files = [];
+  const walk = directory => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) walk(absolute);
+      else files.push([relative(root, absolute), readFileSync(absolute).toString('hex')]);
+    }
+  };
+  walk(root);
+  return files.sort((a, b) => Buffer.from(a[0]).compare(Buffer.from(b[0])));
 }
 function assertAllFdMarkerUrls(marker, runId) {
   const lines = readFileSync(marker, 'utf8').trim().split('\n');
@@ -976,6 +1031,41 @@ test('source identity positive 17-record fixture', () => {
   assert.ok(records.includes('c0:e0'), 'À/à fold is pinned');
   assert.ok(records.includes('3a3:3c3'), 'Σ/σ fold is pinned');
   assert.ok(records.includes('df:73.73'), 'ß/ss fold is pinned');
+});
+
+test('production verifier ignores ambient fault seams and preserves all durable vectors', () => {
+  const fixture = seedTrustedFixture();
+  const { runId: siblingRunId } = initRun(fixture.project, {
+    runtime: 'claude', goal: 'ambient seam sibling', detected: {},
+    now: new Date('2026-06-24T00:00:03.000Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const beforeA = durableRunSnapshot(fixture.project, fixture.runId);
+  const beforeB = durableRunSnapshot(fixture.project, siblingRunId);
+  const beforeCandidate = byteSnapshot(fixture.candidate);
+  const beforeProject = byteSnapshot(fixture.project);
+  const beforeWorkspace = byteSnapshot(fixture.workspace);
+  const result = runProductionWorkflowForTest(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_TEST_RUN_DIRECTORY_SWAP: '1',
+    DEEP_LOOP_TEST_CANDIDATE_SWAP: '1',
+    DEEP_LOOP_TEST_BARRIER: 'before-token',
+    DEEP_LOOP_TEST_STAGE_BARRIER: '1',
+    DEEP_LOOP_TEST_WRONG_HEADER: '1',
+    DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE: '1',
+    DEEP_LOOP_CHILD_V1_MARKER: join(fixture.base, 'ambient-marker'),
+  });
+  assert.equal(result.status, 0, result.stdout);
+  const verified = JSON.parse(result.stdout.trim());
+  assert.equal(verified.ok, true);
+  assert.equal(verified.probe, 0);
+  assert.equal(verified.driver, 0);
+  assert.equal(verified.spawn, 0);
+  assert.equal(verified.mutation, 0);
+  assert.deepEqual(byteSnapshot(fixture.candidate), beforeCandidate);
+  assert.deepEqual(byteSnapshot(fixture.project), beforeProject);
+  assert.deepEqual(byteSnapshot(fixture.workspace), beforeWorkspace);
+  assert.deepEqual(durableRunSnapshot(fixture.project, fixture.runId), beforeA);
+  assert.deepEqual(durableRunSnapshot(fixture.project, siblingRunId), beforeB);
 });
 
 test('authentic anchored event-log chain and head are accepted', () => {

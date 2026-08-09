@@ -77,6 +77,10 @@ jobs:
           const CHILD_STDERR_MAX_BYTES = 65_536;
           const CHILD_TERMINATION_GRACE_MS = 250;
           const CHILD_SETTLE_GRACE_MS = 1_250;
+          // Test fault-injection authority is production-null. Tests rewrite this
+          // single exact sentinel in an extracted copy only.
+          const TEST_ENV = null;
+          const testEnv = name => TEST_ENV?.[name];
           // Production keeps child timeout overrides disabled; tests rewrite this exact
           // null sentinel in the extracted workflow source only.
           const TEST_CHILD_TIMEOUT_MS = null;
@@ -93,6 +97,7 @@ jobs:
             "import path from 'node:path';",
             "import crypto from 'node:crypto';",
             "import { pathToFileURL } from 'node:url';",
+            "const testEnv = " + (TEST_ENV ? "(name) => process.env[name]" : "() => undefined") + ";",
             "const all = process.argv.slice(1);",
             "const controls = new Map(); let publicArgv = []; let separator = false;",
             "for (let i = 0; i < all.length; i += 1) { const item = all[i]; if (item === '--') { publicArgv = all.slice(i + 1); separator = true; break; } if (!item.startsWith('--') || i + 1 >= all.length) throw new Error('bootstrap controls invalid'); controls.set(item, all[++i]); }",
@@ -109,7 +114,7 @@ jobs:
             "for (const record of records) { const before = fs.lstatSync(record.path, { bigint: true }); const rel = Buffer.from(record.rel); const frameBytes = 16 + rel.length + Number(before.size); if (!before.isFile() || before.size > 16n * 1024n * 1024n || before.dev !== BigInt(record.dev) || before.ino !== BigInt(record.ino) || (before.mode & 0o777n) !== BigInt(record.mode) || before.nlink !== BigInt(record.nlink) || pathBytes + rel.length > 16 * 1024 * 1024 || framedBytes + frameBytes > 512 * 1024 * 1024 || contentBytes + Number(before.size) > 256 * 1024 * 1024) throw new Error('bootstrap aggregate bound exceeded'); const rfd = fs.openSync(record.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); let bytes; try { const opened = fs.fstatSync(rfd, { bigint: true }); if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.nlink !== before.nlink || (opened.mode & 0o777n) !== (before.mode & 0o777n)) throw new Error('bootstrap file identity drift'); bytes = Buffer.alloc(Number(opened.size)); let offset = 0; while (offset < bytes.length) { const read = fs.readSync(rfd, bytes, offset, bytes.length - offset, offset); if (read === 0) throw new Error('bootstrap short read'); offset += read; } } finally { fs.closeSync(rfd); } const after = fs.lstatSync(record.path, { bigint: true }); if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.nlink !== before.nlink || (after.mode & 0o777n) !== (before.mode & 0o777n)) throw new Error('bootstrap file changed after read'); contentBytes += bytes.length; pathBytes += rel.length; framedBytes += frameBytes; const pLen = Buffer.alloc(8); pLen.writeBigUInt64BE(BigInt(rel.length)); const cLen = Buffer.alloc(8); cLen.writeBigUInt64BE(BigInt(bytes.length)); hash.update(pLen); hash.update(rel); hash.update(cLen); hash.update(bytes); }",
             "if (hash.digest('hex') !== expectedDigest) throw new Error('bootstrap stage digest mismatch');",
             "const publicEntry = path.join(publicReal, ...entrypoint.split('/')); const fdEntry = path.join(fdRoot, ...entrypoint.split('/')); const publicEntryStat = fs.lstatSync(publicEntry); const fdEntryStat = fs.lstatSync(fdEntry); if (!publicEntryStat.isFile() || publicEntryStat.isSymbolicLink() || !fdEntryStat.isFile() || fdEntryStat.isSymbolicLink() || publicEntryStat.dev !== fdEntryStat.dev || publicEntryStat.ino !== fdEntryStat.ino) throw new Error('bootstrap entrypoint identity mismatch');",
-            "let postSwapOld = null; if (process.env.DEEP_LOOP_TEST_POST_FINAL_SWAP === '1') { postSwapOld = publicRoot + '.post-final-old'; fs.renameSync(publicRoot, postSwapOld); fs.cpSync(postSwapOld, publicRoot, { recursive: true, errorOnExist: true, force: false }); if (process.env.DEEP_LOOP_TEST_POST_FINAL_V2 === '1') { const v2Path = path.join(publicRoot, 'scripts/lib/child-transitive.mjs'); fs.chmodSync(v2Path, 0o644); fs.writeFileSync(v2Path, \"import fs from 'node:fs'; export function record() { if (process.env.DEEP_LOOP_CHILD_V1_MARKER) fs.appendFileSync(process.env.DEEP_LOOP_CHILD_V1_MARKER, 'v2-imported\\\\n'); }\\n\"); fs.chmodSync(v2Path, 0o444); } }",
+            "let postSwapOld = null; if (testEnv('DEEP_LOOP_TEST_POST_FINAL_SWAP') === '1') { postSwapOld = publicRoot + '.post-final-old'; fs.renameSync(publicRoot, postSwapOld); fs.cpSync(postSwapOld, publicRoot, { recursive: true, errorOnExist: true, force: false }); if (testEnv('DEEP_LOOP_TEST_POST_FINAL_V2') === '1') { const v2Path = path.join(publicRoot, 'scripts/lib/child-transitive.mjs'); fs.chmodSync(v2Path, 0o644); fs.writeFileSync(v2Path, \"import fs from 'node:fs'; export function record() { if (testEnv('DEEP_LOOP_CHILD_V1_MARKER')) fs.appendFileSync(testEnv('DEEP_LOOP_CHILD_V1_MARKER'), 'v2-imported\\\\n'); }\\n\"); fs.chmodSync(v2Path, 0o444); } }",
             "process.argv = [process.execPath, fdEntry, ...publicArgv]; process.env.DEEP_LOOP_ROOT = fdRoot; await import(pathToFileURL(fdEntry).href); if (postSwapOld) { const retainedPost = `${publicRoot}.post-new-${process.pid}`; fs.renameSync(publicRoot, retainedPost); fs.renameSync(postSwapOld, publicRoot); }",
           ];
           // Unicode 15.1.0 CaseFolding.txt, statuses C and F; F supersedes S, T excluded.
@@ -877,7 +882,7 @@ jobs:
           try {
             if (process.platform !== 'linux' || process.arch !== 'x64' || Number(process.versions.node.split('.')[0]) < 20)
               throw new Error('unsupported provisioned Linux/x64 Node topology');
-            const requestedFileLimit = Number(process.env.DEEP_LOOP_TEST_MAX_FILES || MAX.files);
+            const requestedFileLimit = Number(testEnv('DEEP_LOOP_TEST_MAX_FILES') || MAX.files);
             if (Number.isSafeInteger(requestedFileLimit) && requestedFileLimit >= 1 && requestedFileLimit < MAX.files)
               fileLimit = requestedFileLimit;
             const candidate = canonical(env('DEEP_LOOP_CANDIDATE_ROOT'), 'candidate');
@@ -919,7 +924,7 @@ jobs:
             }
             const journalBudget = { used: 0, limit: 256 * 1024 * 1024 };
             inspectTransactions(runDirectory, canonicalProject, journalBudget);
-            if (process.env.DEEP_LOOP_TEST_RUN_DIRECTORY_SWAP === '1') {
+            if (testEnv('DEEP_LOOP_TEST_RUN_DIRECTORY_SWAP') === '1') {
               const oldRunDirectory = `${runDirectory}.old`;
               fs.renameSync(runDirectory, oldRunDirectory);
               fs.cpSync(oldRunDirectory, runDirectory, { recursive: true, errorOnExist: true, force: false });
@@ -960,7 +965,7 @@ jobs:
               throw new Error('target event log missing with nonempty head');
             }
             assertRunDirectoryStable();
-            if (process.env.DEEP_LOOP_TEST_CANDIDATE_SWAP === '1') {
+            if (testEnv('DEEP_LOOP_TEST_CANDIDATE_SWAP') === '1') {
               const oldCandidate = `${candidate}.old`;
               fs.renameSync(candidate, oldCandidate);
               fs.cpSync(oldCandidate, candidate, { recursive: true, errorOnExist: true, force: false });
@@ -968,7 +973,7 @@ jobs:
             const candidateIdentity = inventory(candidate, candidateRootToken);
             const candidateManifest = verifyManifest(candidateIdentity.entries);
             const expected = candidateManifest.expected;
-            const testHeader = process.env.DEEP_LOOP_TEST_WRONG_HEADER === '1' ? WRONG_HEADER_HEX : SOURCE_HEADER_HEX;
+            const testHeader = testEnv('DEEP_LOOP_TEST_WRONG_HEADER') === '1' ? WRONG_HEADER_HEX : SOURCE_HEADER_HEX;
             if (testHeader !== SOURCE_HEADER_HEX) throw new Error('wrong header');
             if (candidateIdentity.digest !== expected) throw new Error('candidate source digest mismatch');
             const retainedParentBefore = rootToken(stageParent, 'stage parent retained scan');
@@ -986,7 +991,7 @@ jobs:
               retainedCount += 1;
             }
             retained.closeSync();
-            if (process.env.DEEP_LOOP_TEST_RETAINED_PARENT_SWAP === '1') {
+            if (testEnv('DEEP_LOOP_TEST_RETAINED_PARENT_SWAP') === '1') {
               const oldParent = `${stageParent}.retained-old`;
               fs.renameSync(stageParent, oldParent);
               fs.mkdirSync(stageParent, { mode: 0o755 });
@@ -996,7 +1001,7 @@ jobs:
             if (rootToken(stageParent, 'stage parent retained scan') !== stageParentRootToken)
               throw new Error('stage parent changed before stage creation');
             if (retainedCount >= 4) throw new Error('retained-stage quota exceeded');
-            if (process.env.DEEP_LOOP_TEST_STAGE_PARENT_POST_RETAINED_SWAP === '1') {
+            if (testEnv('DEEP_LOOP_TEST_STAGE_PARENT_POST_RETAINED_SWAP') === '1') {
               const oldParent = `${stageParent}.post-retained-old`;
               fs.renameSync(stageParent, oldParent);
               fs.mkdirSync(stageParent, { mode: 0o755 });
@@ -1008,7 +1013,7 @@ jobs:
               throw new Error('stage parent changed during stage creation');
             const stageRootToken = rootToken(stage, 'stage');
             copyTree(candidate, stage);
-            if (process.env.DEEP_LOOP_TEST_STAGE_INITIAL_SWAP === '1') {
+            if (testEnv('DEEP_LOOP_TEST_STAGE_INITIAL_SWAP') === '1') {
               const oldStage = `${stage}.initial-old`;
               fs.renameSync(stage, oldStage);
               fs.cpSync(oldStage, stage, { recursive: true, errorOnExist: true, force: false });
@@ -1038,15 +1043,15 @@ jobs:
                 || current.identities.join('\n') !== copyToken.identities || current.rootIdentity !== copyToken.candidateRootIdentity
                 || current.directories.join('\n') !== copyToken.directories) throw new Error('candidate V2 before first barrier');
             };
-            if (process.env.DEEP_LOOP_TEST_BARRIER === 'before-token')
+            if (testEnv('DEEP_LOOP_TEST_BARRIER') === 'before-token')
               fs.appendFileSync(path.join(candidate, 'scripts/deep-loop.mjs'), '\nV2\n');
             verifyCandidateStillMatches();
             // Candidate V2 after stage digest is configuration-invalid; the second candidate
             // barrier is checked before probe/driver and driver=0. A target workspace without
             // a plugin root is configuration-invalid before module resolution failure.
-            if (process.env.DEEP_LOOP_TEST_BARRIER === 'after-stage-digest')
+            if (testEnv('DEEP_LOOP_TEST_BARRIER') === 'after-stage-digest')
               fs.appendFileSync(path.join(candidate, 'scripts/deep-loop.mjs'), '\nV2\n');
-            if (process.env.DEEP_LOOP_TEST_METADATA_BARRIER === '1') {
+            if (testEnv('DEEP_LOOP_TEST_METADATA_BARRIER') === '1') {
               const metadata = path.join(candidate, '.claude-plugin');
               const oldMetadata = `${metadata}.old`;
               fs.renameSync(metadata, oldMetadata);
@@ -1075,9 +1080,9 @@ jobs:
               fs.chmodSync(path.join(scriptDir, 'empty-extra'), 0o555);
               fs.chmodSync(scriptDir, 0o555);
             };
-            if (process.env.DEEP_LOOP_TEST_STAGE_ROOT_BARRIER === '1') replaceStageRootForTest(false);
-            if (process.env.DEEP_LOOP_TEST_STAGE_EMPTY_BARRIER === '1') addEmptyStageDirectoryForTest();
-            if (process.env.DEEP_LOOP_TEST_STAGE_BARRIER === '1') replaceStageRootForTest(true);
+            if (testEnv('DEEP_LOOP_TEST_STAGE_ROOT_BARRIER') === '1') replaceStageRootForTest(false);
+            if (testEnv('DEEP_LOOP_TEST_STAGE_EMPTY_BARRIER') === '1') addEmptyStageDirectoryForTest();
+            if (testEnv('DEEP_LOOP_TEST_STAGE_BARRIER') === '1') replaceStageRootForTest(true);
             verifyStage();
             const sealed = inventory(stage, stageToken.rootIdentity);
             if (sealed.digest !== expected) throw new Error('stage changed after stage digest');
@@ -1097,7 +1102,7 @@ jobs:
               const stdout = [];
               const stderr = [];
               const groupGone = () => {
-                if (process.env.DEEP_LOOP_TEST_GROUP_NEVER_GONE === '1') return false;
+                if (testEnv('DEEP_LOOP_TEST_GROUP_NEVER_GONE') === '1') return false;
                 if (!child?.pid) return true;
                 try { process.kill(-child.pid, 0); return false; }
                 catch (error) { return error?.code === 'ESRCH'; }
@@ -1128,7 +1133,7 @@ jobs:
                 }, CHILD_SETTLE_GRACE_MS);
                 groupPollTimer = setInterval(() => { if (groupGone()) finish({ ok: false, reason: failure }); }, 25);
               };
-              const childExecutable = process.env.DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE === '1'
+              const childExecutable = testEnv('DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE') === '1'
                 ? '/definitely-missing-deep-loop-child' : process.execPath;
               child = childProcess.spawn(childExecutable, [
                 '--preserve-symlinks', '--preserve-symlinks-main', '--input-type=module', '--eval',
@@ -1177,8 +1182,8 @@ jobs:
                 else terminate('child-termination-failed');
               });
             });
-            if (process.env.DEEP_LOOP_RUN_CHILDREN === '1') {
-              if (process.env.DEEP_LOOP_TEST_STAGE_HARDLINK_REPLACE === '1') {
+            if (testEnv('DEEP_LOOP_RUN_CHILDREN') === '1') {
+              if (testEnv('DEEP_LOOP_TEST_STAGE_HARDLINK_REPLACE') === '1') {
                 const metadataDir = path.join(stage, '.codex-plugin');
                 const metadataTarget = path.join(metadataDir, 'plugin.json');
                 const metadataSource = path.join(stage, '.claude-plugin', 'plugin.json');
@@ -1187,14 +1192,14 @@ jobs:
                 fs.linkSync(metadataSource, metadataTarget);
                 fs.chmodSync(metadataDir, 0o555);
               }
-              if (process.env.DEEP_LOOP_TEST_STAGE_NONNFC_DIR === '1') {
+              if (testEnv('DEEP_LOOP_TEST_STAGE_NONNFC_DIR') === '1') {
                 const scriptsDir = path.join(stage, 'scripts');
                 fs.chmodSync(scriptsDir, 0o755);
                 fs.mkdirSync(path.join(scriptsDir, 'e\u0301'));
                 fs.chmodSync(path.join(scriptsDir, 'e\u0301'), 0o555);
                 fs.chmodSync(scriptsDir, 0o555);
               }
-              if (process.env.DEEP_LOOP_TEST_STAGE_FOLD_DIR === '1') {
+              if (testEnv('DEEP_LOOP_TEST_STAGE_FOLD_DIR') === '1') {
                 const scriptsDir = path.join(stage, 'scripts');
                 fs.chmodSync(scriptsDir, 0o755);
                 for (const name of ['\u00df', 'ss']) {
@@ -1204,7 +1209,7 @@ jobs:
                 }
                 fs.chmodSync(scriptsDir, 0o555);
               }
-              if (process.env.DEEP_LOOP_TEST_STAGE_SYMLINK === '1') {
+              if (testEnv('DEEP_LOOP_TEST_STAGE_SYMLINK') === '1') {
                 const renamed = stage + '.symlink-old';
                 fs.renameSync(stage, renamed);
                 fs.symlinkSync(renamed, stage);
@@ -1214,7 +1219,7 @@ jobs:
                 const stageStat = fs.fstatSync(stageFd);
                 if (!stageStat.isDirectory() || (stageStat.mode & 0o777) !== 0o555)
                   throw new Error('sealed stage FD invalid');
-                if (process.env.DEEP_LOOP_TEST_PRECHECK_RENAME === '1') {
+                if (testEnv('DEEP_LOOP_TEST_PRECHECK_RENAME') === '1') {
                   const renamed = stage + '.precheck-old';
                   fs.renameSync(stage, renamed);
                   fs.cpSync(renamed, stage, { recursive: true, errorOnExist: true, force: false });
