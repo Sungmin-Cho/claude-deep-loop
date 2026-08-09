@@ -392,12 +392,12 @@ function trustedWorkflowSource() {
   assert.equal([...extracted.matchAll(new RegExp(stageParentOwnershipGuard.source, 'g'))].length, 1,
     'stage-parent ownership guard must be exact and singular');
   extracted = extracted.replace(stageParentOwnershipGuard,
-    "if (!stageParentStat.isDirectory() || stageParentStat.isSymbolicLink()) throw new Error('stage parent is not runner-owned and private');");
+    "if (!stageParentStat.isDirectory() || stageParentStat.isSymbolicLink()\n              || (process.platform !== 'win32' && ((stageParentStat.mode & 0o022) !== 0\n                || (typeof process.getuid === 'function' && stageParentStat.uid !== process.getuid()))))\n              throw new Error('stage parent is not runner-owned and private');");
   const ancestorWriteGuard = /if \(!ancestorStat\.isDirectory\(\) \|\| ancestorStat\.isSymbolicLink\(\)\n\s+\|\| \(ancestorStat\.mode & 0o020\) !== 0\n\s+\|\| \(\(ancestorStat\.mode & 0o002\) !== 0 && \(ancestorStat\.mode & 0o1000\) === 0\)\)\n\s+throw new Error\('stage parent ancestor is writable or aliased'\);/;
   assert.equal([...extracted.matchAll(new RegExp(ancestorWriteGuard.source, 'g'))].length, 1,
     'stage-parent ancestor guard must be exact and singular');
   extracted = extracted.replace(ancestorWriteGuard,
-    "if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink()) throw new Error('stage parent ancestor is writable or aliased');");
+    "if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink()\n                || (process.platform !== 'win32' && ((ancestorStat.mode & 0o020) !== 0\n                  || ((ancestorStat.mode & 0o002) !== 0 && (ancestorStat.mode & 0o1000) === 0))))\n                throw new Error('stage parent ancestor is writable or aliased');");
   const probeFailure = "if (!probe.ok) throw new Error(probe.reason);";
   const driverFailure = "if (!driver.ok) throw new Error(driver.reason);";
   assert.equal(extracted.split(probeFailure).length - 1, 1, 'probe failure seam must remain singular');
@@ -418,11 +418,11 @@ test('Windows verifier extraction neutralizes only POSIX stage-parent write guar
   const source = trustedWorkflowSource();
   assert.match(workflow, /stageParentStat\.mode & 0o022/);
   assert.match(workflow, /ancestorStat\.mode & 0o020/);
-  assert.match(source, /if \(!stageParentStat\.isDirectory\(\) \|\| stageParentStat\.isSymbolicLink\(\)\)/);
-  assert.match(source, /if \(!ancestorStat\.isDirectory\(\) \|\| ancestorStat\.isSymbolicLink\(\)\)/);
-  assert.doesNotMatch(source, /stageParentStat\.mode & 0o022/);
-  assert.doesNotMatch(source, /ancestorStat\.mode & 0o020/);
-  assert.doesNotMatch(source, /ancestorStat\.mode & 0o002/);
+  assert.match(source, /!stageParentStat\.isDirectory\(\) \|\| stageParentStat\.isSymbolicLink\(\)/);
+  assert.match(source, /!ancestorStat\.isDirectory\(\) \|\| ancestorStat\.isSymbolicLink\(\)/);
+  assert.match(source, /process\.platform !== 'win32'[\s\S]{0,180}stageParentStat\.mode & 0o022/);
+  assert.match(source, /process\.platform !== 'win32'[\s\S]{0,220}ancestorStat\.mode & 0o020/);
+  assert.match(source, /ancestorStat\.mode & 0o002/);
 });
 
 test('trusted bootstrap imports only FD-bound V1', () => {
