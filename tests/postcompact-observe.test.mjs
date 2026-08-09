@@ -25,20 +25,23 @@ const EXPECTED_BOOTSTRAP = `node -e "const{join}=require('node:path');const{path
 const EXPECTED_PRECOMPACT = `node -e "const{join}=require('node:path');const{pathToFileURL}=require('node:url');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(!r){console.error('deep-loop: plugin root unavailable')}else{import(pathToFileURL(join(r,'scripts','hooks-impl','precompact-handoff.mjs')).href).then(m=>m.main()).catch(()=>console.error('deep-loop: precompact hook failed'))}"`;
 const EXPECTED_SESSIONSTART = `node -e "const{join}=require('node:path');const{pathToFileURL}=require('node:url');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(!r){console.error('deep-loop: plugin root unavailable')}else{import(pathToFileURL(join(r,'scripts','hooks-impl','sessionstart-restore.mjs')).href).then(m=>m.main()).catch(()=>console.error('deep-loop: sessionstart hook failed'))}"`;
 
-function seed(runtime = 'claude') {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `dl-postcompact-${runtime}-`)));
+function seed(runtime = 'claude', {
+  root = realpathSync(mkdtempSync(join(tmpdir(), `dl-postcompact-${runtime}-`))),
+  label = runtime,
+  now = '2026-08-05T00:00:00.000Z',
+} = {}) {
   const { runId } = initRun(root, {
     runtime,
     goal: 'postcompact adapter',
-    now: new Date('2026-08-05T00:00:00.000Z'),
+    now: new Date(now),
   });
   const fence = { owner: runId, generation: 1 };
-  const worktree = `.claude/worktrees/postcompact-${runtime}`;
+  const worktree = `.claude/worktrees/postcompact-${label}`;
   const containedCwd = join(root, worktree, 'src');
   mkdirSync(containedCwd, { recursive: true });
   const workstreamId = newWorkstream(root, runId, {
-    title: `postcompact-${runtime}`,
-    branch: `feature/postcompact-${runtime}`,
+    title: `postcompact-${label}`,
+    branch: `feature/postcompact-${label}`,
     worktree,
     fence,
   }).id;
@@ -56,10 +59,48 @@ function seed(runtime = 'claude') {
   const checkpoint = emitCompactCheckpoint(root, runId, {
     fence,
     runtime,
-    now: Date.parse('2026-08-05T00:00:01.000Z'),
+    now: Date.parse(now) + 1_000,
   });
   return { root, runId, runtime, fence, containedCwd, checkpoint };
 }
+
+test('PostCompact resolves a unique cwd-bound run and fails closed on project-wide ambiguity', async () => {
+  const first = seed('claude', { label: 'first' });
+  const second = seed('claude', {
+    root: first.root,
+    label: 'second',
+    now: '2026-08-05T00:01:00.000Z',
+  });
+  const { runPostCompactObserve } = await loadAdapter();
+  const calls = [];
+  const spawnSyncImpl = (bin, argv, options) => {
+    calls.push({ bin, argv, options });
+    return { status: 0, signal: null, error: undefined };
+  };
+
+  const bound = runPostCompactObserve({
+    cwd: first.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: first.root });
+  assert.deepEqual(bound, { ok: true, action: 'observed' });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].argv.at(-1), first.runId,
+    'the newer .deep-loop/current run must not steal a cwd-bound PostCompact event');
+  assert.equal(calls[0].argv.includes(second.runId), false);
+
+  const ambiguous = runPostCompactObserve({
+    cwd: first.root,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: first.root });
+  assert.deepEqual(ambiguous, {
+    ok: false,
+    action: 'ignored',
+    reason: 'observation-unavailable',
+  });
+  assert.equal(calls.length, 1, 'ambiguous project-wide PostCompact must not spawn');
+});
 
 async function loadAdapter() {
   return import(`${pathToFileURL(ADAPTER).href}?test=${Date.now()}-${Math.random()}`);

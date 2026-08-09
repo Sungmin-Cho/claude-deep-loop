@@ -92,7 +92,8 @@ A trusted SessionStart `prepared` capsule has no PostCompact restore authority.
 Never invoke `checkpoint inspect` or `checkpoint restore` for this branch.
 Route it directly to the **Fresh-affinity fallback** below. Never construct a
 restored capsule or provider evidence from the prepared capsule, and never
-select `human-attested` for it.
+select `human-attested` for it. Retain only the invocation-local route marker
+`prepared-fallback`; it is not a capsule or durable authorization.
 
 For the successful same-owner restore path, freshly read
 `session_chain.lease` and `session_chain.sessions` as above. Inspect through
@@ -179,6 +180,16 @@ session, an open, non-terminal bound Workstream, and a current episode belonging
 to that Workstream. Only with every proof present, directly invoke one
 runtime-qualified, capsule-free continue tick exactly once in the same model turn.
 This fallback must not construct a restored capsule or select `human-attested`.
+For the trusted `prepared` branch only, pass its invocation-local
+`prepared-fallback` mode so the continue skill performs the underlying action
+but consumes immediate cap readvice for exactly one tick:
+
+- Claude: invoke `/deep-loop-continue prepared-fallback` exactly once.
+- Codex: invoke `$deep-loop:deep-loop-continue prepared-fallback` exactly once.
+
+For every other stale, corrupt, foreign, or missing-checkpoint fallback, invoke
+the ordinary argument-free continue command exactly once. Never infer the
+prepared mode from checkpoint presence.
 Otherwise execute the public fenced preserve-pause mutation:
 
 ```text

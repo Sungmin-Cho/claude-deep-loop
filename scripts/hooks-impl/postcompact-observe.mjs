@@ -120,19 +120,14 @@ function newestCheckpoint(runPath) {
   return candidates.length === 0 ? null : `checkpoints/${candidates[0].name}`;
 }
 
-function observationRequest(root) {
-  const currentPath = join(root, '.deep-loop', 'current');
-  if (!exactRegularFile(currentPath)) return null;
-  let runId;
-  try { runId = readFileSync(currentPath, 'utf8').trim(); } catch { return null; }
-  if (!safeCurrentRunId(runId)) return null;
-
+function runObservationCandidate(root, runId, canonicalCwd) {
   const runPath = join(root, '.deep-loop', 'runs', runId);
   if (canonicalExactDirectory(runPath) !== runPath) return null;
   const loopPath = join(runPath, 'loop.json');
   if (!exactRegularFile(loopPath)) return null;
   let loop;
   try { loop = JSON.parse(readFileSync(loopPath, 'utf8')); } catch { return null; }
+  if (loop?.run_id !== runId || loop?.status !== 'running') return null;
   let storedRoot;
   try { storedRoot = realpathSync(loop?.project?.root); } catch { return null; }
   if (storedRoot !== root) return null;
@@ -142,17 +137,68 @@ function observationRequest(root) {
   const generation = lease?.generation;
   if (!safeCurrentRunId(owner)
     || !Number.isSafeInteger(generation)
-    || generation < 1) return null;
+    || generation < 1
+    || lease?.state !== 'active') return null;
+  const ownerSession = Array.isArray(loop?.session_chain?.sessions)
+    ? loop.session_chain.sessions.find(session => session?.run_id === owner)
+    : null;
+  const scope = ownerSession?.scope;
+  if (scope?.kind !== 'workstream'
+    || typeof scope.workstream_id !== 'string'
+    || scope.workstream_id.length === 0
+    || scope.terminal_event !== null
+    || scope.closed_at !== null
+    || scope.superseded_at !== null) return null;
+  const workstream = Array.isArray(loop?.workstreams)
+    ? loop.workstreams.find(item => item?.id === scope.workstream_id)
+    : null;
+  const episode = Array.isArray(loop?.episodes)
+    ? loop.episodes.find(item => item?.id === loop.current_episode)
+    : null;
+  if (!workstream
+    || ['ready', 'merged', 'abandoned'].includes(workstream.status)
+    || episode?.workstream_id !== scope.workstream_id
+    || typeof workstream.worktree !== 'string') return null;
+  const worktreePath = resolve(root, workstream.worktree);
+  const canonicalWorktree = canonicalExactDirectory(worktreePath);
+  if (canonicalWorktree === null) return null;
+  const rootRelative = relative(root, canonicalWorktree);
+  if (!rootRelative || rootRelative.startsWith('..') || rootRelative.split(sep).includes('..')) return null;
+  const cwdRelative = relative(canonicalWorktree, canonicalCwd);
+  const cwdBound = cwdRelative === ''
+    || (!cwdRelative.startsWith('..') && !cwdRelative.split(sep).includes('..'));
   let runtime;
   try { runtime = sessionRuntime(loop); } catch { return null; }
   const checkpointRel = newestCheckpoint(runPath);
-  return checkpointRel === null ? null : {
+  return {
     runId,
     owner,
     generation,
     runtime,
     checkpointRel,
+    cwdBound,
   };
+}
+
+function observationRequest(root, cwd) {
+  const canonicalCwd = canonicalExactDirectory(cwd);
+  if (canonicalCwd === null) return null;
+  const runsPath = join(root, '.deep-loop', 'runs');
+  if (canonicalExactDirectory(runsPath) !== runsPath) return null;
+  let names;
+  try { names = readdirSync(runsPath).filter(safeCurrentRunId).sort(); } catch { return null; }
+  const candidates = names
+    .map(runId => runObservationCandidate(root, runId, canonicalCwd))
+    .filter(Boolean);
+  const cwdBound = candidates.filter(candidate => candidate.cwdBound);
+  const selected = cwdBound.length === 1
+    ? cwdBound[0]
+    : cwdBound.length === 0 && candidates.length === 1
+      ? candidates[0]
+      : null;
+  if (selected === null || selected.checkpointRel === null) return null;
+  const { cwdBound: _cwdBound, ...request } = selected;
+  return request;
 }
 
 function trustedBody(input, root) {
@@ -183,7 +229,7 @@ export function runPostCompactObserve(input = {}, {
   if (root === null) return { ok: false, action: 'ignored', reason: 'host-context-invalid' };
   const body = trustedBody(input, root);
   if (body === null) return { ok: false, action: 'ignored', reason: 'host-context-invalid' };
-  const request = observationRequest(root);
+  const request = observationRequest(root, input.cwd);
   if (request === null) return { ok: false, action: 'ignored', reason: 'observation-unavailable' };
   const argv = [
     CLI,

@@ -1091,6 +1091,8 @@ test('compact restore directly dispatches exactly one qualified continue tick af
     'prepared SessionStart has no PostCompact authority and must not call restore');
   assert.match(preparedBranch, /(?:must not|never)[\s\S]{0,180}(?:restored capsule|provider evidence)/i,
     'prepared SessionStart must not fabricate restored provenance');
+  assert.match(preparedBranch, /prepared-fallback/i,
+    'prepared SessionStart must carry an invocation-local one-tick readvice suppression marker');
   assert.match(restore, /Direct dispatch boundary[\s\S]{0,2400}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
   assert.match(restore, /same model turn/i);
   assert.doesNotMatch(restore, /On success, continue[\s\S]{0,120}(?:invokes|print)/i,
@@ -1116,6 +1118,14 @@ test('compact restore directly dispatches exactly one qualified continue tick af
   assert.match(fallbackBody, /capsule-free[\s\S]{0,240}exactly once/i);
   assert.match(fallbackBody, /otherwise[\s\S]{0,240}(?:execute|invoke)[\s\S]{0,180}public fenced preserve-pause/i,
     'failed prepared affinity proof must preserve-pause');
+
+  const continueBody = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  assert.match(continueBody, /prepared-fallback[\s\S]{0,1000}advice[\s\S]{0,160}compact/i,
+    'continue must recognize the exact prepared fallback marker and its compact advice');
+  assert.match(continueBody, /prepared-fallback[\s\S]{0,1600}(?:ignore|suppress|consume)[\s\S]{0,240}(?:one tick|exactly once)/i,
+    'prepared fallback must consume compact readvice for exactly one useful tick');
+  assert.match(continueBody, /prepared-fallback[\s\S]{0,1800}(?:underlying|original)[\s\S]{0,240}action\.type/i,
+    'prepared fallback must still execute the kernel-returned underlying action');
 });
 
 test('continue validates SessionStart and direct-human restored capsules against provenance, cursor, and event head before mutation', () => {

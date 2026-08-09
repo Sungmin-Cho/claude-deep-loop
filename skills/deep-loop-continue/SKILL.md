@@ -18,6 +18,21 @@ user-invocable: true
 
 호출은 Claude에서 `/deep-loop-continue`, Codex에서 `$deep-loop:deep-loop-continue` 형식을 사용한다.
 
+## Invocation mode
+
+The normal invocation has no arguments. One invocation-local internal mode,
+`prepared-fallback`, is accepted only when the trusted SessionStart `prepared`
+branch of `deep-loop-compact restore` dispatches this skill in the same model
+turn. It grants no restore authority, carries no capsule, and never changes
+durable state by itself. Reject any other argument or conflicting mode.
+
+For `prepared-fallback`, §1 still reads `next-action --json` exactly once. If
+the returned action has `advice:"compact"`, ignore only that advice and its
+reason for this one tick, then consume the `prepared-fallback` mode exactly
+once. Route and perform the original underlying `action.type`; never replace
+or infer that action. Do not enter §4 Compact advice for this tick. This avoids
+an immediate compact loop while preserving the kernel's routing authority.
+
 ## 개요
 
 `/deep-loop-continue` — 커널의 `next-action`을 한 단계 수행한다. 열린
@@ -276,6 +291,11 @@ self-report는 best-effort 보정일 뿐이다. 커널이 각 business mutation�
 호출하고, 그 스킬이 출력한 host native `/compact` 명령을 사람에게 제시한다.
 compact prepare/restore는 같은 conversation, 같은 lease, 같은 Workstream
 affinity를 유지한다.
+
+Exception: the already-consumed invocation-local `prepared-fallback` mode skips
+this subsection exactly once as specified above. It still performs the
+kernel-returned underlying action and cannot suppress compact advice on any
+later tick.
 
 ### Exact Workstream boundary handoff
 

@@ -230,6 +230,15 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(setupEvents.length, 5);
     assert.deepEqual(setupEvents.map(event => event.ts), Array(5).fill(FIXED_NOW));
 
+    // PreCompact is reached because attended cadence is already at its cap.
+    // Test setup fixes that state explicitly so the prepared fallback exercises
+    // the immediate-readvice edge rather than a below-cap approximation.
+    const cappedBeforePrepare = readKernelState(root, runId).data;
+    const cappedPrepareOwner = cappedBeforePrepare.session_chain.sessions
+      .find(session => session.run_id === cappedBeforePrepare.session_chain.lease.owner_run_id);
+    cappedPrepareOwner.turns = cappedBeforePrepare.budget.per_session_turn_cap;
+    writeState(root, runId, cappedBeforePrepare);
+
     const beforeCompact = state(root, runId);
     const identityBeforeCompact = compactIdentity(beforeCompact);
     assert.equal(identityBeforeCompact.scope.kind, 'workstream');
@@ -292,6 +301,9 @@ for (const runtime of ['claude', 'codex']) {
     ]), 'prepared capsule-free continuation tick');
     assert.equal(preparedContinuation.action.episode_id, makerA);
     assert.notEqual(preparedContinuation.action.type, 'handoff');
+    assert.equal(preparedContinuation.action.advice, 'compact',
+      'without an invocation-local prepared fallback marker the kernel still exposes cap advice');
+    assert.equal(preparedContinuation.action.advice_reason, 'per_session_turn_cap');
     assert.deepEqual(durableInventory(root, runId), beforePreparedFallback);
     assert.equal(eventLog(root, runId)
       .filter(event => event.type === 'compact-restored').length, 0);
