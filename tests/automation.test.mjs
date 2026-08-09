@@ -388,6 +388,16 @@ function trustedWorkflowSource() {
   assert.equal([...extracted.matchAll(probeRunSentinel)].length, 1, 'production probe run override must be a single null sentinel');
   extracted = extracted.replace(probeRootSentinel, "const TEST_PROBE_PROJECT_ROOT = process.env.DEEP_LOOP_TEST_PROBE_PROJECT_ROOT;");
   extracted = extracted.replace(probeRunSentinel, "const TEST_PROBE_RUN_ID = process.env.DEEP_LOOP_TEST_PROBE_RUN_ID;");
+  const stageParentOwnershipGuard = /if \(\(stageParentStat\.mode & 0o022\) !== 0\n\s+\|\| \(typeof process\.getuid === 'function' && stageParentStat\.uid !== process\.getuid\(\)\)\)\n\s+throw new Error\('stage parent is not runner-owned and private'\);/;
+  assert.equal([...extracted.matchAll(new RegExp(stageParentOwnershipGuard.source, 'g'))].length, 1,
+    'stage-parent ownership guard must be exact and singular');
+  extracted = extracted.replace(stageParentOwnershipGuard,
+    "if (!stageParentStat.isDirectory() || stageParentStat.isSymbolicLink()) throw new Error('stage parent is not runner-owned and private');");
+  const ancestorWriteGuard = /if \(!ancestorStat\.isDirectory\(\) \|\| ancestorStat\.isSymbolicLink\(\)\n\s+\|\| \(ancestorStat\.mode & 0o020\) !== 0\n\s+\|\| \(\(ancestorStat\.mode & 0o002\) !== 0 && \(ancestorStat\.mode & 0o1000\) === 0\)\)\n\s+throw new Error\('stage parent ancestor is writable or aliased'\);/;
+  assert.equal([...extracted.matchAll(new RegExp(ancestorWriteGuard.source, 'g'))].length, 1,
+    'stage-parent ancestor guard must be exact and singular');
+  extracted = extracted.replace(ancestorWriteGuard,
+    "if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink()) throw new Error('stage parent ancestor is writable or aliased');");
   const probeFailure = "if (!probe.ok) throw new Error(probe.reason);";
   const driverFailure = "if (!driver.ok) throw new Error(driver.reason);";
   assert.equal(extracted.split(probeFailure).length - 1, 1, 'probe failure seam must remain singular');
@@ -402,6 +412,18 @@ function trustedWorkflowSource() {
     "if (!driver.ok) throw new Error(`${driver.reason}${driver.stderr?.length ? `: ${boundedChildDetail(driver.stderr.toString('utf8'))}` : ''}`);");
   return extracted;
 }
+
+test('Windows verifier extraction neutralizes only POSIX stage-parent write guards', () => {
+  const workflow = readFileSync(GITHUB_WORKFLOW, 'utf8').replace(/\r\n?/g, '\n');
+  const source = trustedWorkflowSource();
+  assert.match(workflow, /stageParentStat\.mode & 0o022/);
+  assert.match(workflow, /ancestorStat\.mode & 0o020/);
+  assert.match(source, /if \(!stageParentStat\.isDirectory\(\) \|\| stageParentStat\.isSymbolicLink\(\)\)/);
+  assert.match(source, /if \(!ancestorStat\.isDirectory\(\) \|\| ancestorStat\.isSymbolicLink\(\)\)/);
+  assert.doesNotMatch(source, /stageParentStat\.mode & 0o022/);
+  assert.doesNotMatch(source, /ancestorStat\.mode & 0o020/);
+  assert.doesNotMatch(source, /ancestorStat\.mode & 0o002/);
+});
 
 test('trusted bootstrap imports only FD-bound V1', () => {
   const source = trustedWorkflowSource();
