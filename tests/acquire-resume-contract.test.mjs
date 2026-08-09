@@ -250,6 +250,10 @@ test('T1 negative: a reservation-less released takeover and a stale-generation r
     attemptId: 'MIGRATEDATTEMPT01',
     owner: f.child, expectGeneration: 1, runtime: 'claude', now: Date.parse(T2),
   });
+  assert.deepEqual(activateLease(f.root, f.runId, {
+    owner: f.child, generation: 2, runtime: 'claude', attemptId: 'MIGRATEDATTEMPT01',
+    activationToken: 'T1NegativeReacquireToken', now: Date.parse(T2) + 1,
+  }), { ok: true, reason: 'activated' });
   assert.deepEqual(releaseLease(f.root, f.runId, { owner: f.child, generation: 2 }), {
     ok: true, reason: 'released',
   });
@@ -273,6 +277,10 @@ test('T1 negative: a released lease never shows the consumed marker, because the
     attemptId: 'MIGRATEDATTEMPT01',
     owner: f.child, expectGeneration: 1, runtime: 'claude', now: Date.parse(T2),
   }).proceed, true);
+  assert.deepEqual(activateLease(f.root, f.runId, {
+    owner: f.child, generation: 2, runtime: 'claude', attemptId: 'MIGRATEDATTEMPT01',
+    activationToken: 'T1ReleasedMarkerToken', now: Date.parse(T2) + 1,
+  }), { ok: true, reason: 'activated' });
   assert.match(runReadCli(f.root, f.runId, ['resume-command']).stdout, /Status: consumed/);
 
   assert.deepEqual(releaseLease(f.root, f.runId, { owner: f.child, generation: 2 }), {
@@ -821,6 +829,10 @@ test('T8 replay does not cross a generation boundary', () => {
   acquireLease(f.root, f.runId, {
     owner: f.child, expectGeneration: 1, runtime: 'claude', attemptId: A1, now: Date.parse(T2),
   });
+  assert.deepEqual(activateLease(f.root, f.runId, {
+    owner: f.child, generation: 2, runtime: 'claude', attemptId: A1,
+    activationToken: 'T8GenerationBoundaryToken', now: Date.parse(T2) + 1,
+  }), { ok: true, reason: 'activated' });
   releaseLease(f.root, f.runId, { owner: f.child, generation: 2 });
   const other = acquireLease(f.root, f.runId, {
     attemptId: 'MIGRATEDATTEMPT01',

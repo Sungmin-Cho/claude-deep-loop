@@ -98,6 +98,10 @@ export function recordReviewed(root, runId, episodeId, source) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     // v1.6 (spec §2.3-7): fence 없는 legacy export — terminal run에 카운터 write 금지.
     if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: recordReviewed');
+    if (data.session_chain.lease.activation_deadline_at !== null
+      && data.session_chain.lease.activation_deadline_at !== undefined) {
+      throw new Error('ACTIVATION_PENDING: recordReviewed');
+    }
     const requireHumanAck = data.review?.require_human_ack === true;
     if (source === 'deep-review-approve' && requireHumanAck) return; // ack 필요, 카운트 안 함
     const ep = data.episodes.find(e => e.id === episodeId);

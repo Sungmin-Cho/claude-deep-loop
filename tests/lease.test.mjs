@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +20,12 @@ import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs'
 import * as leaseModule from '../scripts/lib/lease.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 
+const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
+
+function runCli(root, args) {
+  return spawnSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+}
+
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
@@ -31,6 +38,48 @@ function writeHashValidState(root, runId, data) {
   const dir = runDir(root, runId);
   writeFileSync(join(dir, 'loop.json'), raw);
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+}
+
+function pendingLease(root, runId, {
+  owner = 'SLICE006PENDINGOWNER',
+  attemptId = 'SLICE006ATTEMPT01',
+} = {}) {
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+  const acquired = acquireLease(root, runId, {
+    owner,
+    expectGeneration: 1,
+    runtime: 'claude',
+    attemptId,
+    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  assert.notEqual(readState(root, runId).data.session_chain.lease.activation_deadline_at, null);
+  return { owner, generation: acquired.generation, attemptId };
+}
+
+function activatePending(root, runId, pending, activationToken = 'SLICE006ACTIVATIONTOKEN') {
+  const activated = leaseModule.activateLease(root, runId, {
+    owner: pending.owner,
+    generation: pending.generation,
+    runtime: 'claude',
+    attemptId: pending.attemptId,
+    activationToken,
+    now: Date.parse('2026-08-09T00:00:01.000Z'),
+  });
+  assert.deepEqual(activated, { ok: true, reason: 'activated' });
+  return activated;
+}
+
+function durableLeaseBytes(root, runId) {
+  const dir = runDir(root, runId);
+  const eventPath = join(dir, 'event-log.jsonl');
+  return {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    events: existsSync(eventPath) ? readFileSync(eventPath) : null,
+  };
 }
 
 test('SLICE-004 exposes activateLease as the dedicated activation mutation', () => {
@@ -175,6 +224,101 @@ test('reserveHandoff dedups concurrent triggers (PreCompact no-op after Decide)'
   assert.equal(retry.ok, true);
   assert.equal(retry.reserved, false);
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+});
+
+test('SLICE-006 reserveHandoff independently blocks an activation-pending lease without durable writes', () => {
+  const { root, runId } = seed();
+  const pending = pendingLease(root, runId);
+  const before = durableLeaseBytes(root, runId);
+
+  assert.deepEqual(
+    reserveHandoff(root, runId, {
+      trigger: 'slice-006-negative-polarity',
+      expect: { owner: pending.owner, generation: pending.generation },
+      now: Date.parse('2026-08-09T00:00:02.000Z'),
+    }),
+    { ok: false, reason: 'ACTIVATION_PENDING' },
+  );
+  assert.deepEqual(durableLeaseBytes(root, runId), before);
+});
+
+test('SLICE-006 reserveHandoff activated polarity preserves the existing reservation path', () => {
+  const { root, runId } = seed();
+  const pending = pendingLease(root, runId);
+  activatePending(root, runId, pending);
+
+  const reserved = reserveHandoff(root, runId, {
+    trigger: 'slice-006-positive-polarity',
+    expect: { owner: pending.owner, generation: pending.generation },
+    now: Date.parse('2026-08-09T00:00:02.000Z'),
+  });
+  assert.equal(reserved.ok, true);
+  assert.equal(reserved.reserved, true);
+  assert.equal(reserved.reason, 'reserved');
+});
+
+test('SLICE-006 releaseLease blocks activation-pending state and releases after activation', () => {
+  const { root, runId } = seed();
+  const pending = pendingLease(root, runId);
+  const before = durableLeaseBytes(root, runId);
+
+  assert.deepEqual(releaseLease(root, runId, pending), {
+    ok: false, reason: 'ACTIVATION_PENDING',
+  });
+  assert.deepEqual(durableLeaseBytes(root, runId), before);
+
+  activatePending(root, runId, pending);
+  assert.deepEqual(releaseLease(root, runId, pending), { ok: true, reason: 'released' });
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
+});
+
+test('SLICE-006 rollbackHandoff blocks activation-pending phase and rolls back after activation', () => {
+  const { root, runId } = seed();
+  const pending = pendingLease(root, runId);
+  const before = durableLeaseBytes(root, runId);
+
+  const denied = rollbackHandoff(root, runId, pending);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'acquired');
+  assert.deepEqual(denied, {
+    ok: false, reason: 'ACTIVATION_PENDING',
+  });
+  assert.deepEqual(durableLeaseBytes(root, runId), before);
+
+  activatePending(root, runId, pending);
+  assert.deepEqual(rollbackHandoff(root, runId, pending), { ok: true, reason: 'rolled-back' });
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
+});
+
+test('SLICE-006 CLI lease release exits zero with structured pending denial, then releases after activation', () => {
+  const { root, runId } = seed();
+  const pending = pendingLease(root, runId, {
+    owner: 'SLICE006CLIPENDINGOWNER',
+    attemptId: 'SLICE006CLIATTEMPT01',
+  });
+  const releaseArgs = [
+    'lease', 'release', '--run-id', runId,
+    '--owner', pending.owner, '--generation', String(pending.generation),
+  ];
+  const before = durableLeaseBytes(root, runId);
+
+  const denied = runCli(root, releaseArgs);
+  assert.equal(denied.status, 0, denied.stdout + denied.stderr);
+  assert.deepEqual(JSON.parse(denied.stdout), { ok: false, reason: 'ACTIVATION_PENDING' });
+  assert.deepEqual(durableLeaseBytes(root, runId), before);
+
+  const activated = runCli(root, [
+    'lease', 'activate', '--run-id', runId,
+    '--owner', pending.owner, '--generation', String(pending.generation),
+    '--runtime', 'claude', '--attempt-id', pending.attemptId,
+    '--activation-token', 'SLICE006CLIACTIVATIONTOKEN',
+  ]);
+  assert.equal(activated.status, 0, activated.stdout + activated.stderr);
+  assert.deepEqual(JSON.parse(activated.stdout), { ok: true, reason: 'activated' });
+
+  const released = runCli(root, releaseArgs);
+  assert.equal(released.status, 0, released.stdout + released.stderr);
+  assert.deepEqual(JSON.parse(released.stdout), { ok: true, reason: 'released' });
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
 });
 
 test('advanceHandoffPhase enforces forward-only and sets releasing on emitted', () => {

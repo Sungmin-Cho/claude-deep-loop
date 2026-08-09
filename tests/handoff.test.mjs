@@ -9,7 +9,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { reserveHandoff, releaseLease } from '../scripts/lib/lease.mjs';
+import {
+  activateLease,
+  acquireLease as acquireLeasePending,
+  reserveHandoff,
+  releaseLease,
+} from '../scripts/lib/lease.mjs';
 import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
@@ -27,6 +32,21 @@ function seed(runtime = 'claude') {
 }
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
+
+function snapshotRunTree(root, runId) {
+  const base = runDir(root, runId);
+  const files = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else files[rel] = readFileSync(path).toString('base64');
+    }
+  };
+  visit(base);
+  return files;
+}
 
 const POSIX_PLATFORM = 'linux';
 const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
@@ -441,6 +461,42 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
   assert.match(md, /\/deep-loop-resume/);
+});
+
+test('SLICE-006 emitHandoff is transitively activation-blocked with zero direct writes, then emits after activation', () => {
+  const { root, runId } = seed();
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+  const owner = 'SLICE006HANDOFFOWNER';
+  const attemptId = 'SLICE006HANDOFFATTEMPT';
+  const acquired = acquireLeasePending(root, runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  const before = snapshotRunTree(root, runId);
+
+  const denied = emitHandoff(root, runId, {
+    trigger: 'slice-006-direct-emit',
+    now: Date.parse('2026-08-09T00:00:02.000Z'),
+    expect: { owner, generation: acquired.generation },
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.reason, 'ACTIVATION_PENDING');
+  assert.deepEqual(snapshotRunTree(root, runId), before);
+
+  assert.deepEqual(activateLease(root, runId, {
+    owner, generation: acquired.generation, runtime: 'claude', attemptId,
+    activationToken: 'SLICE006HANDOFFTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+  }), { ok: true, reason: 'activated' });
+  const emitted = emitHandoff(root, runId, {
+    trigger: 'slice-006-direct-emit',
+    now: Date.parse('2026-08-09T00:00:02.000Z'),
+    expect: { owner, generation: acquired.generation },
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('legacy runtime handoff remains Claude-compatible', () => {

@@ -565,6 +565,9 @@ export function releaseLease(root, runId, { owner, generation }) {
     if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
       return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
     }
+    if (lease.activation_deadline_at !== null && lease.activation_deadline_at !== undefined) {
+      return { ok: false, reason: 'ACTIVATION_PENDING' };
+    }
     // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
     // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
     // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
@@ -593,6 +596,9 @@ export function reserveHandoff(root, runId, { trigger, boundaryEvent, now = Date
         key: lease.handoff_idempotency_key,
         childRunId: lease.handoff_child_run_id,
       };
+    }
+    if (lease.activation_deadline_at !== null && lease.activation_deadline_at !== undefined) {
+      return { ok: false, reason: 'ACTIVATION_PENDING' };
     }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
@@ -686,6 +692,9 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
     if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
       return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
+    if (lease.activation_deadline_at !== null && lease.activation_deadline_at !== undefined) {
+      return { ok: false, reason: 'ACTIVATION_PENDING' };
     }
     const terminal = data.status === 'completed' || data.status === 'stopped';
     // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후

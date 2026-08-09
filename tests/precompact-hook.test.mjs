@@ -11,7 +11,12 @@ import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.m
 import { inspectCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { reserveHandoff } from '../scripts/lib/lease.mjs';
+import {
+  activateLease,
+  acquireLease as acquireLeasePending,
+  releaseLease,
+  reserveHandoff,
+} from '../scripts/lib/lease.mjs';
 import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -76,6 +81,21 @@ function seedRotate() {
   });
   persistLegacyPolicy(root, runId, 'rotate-per-unit');
   return { root, runId };
+}
+
+function snapshotRunTree(root, runId) {
+  const base = runDir(root, runId);
+  const files = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else files[rel] = rf(path).toString('base64');
+    }
+  };
+  visit(base);
+  return files;
 }
 
 function seedBound(runtime = 'claude') {
@@ -413,6 +433,40 @@ test('rotate-per-unit attended → existing emitted handoff behavior', async () 
   assert.ok(r.childRunId);
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
   assert.deepEqual(checkpointFiles(root, runId), []);
+});
+
+test('SLICE-006 PreCompact wrapper is transitively activation-blocked with zero direct writes, then emits after activation', async () => {
+  const { root, runId } = seedRotate();
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+  const owner = 'SLICE006PRECOMPACTOWNER';
+  const attemptId = 'SLICE006PRECOMPACTATTEMPT';
+  const acquired = acquireLeasePending(root, runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  const before = snapshotRunTree(root, runId);
+
+  assert.deepEqual(
+    await runPreCompactHandoff({}, {
+      root, now: Date.parse('2026-08-09T00:00:02.000Z'), env: {},
+    }),
+    { ok: false, action: 'fenced', reason: 'ACTIVATION_PENDING' },
+  );
+  assert.deepEqual(snapshotRunTree(root, runId), before);
+
+  assert.deepEqual(activateLease(root, runId, {
+    owner, generation: acquired.generation, runtime: 'claude', attemptId,
+    activationToken: 'SLICE006PRECOMPACTTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+  }), { ok: true, reason: 'activated' });
+  const emitted = await runPreCompactHandoff({}, {
+    root, now: Date.parse('2026-08-09T00:00:02.000Z'), env: {},
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(emitted.action, 'emitted');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('compact-in-place headless invocation ignores attended policy and emits handoff', async () => {
