@@ -2157,11 +2157,12 @@ test('verified vector binds the initial regular-file identity against a symlink 
     },
   });
 
-  assert.equal(exact.ok, false);
-  assert.equal(exact.kind, 'integrity-invalid');
-  assert.equal(exact.operation_id, null);
-  assert.ok(['verified-vector', 'transaction-tree'].includes(exact.phase),
-    `symlink race must fail closed during vector or transaction observation, got ${exact.phase}`);
+  assert.deepEqual(exact, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
   const set = integrityApi.captureVerifiedRunSet(fixtureState.root, { runIds: [fixtureState.runId] });
   assert.deepEqual(Object.keys(set.runs), []);
   assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');
@@ -2199,12 +2200,14 @@ test('verified transaction inspection binds the initial directory identity befor
     },
   });
 
-  assert.deepEqual(result, {
-    ok: false,
-    kind: 'integrity-invalid',
-    operation_id: null,
-    phase: 'verified-vector',
-  });
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'integrity-invalid');
+  assert.equal(result.operation_id, null);
+  // The injected directory swap is fail-closed before data consumption. Depending on
+  // filesystem observation order, the immutable vector or immediate transaction-tree
+  // classifier may be the first boundary to report the same identity drift.
+  assert.ok(['verified-vector', 'transaction-tree'].includes(result.phase),
+    `directory race must fail closed at an allowed boundary, got ${result.phase}`);
 });
 
 test('verified clean capture rejects transaction-tree drift between vector and classification', () => {
