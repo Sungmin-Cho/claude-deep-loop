@@ -1082,13 +1082,19 @@ test('compact restore directly dispatches exactly one qualified continue tick af
     'trusted rejection marker must route before evidence-free inspect');
   assert.ok(inspect >= 0 && inspect < observation && observation < manual && manual < direct,
     'inspect and mutually exclusive admissions must precede the direct dispatch boundary');
-  assert.match(restore, /Direct dispatch boundary[\s\S]{0,900}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
+  assert.match(restore, /Direct dispatch boundary[\s\S]{0,2400}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
   assert.match(restore, /same model turn/i);
   assert.doesNotMatch(restore, /On success, continue[\s\S]{0,120}(?:invokes|print)/i,
     'a print-only or deferred continuation is not a dispatch');
   assert.doesNotMatch(restore.slice(0, direct), /next-action --json/,
     'restore must not pre-read routing before direct continue dispatch');
   assert.match(restore, /Automatic SessionStart[\s\S]{0,300}must never[\s\S]{0,180}human-attested/i);
+  assert.match(restore, /direct-human[\s\S]{0,600}checkpoint inspect[\s\S]{0,600}phase[^\n]*restored/i,
+    'direct-human success must derive its restored capsule from a fresh public inspection');
+  assert.match(restore, /injected_by[^\n]*direct-human-skill/i,
+    'direct-human success must carry explicit non-SessionStart provenance');
+  assert.match(restore, /direct-human[\s\S]{0,900}never fabricate `injected_by:"sessionstart"`/i,
+    'direct-human success must explicitly forbid fabricated SessionStart provenance');
 
   const fallbackBody = restore.slice(fallback);
   for (const field of [
@@ -1101,7 +1107,7 @@ test('compact restore directly dispatches exactly one qualified continue tick af
   assert.match(fallbackBody, /capsule-free[\s\S]{0,240}exactly once/i);
 });
 
-test('continue validates the restored 2048-byte capsule against cursor and event head before mutation', () => {
+test('continue validates SessionStart and direct-human restored capsules against provenance, cursor, and event head before mutation', () => {
   const body = readFileSync(skillPath('deep-loop-continue'), 'utf8');
   const capsuleGate = body.indexOf('## 0.25. Restored compact capsule gate');
   const profile = body.indexOf('## 0.5.');
@@ -1114,6 +1120,9 @@ test('continue validates the restored 2048-byte capsule against cursor and event
   assert.match(gate, /exact (?:top-level )?key/i);
   assert.match(gate, /deep-loop-compact-capsule-v1/);
   assert.match(gate, /phase[^\n]*restored/);
+  assert.match(gate, /injected_by[\s\S]{0,240}sessionstart[\s\S]{0,240}direct-human-skill/i);
+  assert.match(gate, /direct-human-skill[\s\S]{0,400}human-attested[\s\S]{0,240}direct-human-skill/i,
+    'direct-human wire provenance must be coupled to manual admission');
   for (const field of [
     'session_chain.lease',
     'session_chain.sessions',

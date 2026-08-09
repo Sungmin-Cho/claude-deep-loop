@@ -117,16 +117,35 @@ must never select the observation admission.
 
 ### Direct dispatch boundary
 
-If the restore command returns a committed result or an exact replay, construct
-one restored compact capsule from the received canonical capsule and the kernel
-result. Preserve the exact top-level wire and immutable checkpoint fields, set
-`phase` to `restored`, and replace only `admission`, `provider_evidence`, and
+If the SessionStart restore command returns a committed result or an exact
+replay, construct one restored compact capsule from the received canonical
+SessionStart capsule and the kernel result. Preserve `injected_by:"sessionstart"`,
+the exact top-level wire and immutable checkpoint fields, set `phase` to
+`restored`, and replace only `admission`, `provider_evidence`, and
 `restore_event` with the kernel result's original committed audit values. Do not
 capture or add routing advice.
 
+If the direct-human restore command succeeds, it has no received SessionStart
+capsule. Invoke the public `checkpoint inspect --json` reader above exactly once
+again after restore. Require `ok:true`, `phase:"restored"`, and exact equality
+of its `checkpoint_key`, `context_sha256`, `pre_restore_loop_hash`, owner,
+generation, runtime, Workstream, and episode identity with the pre-restore
+inspection, plus exact equality of every identity field also returned by the
+committed restore result.
+Require its `admission` to be exactly `kind:"human-attested"`,
+`source:"direct-human-skill"`, `receipt_trigger:null`; require its
+`restore_event` and `provider_evidence` to exactly equal the committed result.
+If any check fails, stop with `/deep-loop-status` guidance and do not dispatch.
+Otherwise construct the same exact canonical restored wire from this fresh
+public descriptor, but set `injected_by:"direct-human-skill"`. This explicitly
+identified hookless capsule is the only successful direct-human capsule form;
+never fabricate `injected_by:"sessionstart"`. Its `restore_command` is the
+fresh restored descriptor's `next_command` (`null`), and it carries no routing
+advice.
+
 Directly invoke the existing runtime-qualified continue skill exactly once in
-this same model turn and same owner session, passing that canonical restored
-capsule as input:
+this same model turn and same owner session, passing the applicable canonical
+restored capsule as input:
 
 - Claude: invoke `/deep-loop-continue` exactly once.
 - Codex: invoke `$deep-loop:deep-loop-continue` exactly once.

@@ -25,6 +25,7 @@ const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
 const SESSIONSTART = join(ROOT, 'scripts', 'hooks-impl', 'sessionstart-restore.mjs');
 const COMPACT_SKILL = join(ROOT, 'skills', 'deep-loop-compact', 'SKILL.md');
 const FIXED_NOW = '2026-07-24T00:05:00.000Z';
+const MANUAL_COMPACT_NOW = '2026-07-24T00:05:01.000Z';
 
 function cli(root, args, { input, env } = {}) {
   return spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
@@ -336,6 +337,52 @@ for (const runtime of ['claude', 'codex']) {
     ]), 'continue Workstream A');
     assert.equal(continuation.action.episode_id, makerA);
     assert.notEqual(continuation.action.type, 'handoff');
+
+    // Hookless/manual compact is a complete same-owner path: no SessionStart
+    // capsule is required, and exactly one direct continuation tick follows.
+    jsonResult(cli(root, [
+      'state', 'patch',
+      '--field', 'discovered_items',
+      '--value', '["manual-compact-fixture"]',
+      '--now', MANUAL_COMPACT_NOW,
+      ...fence1,
+    ]), 'manual continuation state mutation');
+    const manualEmitted = jsonResult(cli(root, [
+      'checkpoint', 'emit',
+      '--runtime', runtime,
+      '--now', MANUAL_COMPACT_NOW,
+      ...fence1,
+    ]), 'manual checkpoint emit');
+    const manualInspected = jsonResult(cli(root, [
+      'checkpoint', 'inspect', '--json', '--now', MANUAL_COMPACT_NOW, '--run-id', runId,
+    ]), 'manual checkpoint inspect');
+    assert.equal(manualInspected.phase, 'prepared');
+    assert.equal(manualInspected.checkpoint_rel, manualEmitted.checkpoint_rel);
+    const manualRestored = jsonResult(cli(root, [
+      'checkpoint', 'restore',
+      '--checkpoint', manualInspected.checkpoint_rel,
+      '--runtime', runtime,
+      '--admission', 'human-attested',
+      '--source', 'direct-human-skill',
+      '--confirm-manual-compact',
+      '--json',
+      '--now', MANUAL_COMPACT_NOW,
+      ...fence1,
+    ]), 'manual checkpoint restore');
+    assert.equal(manualRestored.disposition, 'committed');
+    assert.deepEqual(manualRestored.admission, {
+      kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null,
+    });
+    const manualRestoredInspect = jsonResult(cli(root, [
+      'checkpoint', 'inspect', '--json', '--now', MANUAL_COMPACT_NOW, '--run-id', runId,
+    ]), 'manual restored checkpoint inspect');
+    assert.equal(manualRestoredInspect.phase, 'restored');
+    assert.deepEqual(manualRestoredInspect.restore_event, manualRestored.restore_event);
+    const manualContinuation = jsonResult(cli(root, [
+      'next-action', '--json', '--now', MANUAL_COMPACT_NOW, '--run-id', runId,
+    ]), 'manual direct-human continuation tick');
+    assert.equal(manualContinuation.action.episode_id, makerA);
+    assert.notEqual(manualContinuation.action.type, 'handoff');
 
     const capped = readKernelState(root, runId).data;
     const cappedOwner = capped.session_chain.sessions

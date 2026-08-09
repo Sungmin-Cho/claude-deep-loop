@@ -39,8 +39,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 
 ## 0.25. Restored compact capsule gate
 
-이 `SessionStart(compact)` comprehension tick에 compact capsule wire가
-공급되었다면, 어떤 mutating CLI보다 먼저 이
+이 `SessionStart(compact)` comprehension tick 또는 같은 turn의 명시적
+direct-human compact restore dispatch가 restored compact capsule wire를
+공급했다면, 어떤 mutating CLI보다 먼저 이
 gate를 실행한다. Stage A는 §0의 lease 명령보다도 먼저 순수 입력만 검사한다.
 wire가 2048 UTF-8 bytes를 초과하거나 missing, truncated, malformed, oversized
 JSON이면 `/deep-loop-status`를 안내하고 즉시 stop한다. `JSON.parse` 후 다음
@@ -48,8 +49,9 @@ exact top-level key set만 허용한다:
 
 `marker`, `version`, `injected_by`, `capsule`.
 
-각 값은 `marker:"deep-loop-compact-capsule-v1"`, `version:1`,
-`injected_by:"sessionstart"`이어야 한다. `capsule`은 exact key set
+각 값은 `marker:"deep-loop-compact-capsule-v1"`, `version:1`이어야 하고,
+`injected_by`는 `"sessionstart"` 또는 `"direct-human-skill"`만 허용한다.
+`capsule`은 exact key set
 `kind`, `phase`, `run_id`, `checkpoint_key`, `context_sha256`,
 `pre_restore_loop_hash`, `owner_run_id`, `generation`, `runtime`,
 `workstream_id`, `episode_id`, `provider_evidence`, `admission`,
@@ -58,6 +60,13 @@ exact top-level key set만 허용한다:
 `provider_evidence`도 exact boolean keys `recorded`, `supplied`, `matched`만
 허용한다. 어느 key/type/enum/length 검사라도 실패하면 stop하며
 `session-profile set` must not run; 다른 mutation도 실행하면 안 된다.
+
+provenance와 admission은 서로 묶여 있다. `injected_by:"sessionstart"`이면
+`admission.kind:"postcompact-observation"`, `admission.source:"sessionstart"`
+여야 한다. `injected_by:"direct-human-skill"`이면 admission은 정확히
+`kind:"human-attested"`, `source:"direct-human-skill"`,
+`receipt_trigger:null`이어야 하고 `restore_command`도 `null`이어야 한다.
+두 provenance를 바꾸어 추측하거나 SessionStart 표식을 만들어내지 않는다.
 
 Stage A 통과 뒤 §0의 fresh lease를 읽고, 이어서 다음 read-only state를 모두
 읽는다:

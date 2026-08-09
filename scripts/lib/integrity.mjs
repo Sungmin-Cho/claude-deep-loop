@@ -1282,6 +1282,7 @@ function exactCursorReplay(loop, lines, context, request) {
     || cursor.runtime !== request.runtime
     || cursor.workstream_id !== context.workstream.id
     || cursor.episode_id !== context.current_episode.id) return null;
+  if (JSON.stringify(loop.event_log_head) !== JSON.stringify(cursor.restore_event)) return null;
   const event = lines[cursor.restore_event.seq - 1];
   if (!event || event.type !== 'compact-restored'
     || event.ts !== cursor.restored_at

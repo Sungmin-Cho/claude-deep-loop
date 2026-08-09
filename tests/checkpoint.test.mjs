@@ -1354,13 +1354,14 @@ test('public checkpoint emit preserves stale-fence precedence over a retained re
   assert.deepEqual(durableInventory(fixture), before);
 });
 
-test('post-cleanup compact restore retry remains exact after a later generic mutation', () => {
+test('post-cleanup compact restore retry fails closed after a later generic mutation', () => {
   const fixture = seedBound();
   const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
     fence: fixture.fence,
     runtime: fixture.runtime,
     now: NOW_MS + 1000,
   });
+  seedCompactObservation(fixture, emitted);
   assert.throws(() => __testRestoreCompactCheckpoint(fixture.root, fixture.runId, {
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
@@ -1394,15 +1395,14 @@ test('post-cleanup compact restore retry remains exact after a later generic mut
   assert.equal(context.workstream.id, current.workstreams[0].id);
   assert.equal(context.current_episode.id, current.current_episode);
 
-  const replayed = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+  assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
     runtime: fixture.runtime,
-    ...manualAdmission,
+    admission: 'postcompact-observation',
+    source: 'sessionstart',
     now: NOW_MS + 4000,
-  });
-  assert.equal(replayed.disposition, 'replayed');
-  assert.equal(replayed.replay, 'exact');
+  }), /CHECKPOINT_CONTEXT_MISMATCH/);
   assert.deepEqual(durableInventory(fixture), beforeReplay);
   const events = readFileSync(logPathOf(fixture.root, fixture.runId), 'utf8')
     .split('\n').filter(Boolean).map(line => JSON.parse(line));
