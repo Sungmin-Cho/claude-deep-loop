@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, lstatS
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import crypto from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 
@@ -350,11 +350,288 @@ function trustedWorkflowSource() {
   const source = readFileSync(GITHUB_WORKFLOW, 'utf8');
   const match = source.match(/node\s+--input-type=module\s+<<'NODE'\n([\s\S]*?)\n\s*NODE/);
   assert.ok(match, 'GitHub workflow must carry the trusted inline Node preflight');
-  const extracted = match[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+  let extracted = match[1].split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
   const platformGuard = /if \(process\.platform !== 'linux' \|\| process\.arch !== 'x64' \|\| Number\(process\.versions\.node\.split\('\.'\)\[0\]\) < 20\)\n\s*throw new Error\('unsupported provisioned Linux\/x64 Node topology'\);/g;
   assert.equal([...extracted.matchAll(platformGuard)].length, 1, 'production platform guard must be exact and singular');
-  return extracted.replace(platformGuard, "if (false) throw new Error('unsupported provisioned Linux/x64 Node topology');");
+  extracted = extracted.replace(platformGuard, "if (false) throw new Error('unsupported provisioned Linux/x64 Node topology');");
+  const timeoutSentinel = /const TEST_CHILD_TIMEOUT_MS = null;/g;
+  assert.equal([...extracted.matchAll(timeoutSentinel)].length, 1, 'production child timeout override must be a single null sentinel');
+  extracted = extracted.replace(timeoutSentinel, "const TEST_CHILD_TIMEOUT_MS = Number(process.env.DEEP_LOOP_TEST_CHILD_TIMEOUT_MS);");
+  const probeRootSentinel = /const TEST_PROBE_PROJECT_ROOT = null;/g;
+  const probeRunSentinel = /const TEST_PROBE_RUN_ID = null;/g;
+  assert.equal([...extracted.matchAll(probeRootSentinel)].length, 1, 'production probe root override must be a single null sentinel');
+  assert.equal([...extracted.matchAll(probeRunSentinel)].length, 1, 'production probe run override must be a single null sentinel');
+  extracted = extracted.replace(probeRootSentinel, "const TEST_PROBE_PROJECT_ROOT = process.env.DEEP_LOOP_TEST_PROBE_PROJECT_ROOT;");
+  return extracted.replace(probeRunSentinel, "const TEST_PROBE_RUN_ID = process.env.DEEP_LOOP_TEST_PROBE_RUN_ID;");
 }
+
+test('trusted bootstrap imports only FD-bound V1', () => {
+  const source = trustedWorkflowSource();
+  assert.match(readFileSync(GITHUB_WORKFLOW, 'utf8'), /const TEST_CHILD_TIMEOUT_MS = null;/);
+  assert.match(source, /const TEST_CHILD_TIMEOUT_MS = Number\(process\.env\.DEEP_LOOP_TEST_CHILD_TIMEOUT_MS\)/);
+  assert.match(readFileSync(GITHUB_WORKFLOW, 'utf8'), /const TEST_PROBE_PROJECT_ROOT = null;[\s\S]*const TEST_PROBE_RUN_ID = null;/);
+  assert.doesNotMatch(readFileSync(GITHUB_WORKFLOW, 'utf8'), /process\.env\.DEEP_LOOP_TEST_PROBE_/);
+  assert.match(source, /const TEST_PROBE_PROJECT_ROOT = process\.env\.DEEP_LOOP_TEST_PROBE_PROJECT_ROOT/);
+  assert.match(source, /const TEST_PROBE_RUN_ID = process\.env\.DEEP_LOOP_TEST_PROBE_RUN_ID/);
+  assert.match(source, /TRUSTED_CHILD_BOOTSTRAP_SOURCE/);
+  assert.match(source, /O_RDONLY[\s\S]{0,120}O_DIRECTORY[\s\S]{0,120}O_NOFOLLOW/);
+  assert.match(source, /\/proc\/self\/fd\/3/);
+  assert.match(source, /--preserve-symlinks/);
+  assert.match(source, /--preserve-symlinks-main/);
+  assert.match(source, /process\.argv\s*=\s*\[process\.execPath/);
+  assert.match(source, /pathToFileURL|fileURLToPath/);
+  assert.match(source, /childRel\.normalize\('NFC'\)/);
+  assert.match(source, /seenFold/);
+  assert.match(source, /stat\.nlink\s*!==\s*1/);
+  assert.match(source, /seenIdentity/);
+  assert.match(source, /framedBytes = 27/);
+  assert.match(source, /pathBytes \+ rel\.length > 16 \* 1024 \* 1024/);
+  assert.match(source, /framedBytes \+ frameBytes > 512 \* 1024 \* 1024/);
+  assert.doesNotMatch(source, /DEEP_LOOP_CANDIDATE_ROOT[^;]*import|import[^;]*DEEP_LOOP_CANDIDATE_ROOT/);
+});
+
+test('exact probe argv and bounded child termination reasons are workflow-owned', () => {
+  const source = trustedWorkflowSource();
+  for (const flag of [
+    '--input-type=module', '--eval', '--stage-fd', '3', '--public-root',
+    '--entrypoint', 'scripts/deep-loop.mjs', '--field', 'project.root', '--json',
+    '--project-root', '--run-id',
+  ]) assert.ok(source.includes(flag), 'missing exact child argv token: ' + flag);
+  for (const constant of [
+    'CHILD_STARTUP_TIMEOUT_MS = 10_000',
+    'PROBE_EXIT_TIMEOUT_MS = 30_000',
+    'DRIVER_EXIT_TIMEOUT_MS = 1_800_000',
+    'CHILD_STDOUT_MAX_BYTES = 1_048_576',
+    'CHILD_STDERR_MAX_BYTES = 65_536',
+    'CHILD_TERMINATION_GRACE_MS = 250',
+    'CHILD_SETTLE_GRACE_MS = 1_250',
+  ]) assert.ok(source.includes(constant), 'missing child limit: ' + constant);
+  for (const reason of [
+    'child-startup-timeout', 'probe-exit-timeout', 'driver-exit-timeout',
+    'child-stdout-overflow', 'child-stderr-overflow', 'child-termination-failed',
+  ]) assert.ok(source.includes(reason), 'missing child reason: ' + reason);
+  assert.match(source, /probe[\s\S]{0,300}driver/);
+  assert.match(source, /--stage-identity[\s\S]{0,240}['"]--['"]/,
+    'bootstrap controls and public argv must have a second literal separator');
+});
+
+test('same-stage driver drives A only', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  const { runId: siblingRunId } = initRun(fixture.project, {
+    runtime: 'claude', goal: 'trusted sibling fixture', detected: {},
+    review: { points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: false },
+    now: new Date('2026-06-24T00:00:03.000Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const beforeB = durableRunSnapshot(fixture.project, siblingRunId);
+  const beforeA = durableRunSnapshot(fixture.project, fixture.runId);
+  const marker = join(fixture.base, 'child-v1.log');
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_CHILD_V1_MARKER: marker,
+  });
+  assert.equal(result.status, 0, result.stdout);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.kind, 'trusted-fd-execution');
+  assert.equal(output.probe, 1);
+  assert.equal(output.driver, 1);
+  assert.equal(output.spawn, 2);
+  assert.deepEqual(durableRunSnapshot(fixture.project, fixture.runId), beforeA);
+  assert.deepEqual(durableRunSnapshot(fixture.project, siblingRunId), beforeB);
+  const markerLines = readFileSync(marker, 'utf8').trim().split('\n');
+  assert.equal(markerLines.length, 4);
+  assert.match(markerLines[0], new RegExp(`^probe-entry-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/deep-loop\\.mjs$`));
+  assert.match(markerLines[1], new RegExp(`^probe-transitive-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/lib/child-transitive\\.mjs$`));
+  assert.match(markerLines[2], new RegExp(`^driver-entry-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/hooks-impl/drive-headless\\.mjs$`));
+  assert.match(markerLines[3], new RegExp(`^driver-transitive-v1:${fixture.runId}:file:///proc/self/fd/3/scripts/lib/child-transitive\\.mjs$`));
+});
+
+test('persisted probe root and run identity reject wrong argv', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  for (const override of [
+    { DEEP_LOOP_TEST_PROBE_PROJECT_ROOT: join(tmpdir(), 'wrong-probe-root') },
+    { DEEP_LOOP_TEST_PROBE_RUN_ID: '01J00000000000000000000000' },
+  ]) {
+    const result = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+      DEEP_LOOP_RUN_CHILDREN: '1', ...override,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    const diagnostic = JSON.parse(result.stdout.trim());
+    assert.equal(diagnostic.probe, 1);
+    assert.equal(diagnostic.driver, 0);
+  }
+});
+
+test('persisted same-project sibling B cannot override probe A', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  const { runId: siblingRunId } = initRun(fixture.project, {
+    runtime: 'claude', goal: 'trusted sibling fixture', detected: {},
+    review: { points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: false },
+    now: new Date('2026-06-24T00:00:03.000Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1', DEEP_LOOP_TEST_PROBE_RUN_ID: siblingRunId,
+  });
+  assert.equal(result.status, 1, result.stdout);
+  const diagnostic = JSON.parse(result.stdout.trim());
+  assert.equal(diagnostic.probe, 1);
+  assert.equal(diagnostic.driver, 0);
+});
+
+test('post-final-parent swap does not import V2', () => {
+  const source = trustedWorkflowSource();
+  assert.match(source, /verifyCandidateStillMatches\(\);[\s\S]{0,500}verifyStage\(\);/);
+  assert.match(source, /DEEP_LOOP_TEST_POST_FINAL_SWAP/);
+  assert.match(source, /DEEP_LOOP_ROOT\s*=\s*fdRoot/);
+  assert.doesNotMatch(source, /DEEP_LOOP_CANDIDATE_ROOT[\s\S]{0,120}import/);
+});
+
+test('post-final-parent V2 pathname swap remains V1-bound', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  const marker = join(fixture.base, 'child-v1.log');
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_CHILD_V1_MARKER: marker,
+    DEEP_LOOP_TEST_POST_FINAL_SWAP: '1',
+    DEEP_LOOP_TEST_POST_FINAL_V2: '1',
+  });
+  assert.equal(result.status, 0, result.stdout);
+  const markerText = readFileSync(marker, 'utf8');
+  assert.doesNotMatch(markerText, /v2-imported/);
+  assertAllFdMarkerUrls(marker, fixture.runId);
+});
+
+test('mid-transitive swap does not import V2', () => {
+  const source = trustedWorkflowSource();
+  assert.match(source, /pathToFileURL\(fdEntry\)\.href/);
+  assert.match(source, /fdRoot/);
+  assert.doesNotMatch(source, /DEEP_LOOP_TEST_MID_TRANSITIVE_SWAP|DEEP_LOOP_TEST_MID_TRANSITIVE_V2|mid-old/);
+  assert.doesNotMatch(source, /import\([^)]*publicRoot/);
+});
+
+test('mid-transitive V2 pathname swap remains V1-bound', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  const marker = join(fixture.base, 'child-v1.log');
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_CHILD_V1_MARKER: marker,
+    DEEP_LOOP_TEST_MID_TRANSITIVE_SWAP: '1',
+    DEEP_LOOP_TEST_MID_TRANSITIVE_V2: '1',
+  });
+  assert.equal(result.status, 0, result.stdout);
+  const markerText = readFileSync(marker, 'utf8');
+  assert.doesNotMatch(markerText, /v2-imported/);
+  assertAllFdMarkerUrls(marker, fixture.runId);
+});
+
+test('pre-check rename is configuration-invalid', () => {
+  const source = trustedWorkflowSource();
+  assert.match(source, /DEEP_LOOP_TEST_PRECHECK_RENAME/);
+  assert.match(source, /bootstrap public root mismatch/);
+  assert.match(source, /source-preflight-invalid/);
+});
+
+test('pre-check rename rejects before any entrypoint import', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  const marker = join(fixture.base, 'precheck.marker');
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1', DEEP_LOOP_TEST_PRECHECK_RENAME: '1', DEEP_LOOP_CHILD_V1_MARKER: marker,
+  });
+  assertConfigurationInvalid(result);
+  assert.equal(existsSync(marker), false);
+});
+
+test('stage symlink alias is rejected before a child can run', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const result = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_TEST_STAGE_SYMLINK: '1',
+  });
+  assertConfigurationInvalid(result);
+});
+
+test('probe timeout kills the whole process group and never starts the driver', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, async () => {
+  const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+  const pidFile = join(fixture.base, 'descendant.pid');
+  const result = runTrustedVerifier(fixture, {
+    DEEP_LOOP_RUN_CHILDREN: '1',
+    DEEP_LOOP_CHILD_DESCENDANT: '1',
+    DEEP_LOOP_CHILD_PID_FILE: pidFile,
+    DEEP_LOOP_TEST_CHILD_TIMEOUT_MS: '100',
+  });
+  assert.equal(result.status, 1, result.stdout);
+  const diagnostic = JSON.parse(result.stdout.trim());
+  assert.equal(diagnostic.kind, 'github-actions-configuration-invalid');
+  assert.equal(diagnostic.reason, 'probe-exit-timeout');
+  assert.equal(diagnostic.probe, 1);
+  assert.equal(diagnostic.driver, 0);
+  assert.equal(diagnostic.mutation, 0);
+  const descendantPid = Number(readFileSync(pidFile, 'utf8'));
+  let gone = false;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { process.kill(descendantPid, 0); } catch (error) { if (error?.code === 'ESRCH') { gone = true; break; } }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal(gone, true, `descendant ${descendantPid} survived process-group termination`);
+});
+
+test('stdout and stderr overflow are bounded child failures', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  for (const [envName, reason] of [
+    ['DEEP_LOOP_CHILD_STDOUT_OVERFLOW', 'child-stdout-overflow'],
+    ['DEEP_LOOP_CHILD_STDERR_OVERFLOW', 'child-stderr-overflow'],
+  ]) {
+    const result = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+      DEEP_LOOP_RUN_CHILDREN: '1', [envName]: '1', DEEP_LOOP_TEST_CHILD_TIMEOUT_MS: '1000',
+    });
+    assert.equal(result.status, 1, result.stdout);
+    const diagnostic = JSON.parse(result.stdout.trim());
+    assert.equal(diagnostic.reason, reason);
+    assert.equal(diagnostic.driver, 0);
+  }
+});
+
+test('driver stdout and stderr overflow are independently bounded', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  for (const [envName, reason] of [
+    ['DEEP_LOOP_CHILD_DRIVER_STDOUT_OVERFLOW', 'child-stdout-overflow'],
+    ['DEEP_LOOP_CHILD_DRIVER_STDERR_OVERFLOW', 'child-stderr-overflow'],
+  ]) {
+    const result = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+      DEEP_LOOP_RUN_CHILDREN: '1', [envName]: '1', DEEP_LOOP_TEST_CHILD_TIMEOUT_MS: '1000',
+    });
+    assert.equal(result.status, 1, result.stdout);
+    const diagnostic = JSON.parse(result.stdout.trim());
+    assert.equal(diagnostic.reason, reason);
+    assert.equal(diagnostic.probe, 1);
+    assert.equal(diagnostic.driver, 1);
+  }
+});
+
+test('driver timeout and startup failure are bounded with no later child', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const timeout = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+    DEEP_LOOP_RUN_CHILDREN: '1', DEEP_LOOP_CHILD_DRIVER_HANG: '1', DEEP_LOOP_TEST_CHILD_TIMEOUT_MS: '100',
+  });
+  assert.equal(timeout.status, 1, timeout.stdout);
+  const timeoutDiagnostic = JSON.parse(timeout.stdout.trim());
+  assert.equal(timeoutDiagnostic.reason, 'driver-exit-timeout');
+  assert.equal(timeoutDiagnostic.probe, 1);
+  assert.equal(timeoutDiagnostic.driver, 1);
+
+  const startup = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+    DEEP_LOOP_RUN_CHILDREN: '1', DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE: '1',
+  });
+  assert.equal(startup.status, 1, startup.stdout);
+  const startupDiagnostic = JSON.parse(startup.stdout.trim());
+  assert.equal(startupDiagnostic.reason, 'child-startup-timeout');
+  assert.equal(startupDiagnostic.probe, 0);
+  assert.equal(startupDiagnostic.driver, 0);
+});
+
+test('forced settlement reports termination failure at the fixed deadline', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  const result = runTrustedVerifier(seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS }), {
+    DEEP_LOOP_RUN_CHILDREN: '1', DEEP_LOOP_TEST_GROUP_NEVER_GONE: '1', DEEP_LOOP_TEST_CHILD_TIMEOUT_MS: '100',
+  });
+  assert.equal(result.status, 1, result.stdout);
+  const diagnostic = JSON.parse(result.stdout.trim());
+  assert.equal(diagnostic.reason, 'child-termination-failed');
+  assert.equal(diagnostic.driver, 0);
+});
 
 const SOURCE_HEADER = Buffer.from('646565702d6c6f6f702d706c7567696e2d736f757263652d763100', 'hex');
 const FIXTURE_RECORDS = Object.freeze({
@@ -375,6 +652,12 @@ const FIXTURE_RECORDS = Object.freeze({
   'skills/deep-loop-resume/SKILL.md': 'fixture-skill-resume\n',
   'skills/deep-loop-workflow/references/adapters.md': 'fixture-reference-adapters\n',
   'skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml': 'fixture-contract-hillclimb\n',
+});
+const CHILD_EXECUTION_RECORDS = Object.freeze({
+  ...FIXTURE_RECORDS,
+  'scripts/lib/child-transitive.mjs': "import fs from 'node:fs'; export function record(prefix) { if (process.env.DEEP_LOOP_CHILD_V1_MARKER) fs.appendFileSync(process.env.DEEP_LOOP_CHILD_V1_MARKER, `${prefix}:${import.meta.url}\\n`); }\n",
+  'scripts/deep-loop.mjs': "import fs from 'node:fs'; import path from 'node:path'; import childProcess from 'node:child_process'; const projectIndex = process.argv.indexOf('--project-root'); const runIndex = process.argv.indexOf('--run-id'); if (projectIndex < 0 || runIndex < 0) process.exit(2); const projectRoot = process.argv[projectIndex + 1]; const runId = process.argv[runIndex + 1]; const loop = JSON.parse(fs.readFileSync(path.join(projectRoot, '.deep-loop', 'runs', runId, 'loop.json'), 'utf8')); if (loop.run_id !== runId || runId !== process.env.DEEP_LOOP_RUN_ID || loop.project?.root !== projectRoot) process.exit(3); if (process.env.DEEP_LOOP_CHILD_V1_MARKER) fs.appendFileSync(process.env.DEEP_LOOP_CHILD_V1_MARKER, `probe-entry-v1:${runId}:${import.meta.url}\\n`); let publicStage = null; let midOld = null; if (process.env.DEEP_LOOP_TEST_MID_TRANSITIVE_SWAP === '1') { publicStage = fs.realpathSync('/proc/self/fd/3'); midOld = `${publicStage}.fixture-mid-old-${process.pid}`; fs.renameSync(publicStage, midOld); fs.cpSync(midOld, publicStage, { recursive: true, errorOnExist: true, force: false }); const v2Path = path.join(publicStage, 'scripts/lib/child-transitive.mjs'); fs.chmodSync(v2Path, 0o644); fs.writeFileSync(v2Path, \"import fs from 'node:fs'; export function record() { if (process.env.DEEP_LOOP_CHILD_V1_MARKER) fs.appendFileSync(process.env.DEEP_LOOP_CHILD_V1_MARKER, 'v2-imported\\\\n'); }\\n\"); fs.chmodSync(v2Path, 0o444); } try { const { record } = await import('./lib/child-transitive.mjs'); record(`probe-transitive-v1:${runId}`); } finally { if (midOld) { const retained = `${midOld}.new-${process.pid}`; fs.renameSync(publicStage, retained); fs.renameSync(midOld, publicStage); } } if (process.env.DEEP_LOOP_CHILD_STDOUT_OVERFLOW) process.stdout.write('x'.repeat(1048577)); if (process.env.DEEP_LOOP_CHILD_STDERR_OVERFLOW) process.stderr.write('x'.repeat(65537)); if (process.env.DEEP_LOOP_CHILD_DESCENDANT) { const descendant = childProcess.spawn(process.execPath, ['--input-type=module', '--eval', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 60000)\"], { stdio: 'ignore' }); if (process.env.DEEP_LOOP_CHILD_PID_FILE) fs.writeFileSync(process.env.DEEP_LOOP_CHILD_PID_FILE, String(descendant.pid)); setTimeout(() => {}, 60000); } process.stdout.write(JSON.stringify(loop.project.root) + '\\n');\n",
+  'scripts/hooks-impl/drive-headless.mjs': "import fs from 'node:fs'; const projectIndex = process.argv.indexOf('--project-root'); const runIndex = process.argv.indexOf('--run-id'); if (projectIndex < 0 || runIndex < 0 || process.argv[runIndex + 1] !== process.env.DEEP_LOOP_RUN_ID) process.exit(3); const runId = process.argv[runIndex + 1]; if (process.env.DEEP_LOOP_CHILD_V1_MARKER) fs.appendFileSync(process.env.DEEP_LOOP_CHILD_V1_MARKER, `driver-entry-v1:${runId}:${import.meta.url}\\n`); const { record } = await import('../lib/child-transitive.mjs'); record(`driver-transitive-v1:${runId}`); if (process.env.DEEP_LOOP_CHILD_DRIVER_STDOUT_OVERFLOW) process.stdout.write('x'.repeat(1048577)); if (process.env.DEEP_LOOP_CHILD_DRIVER_STDERR_OVERFLOW) process.stderr.write('x'.repeat(65537)); if (process.env.DEEP_LOOP_CHILD_DRIVER_HANG) setTimeout(() => {}, 60000);\n",
 });
 function fixtureDigest(records = FIXTURE_RECORDS, header = SOURCE_HEADER) {
   const chunks = [header];
@@ -479,6 +762,28 @@ function runTrustedVerifier(fixture, options = {}) {
   } catch (error) {
     return { status: error.status, stdout: String(error.stdout || '') };
   }
+}
+function durableRunSnapshot(project, runId) {
+  const root = join(project, '.deep-loop', 'runs', runId);
+  const files = [];
+  const walk = directory => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) walk(absolute);
+      else files.push([relative(root, absolute), readFileSync(absolute).toString('hex')]);
+    }
+  };
+  walk(root);
+  return files.sort((a, b) => a[0].localeCompare(b[0]));
+}
+function assertAllFdMarkerUrls(marker, runId) {
+  const lines = readFileSync(marker, 'utf8').trim().split('\n');
+  assert.deepEqual(lines, [
+    `probe-entry-v1:${runId}:file:///proc/self/fd/3/scripts/deep-loop.mjs`,
+    `probe-transitive-v1:${runId}:file:///proc/self/fd/3/scripts/lib/child-transitive.mjs`,
+    `driver-entry-v1:${runId}:file:///proc/self/fd/3/scripts/hooks-impl/drive-headless.mjs`,
+    `driver-transitive-v1:${runId}:file:///proc/self/fd/3/scripts/lib/child-transitive.mjs`,
+  ]);
 }
 function assertConfigurationInvalid(result) {
   assert.equal(result.status, 1, result.stdout);
@@ -643,6 +948,24 @@ test('stage token rejects sealed root replacement with identical bytes', () => {
 
 test('stage token rejects an empty directory added after capture', () => {
   assertConfigurationInvalid(runTrustedVerifier(seedTrustedFixture(), { DEEP_LOOP_TEST_STAGE_EMPTY_BARRIER: '1' }));
+});
+
+test('pre-bootstrap stage hardlink and portable-directory corruption reject before import', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, () => {
+  for (const seam of ['DEEP_LOOP_TEST_STAGE_HARDLINK_REPLACE', 'DEEP_LOOP_TEST_STAGE_NONNFC_DIR', 'DEEP_LOOP_TEST_STAGE_FOLD_DIR']) {
+    const fixture = seedTrustedFixture({ records: CHILD_EXECUTION_RECORDS });
+    const marker = join(fixture.base, `${seam}.marker`);
+    const result = runTrustedVerifier(fixture, {
+      DEEP_LOOP_RUN_CHILDREN: '1', [seam]: '1', DEEP_LOOP_CHILD_V1_MARKER: marker,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    const diagnostic = JSON.parse(result.stdout.trim());
+    assert.equal(diagnostic.kind, 'github-actions-configuration-invalid');
+    assert.equal(diagnostic.probe, 1, seam);
+    assert.equal(diagnostic.spawn, 1, seam);
+    assert.equal(diagnostic.driver, 0, seam);
+    assert.equal(diagnostic.mutation, 0, seam);
+    assert.equal(existsSync(marker), false, seam);
+  }
 });
 
 test('candidate token rejects metadata parent replacement with moved original inode', () => {
@@ -921,6 +1244,7 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
   const s = readFileSync(f, 'utf8');
   assert.match(s, /on:\s*[\s\S]*schedule/);
   assert.match(s, /cron:/);
+  assert.match(s, /timeout-minutes:\s*35/);
   assert.match(s, /drive-headless\.mjs/);
   assert.match(s, /proposal-only|사람 승인|human/i);
 });
