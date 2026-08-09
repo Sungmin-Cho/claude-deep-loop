@@ -61,6 +61,7 @@ import {
   makeProcessUsageReceiptDescriptor,
   removeProcessUsageReceipt,
 } from './preflight-receipt-journal.mjs';
+import { resolveRunContext } from './run-context.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RESUME_SKILL_MAX_BYTES = 4 * 1024 * 1024;
@@ -1630,10 +1631,49 @@ export function driveHeadlessRun(options = {}) {
 export function driveHeadless({
   root = findRoot(process.cwd()),
   driveRun = driveHeadlessRun,
+  runId: explicitRunId = null,
+  envIdentity,
+  env = process.env,
+  nowFn,
+  sleepFn,
+  lockOptions,
   ...options
 } = {}) {
-  const currentPath = join(root, '.deep-loop', 'current');
-  const runId = existsSync(currentPath) ? readFileSync(currentPath, 'utf8').trim() : null;
-  if (!runId) return { ok: true, action: 'no-run' };
-  return driveRun({ root, runId, ...options });
+  const selection = resolveRunContext({
+    root,
+    explicitRunId,
+    // `null` is an explicit argv-authority sentinel: do not consult ambient
+    // environment markers when valued argv selected the run.
+    envIdentity: envIdentity === null ? null : (envIdentity === undefined ? env : envIdentity),
+    purpose: 'headless',
+    cwd: null,
+    nowFn,
+    sleepFn,
+    lockOptions,
+  });
+  if (!selection?.ok) {
+    const action = selection.kind === 'ambiguous' ? 'ambiguous'
+      : selection.kind === 'invalid' ? 'routing-invalid' : 'routing-failed';
+    return {
+      ok: false,
+      action,
+      reason: selection?.reason || selection?.kind || 'invalid',
+      ...(selection?.kind ? { kind: selection.kind } : {}),
+      ...(selection?.candidates ? { candidates: selection.candidates } : {}),
+      ...(selection?.errors ? { errors: selection.errors } : {}),
+      ...(Number.isSafeInteger(selection?.total) ? { total: selection.total } : {}),
+      ...(selection?.max_run_ids !== undefined ? { max_run_ids: selection.max_run_ids } : {}),
+      ...(selection?.deadline_ms !== undefined ? { deadline_ms: selection.deadline_ms } : {}),
+      ...(selection?.observed_count !== undefined ? { observed_count: selection.observed_count } : {}),
+      ...(selection?.total_is_lower_bound !== undefined
+        ? { total_is_lower_bound: selection.total_is_lower_bound } : {}),
+    };
+  }
+  if (selection.kind === 'none') return { ok: true, action: 'no-run' };
+  return driveRun({
+    root,
+    runId: selection.runId,
+    ...options,
+    ...(selection.source === 'env' && selection.expect ? { expect: selection.expect } : {}),
+  });
 }

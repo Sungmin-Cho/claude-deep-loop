@@ -15,6 +15,7 @@ import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
+import { parseHeadlessArgs } from '../scripts/hooks-impl/drive-headless.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
@@ -110,6 +111,10 @@ function seedCodexHandoff() {
 
 function seedClaudeHandoff() {
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-claude-')));
+  return seedClaudeHandoffAt(root);
+}
+
+function seedClaudeHandoffAt(root) {
   const { runId } = initRun(root, {
     runtime: 'claude', goal: 'g', now: NOW0, env: {}, platform: 'linux',
     run: () => ({ code: 1 }),
@@ -1181,6 +1186,110 @@ test('driveHeadless is a current-run compatibility wrapper over the injected cor
     driveRun: () => { called = true; throw new Error('must not call core'); },
   }), { ok: true, action: 'no-run' });
   assert.equal(called, false);
+});
+
+test('explicit/env A ignores current B', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-routing-')));
+  const a = seedClaudeHandoffAt(root);
+  const b = seedClaudeHandoffAt(root);
+  const beforeB = readState(root, b.runId).data;
+  let called = 0;
+  const result = driveHeadless({
+    root,
+    runId: a.runId,
+    driveRun: ({ runId }) => { called += 1; return { ok: true, action: 'selected', runId }; },
+  });
+  assert.deepEqual(result, { ok: true, action: 'selected', runId: a.runId });
+  assert.equal(called, 1);
+  assert.deepEqual(readState(root, b.runId).data, beforeB, 'B remains byte-identical');
+});
+
+test('headless argv is one complete valued project/run pair and suppresses ambient identity', () => {
+  assert.deepEqual(parseHeadlessArgs(['--project-root', '/fixture', '--run-id', 'A']), {
+    ok: true, projectRoot: '/fixture', runId: 'A', hasArgv: true,
+  });
+  for (const argv of [
+    ['--project-root', '/fixture'],
+    ['--run-id', 'A'],
+    ['--project-root'],
+    ['--run-id', 'A', '--run-id', 'B', '--project-root', '/fixture'],
+    ['--project-root', '/fixture', '--run-id', 'A', '--unknown', 'x'],
+    ['--project-root', true, '--run-id', 'A'],
+  ]) {
+    assert.deepEqual(parseHeadlessArgs(argv), { ok: false, reason: 'argv-invalid' }, JSON.stringify(argv));
+  }
+  assert.deepEqual(parseHeadlessArgs([]), {
+    ok: true, projectRoot: null, runId: null, hasArgv: false,
+  });
+
+  const a = seedClaudeHandoff();
+  const b = seedClaudeHandoff();
+  const result = driveHeadless({
+    root: a.root,
+    runId: a.runId,
+    envIdentity: null,
+    env: {
+      DEEP_LOOP_RUN_ID: b.runId,
+      DEEP_LOOP_PROJECT_ROOT: b.root,
+      DEEP_LOOP_OWNER: b.runId,
+      DEEP_LOOP_GENERATION: '1',
+      DEEP_LOOP_HEADLESS: '1',
+      DEEP_LOOP_UNATTENDED: '1',
+    },
+    driveRun: ({ runId }) => ({ ok: true, action: 'selected', runId }),
+  });
+  assert.deepEqual(result, { ok: true, action: 'selected', runId: a.runId });
+});
+
+test('complete env routing forwards only the resolver-validated lease fence', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-env-fence-')));
+  const fixture = seedClaudeHandoffAt(root);
+  let capturedExpect;
+  const envIdentity = {
+    DEEP_LOOP_RUN_ID: fixture.runId,
+    DEEP_LOOP_PROJECT_ROOT: root,
+    DEEP_LOOP_OWNER: fixture.runId,
+    DEEP_LOOP_GENERATION: '1',
+    DEEP_LOOP_HEADLESS: '1',
+    DEEP_LOOP_UNATTENDED: '1',
+  };
+  const result = driveHeadless({
+    root,
+    envIdentity,
+    driveRun: ({ expect }) => { capturedExpect = expect; return { ok: true, action: 'captured' }; },
+  });
+  assert.deepEqual(result, { ok: true, action: 'captured' });
+  assert.deepEqual(capturedExpect, { owner: fixture.runId, generation: 1 });
+});
+
+test('stale complete env fence fails in the existing headless core', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-env-stale-')));
+  const fixture = seedClaudeHandoffAt(root);
+  const result = driveHeadless({
+    root,
+    envIdentity: {
+      DEEP_LOOP_RUN_ID: fixture.runId,
+      DEEP_LOOP_PROJECT_ROOT: root,
+      DEEP_LOOP_OWNER: fixture.runId,
+      DEEP_LOOP_GENERATION: '2',
+      DEEP_LOOP_HEADLESS: '1',
+      DEEP_LOOP_UNATTENDED: '1',
+    },
+  });
+  assert.deepEqual(result, { ok: false, action: 'fenced', reason: 'caller-parent-fence-mismatch' });
+});
+
+test('implicit multi-active performs zero drive', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-ambiguous-')));
+  const a = initRun(root, { runtime: 'claude', goal: 'a', now: NOW0, env: {}, platform: 'linux' }).runId;
+  const b = initRun(root, { runtime: 'claude', goal: 'b', now: NOW0, env: {}, platform: 'linux' }).runId;
+  let called = 0;
+  const result = driveHeadless({ root, driveRun: () => { called += 1; return { ok: true }; } });
+  assert.equal(result.ok, false);
+  assert.equal(result.action, 'ambiguous');
+  assert.equal(result.reason, 'multi-active-root-cwd');
+  assert.equal(called, 0);
+  assert.notEqual(a, b);
 });
 
 test('a host policy override never bypasses fail-closed human resume intent', () => {

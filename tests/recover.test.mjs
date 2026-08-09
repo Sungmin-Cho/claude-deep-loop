@@ -242,7 +242,7 @@ test('CLI recover: missing --confirm exits non-zero', () => {
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'recover', '--owner', OWNER, '--generation', String(GEN), '--project-root', root], { encoding: 'utf8' });
+    execFileSync('node', [CLI, 'recover', '--owner', OWNER, '--generation', String(GEN), '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
   } catch (e) { code = e.status; }
   assert.notEqual(code, 0, 'missing --confirm must exit non-zero');
   assert.equal(readState(root, runId).data.status, 'paused', 'state must not change');
@@ -254,7 +254,7 @@ test('CLI recover: --confirm exits 0, lease.state=released, status=paused', () =
   const { root, runId } = seed();
   mkdirSync(join(root, '.deep-loop'), { recursive: true });
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
-  execFileSync('node', [CLI, 'recover', '--owner', OWNER, '--generation', String(GEN), '--confirm', '--project-root', root], { encoding: 'utf8' });
+  execFileSync('node', [CLI, 'recover', '--owner', OWNER, '--generation', String(GEN), '--confirm', '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
   const { data } = readState(root, runId);
   assert.equal(data.status, 'paused');
   assert.equal(data.session_chain.lease.state, 'released');
@@ -269,7 +269,7 @@ test('CLI recover: wrong generation exits 3', () => {
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'recover', '--owner', OWNER, '--generation', '99', '--confirm', '--project-root', root], { encoding: 'utf8' });
+    execFileSync('node', [CLI, 'recover', '--owner', OWNER, '--generation', '99', '--confirm', '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
   } catch (e) { code = e.status; }
   assert.equal(code, 3, 'wrong generation must exit 3');
   assert.equal(readState(root, runId).data.status, 'paused');

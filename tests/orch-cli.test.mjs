@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -13,8 +13,28 @@ import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs'
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
+function fixtureRunId(root) {
+  const runsRoot = join(root, '.deep-loop', 'runs');
+  if (!existsSync(runsRoot)) return null;
+  const ids = readdirSync(runsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name);
+  return ids.length === 1 ? ids[0] : null;
+}
+
+function routedArgs(root, args) {
+  if (args.includes('--run-id')) return [...args, '--project-root', root];
+  const [verb, subverb] = args;
+  const readOnlyWithoutRun = verb === 'init-run' || verb === 'validate' || verb === 'detect-terminal'
+    || verb === 'root' || (verb === 'runtime-executable' && subverb === 'diagnose')
+    || (verb === 'launcher-executable' && subverb === 'diagnose')
+    || (verb === 'spawn-style' && subverb === 'probe-desktop');
+  const runId = fixtureRunId(root);
+  return runId && !readOnlyWithoutRun
+    ? [...args, '--project-root', root, '--run-id', runId]
+    : [...args, '--project-root', root];
+}
+
 function run(root, args) {
-  return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+  return execFileSync('node', [CLI, ...routedArgs(root, args)], { encoding: 'utf8' });
 }
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -158,7 +178,7 @@ function hermeticTerminalEnv(extraEnv) {
 }
 
 function win32RunResult(root, args, extraEnv = {}) {
-  const result = spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
+  const result = spawnSync(process.execPath, [CLI, ...routedArgs(root, args)], {
     encoding: 'utf8',
     shell: false,
     env: {
@@ -337,7 +357,7 @@ test('root diagnose rejects a hash mismatch with exit 1 and no mutation', () => 
     'root', 'diagnose', '--candidate-project-root', moved.candidateRoot, '--run-id', moved.runId,
   ]);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /STATE_TAMPERED/);
+  assert.match(`${result.stdout}${result.stderr}`, /STATE_TAMPERED|integrity-invalid|INTEGRITY_INVALID/);
   assert.deepEqual(cliSnapshot(moved.candidateRoot, moved.runId), before);
 });
 
@@ -822,7 +842,7 @@ launcherExecutableCliTest('forced-win32 POSIX CLI fixture never becomes runnable
   assert.equal(launcherApproval.code, 0, launcherApproval.stderr);
 
   const detected = win32RunResult(fixture.root, [
-    'detect-terminal', '--owner', runId, '--generation', '1',
+    'detect-terminal', '--owner', runId, '--generation', '1', '--run-id', runId,
   ], fixture.env);
   assert.equal(detected.code, 0, detected.stderr);
   const descriptor = JSON.parse(detected.stdout);
@@ -1041,6 +1061,7 @@ test('handoff emit CLI maps an in-lock LEASE_FENCED result to exit 3', () => {
     '--owner', runId,
     '--generation', '2',
     '--project-root', root,
+    '--run-id', runId,
   ], { encoding: 'utf8' });
 
   assert.equal(result.status, 3, result.stderr);
@@ -1119,7 +1140,7 @@ test('CLI validate from nested .claude/worktrees cwd resolves the run (rootOf up
   const wt = join(root, '.claude', 'worktrees', 'ws-01');
   mkdirSync(wt, { recursive: true });
   // --project-root 없이, cwd 를 worktree 로 두고 validate 호출 → run 을 찾아야 함.
-  const out = execFileSync('node', [CLI, 'validate'], { cwd: wt, encoding: 'utf8' });
+  const out = execFileSync('node', [CLI, 'validate', '--run-id', runId], { cwd: wt, encoding: 'utf8' });
   assert.match(out, new RegExp(`ok \\(run ${runId}\\)`), 'validate found run from worktree cwd');
 });
 

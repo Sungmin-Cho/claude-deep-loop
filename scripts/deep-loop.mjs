@@ -16,6 +16,11 @@ import {
   runDir,
   findRoot,
 } from './lib/state.mjs';
+import {
+  captureVerifiedRunSet,
+  captureVerifiedRunSnapshot,
+} from './lib/integrity.mjs';
+import { resolveRunContext } from './lib/run-context.mjs';
 import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
@@ -48,6 +53,7 @@ import {
 } from './lib/recover.mjs';
 import {
   captureLatestInsightsSet,
+  captureVerifiedInsightsRunSet,
   captureReconciledRunSet,
   computeInsights,
   emitInsights,
@@ -56,7 +62,7 @@ import {
 } from './lib/insights.mjs';
 import {
   acquireRootRecovery,
-  diagnoseProjectRoot,
+  diagnoseVerifiedProjectRoot,
   rebindProjectRoot,
   recoverRelocatedRoot,
 } from './lib/project-root-recovery.mjs';
@@ -77,8 +83,9 @@ import {
 } from './lib/runtime-descriptor.mjs';
 import {
   emitCompactCheckpoint,
-  inspectCompactCheckpoint,
   restoreCompactCheckpoint,
+  captureVerifiedCheckpointSet,
+  selectVerifiedCheckpointDescriptor,
 } from './lib/checkpoint.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -245,6 +252,125 @@ function runIdOf(root, f) {
   const p = join(root, '.deep-loop', 'current');
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
+
+const SAFE_EXACT_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function exactReadRunId(f) {
+  const value = f['run-id'];
+  if (value === undefined || value === true || value === '') {
+    error('USAGE: exact reads require one valued safe --run-id');
+    return null;
+  }
+  if (typeof value !== 'string' || value === '.' || value === '..'
+    || !SAFE_EXACT_RUN_ID.test(value) || /[\x00-\x1F\x7F-\x9F/\\]/.test(value)) {
+    error(`RUN_ID_INVALID: ${String(value)}`);
+    return null;
+  }
+  return value;
+}
+
+function exactReadFailureCode(f) {
+  const value = f['run-id'];
+  return typeof value === 'string' && value.length > 0 ? 1 : 2;
+}
+
+function verifiedExactSnapshot(root, runId, options = {}) {
+  try {
+    const captured = captureVerifiedRunSnapshot(root, runId, options);
+    if (captured?.ok === false) return { ok: false, diagnostic: captured };
+    const snapshot = captured?.snapshot || captured;
+    if (!snapshot?.data || snapshot.data.run_id !== runId) {
+      return { ok: false, diagnostic: { ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' } };
+    }
+    return { ok: true, snapshot };
+  } catch (cause) {
+    return { ok: false, error: String(cause?.message || cause) };
+  }
+}
+
+function reportVerifiedExactFailure(result) {
+  if (result.diagnostic) json(result.diagnostic);
+  else error(result.error || 'integrity-invalid');
+  return 1;
+}
+
+function projectRunResolution(result) {
+  if (!result || typeof result !== 'object') return { ok: false, kind: 'invalid', reason: 'resolver-invalid' };
+  const projected = { ok: result.ok === true, kind: result.kind };
+  for (const key of ['reason', 'source', 'status', 'max_run_ids', 'deadline_ms', 'observed_count',
+    'total_is_lower_bound', 'total']) if (result[key] !== undefined) projected[key] = result[key];
+  if (result.runId !== undefined) projected.run_id = result.runId;
+  if (result.matchedWorktree !== undefined) projected.matched_worktree = result.matchedWorktree;
+  if (Array.isArray(result.candidates)) {
+    projected.candidates = result.candidates.slice(0, 5).map(candidate => ({
+      ...(typeof candidate?.run_id === 'string' ? { run_id: candidate.run_id } : {}),
+      ...(typeof candidate?.status === 'string' ? { status: candidate.status } : {}),
+    }));
+  }
+  if (result.errors && typeof result.errors === 'object' && !Array.isArray(result.errors)) {
+    projected.errors = Object.fromEntries(Object.keys(result.errors).sort().slice(0, 5).map(runId => [runId, {
+      ...(typeof result.errors[runId]?.kind === 'string' ? { kind: result.errors[runId].kind } : {}),
+      ...(typeof result.errors[runId]?.operation_id === 'string' ? { operation_id: result.errors[runId].operation_id } : {}),
+      ...(typeof result.errors[runId]?.phase === 'string' ? { phase: result.errors[runId].phase } : {}),
+    }]));
+  }
+  if (result.expect && typeof result.expect === 'object') {
+    projected.expect = {
+      ...(typeof result.expect.owner === 'string' ? { owner: result.expect.owner } : {}),
+      ...(Number.isSafeInteger(result.expect.generation) ? { generation: result.expect.generation } : {}),
+    };
+  }
+  return projected;
+}
+
+// Raw-argv identity gate. This runs before any handler can parse flags, resolve the
+// project root, read `.deep-loop/current`, or capture a snapshot. Keep the inventory
+// explicit so adding a mutating dispatcher route requires updating this table.
+export const MUTATING_ROUTE_INVENTORY = Object.freeze([
+  'root recovery acquire', 'root rebind', 'root recover',
+  'runtime-executable approve', 'launcher-executable approve',
+  'checkpoint emit', 'checkpoint restore', 'lease acquire', 'lease release',
+  'workstream new', 'workstream set', 'workstream terminal',
+  'episode new', 'episode record', 'episode abandon',
+  'review dispatch', 'review record', 'review import',
+  'handoff emit', 'respawn', 'state patch', 'pause', 'recover', 'recovery acquire',
+  'budget record', 'budget extend', 'comprehension ack', 'breaker reset',
+  'insights emit', 'spawn-style offer-desktop', 'spawn-style confirm-desktop',
+  'spawn-style decline-desktop', 'spawn-style reset-desktop',
+  'attended-launch approve', 'attended-launch revoke', 'session-profile set',
+  'detect-terminal', 'finish',
+]);
+const MUTATING_ROUTE_SET = new Set(MUTATING_ROUTE_INVENTORY);
+
+function rawRouteKey(command, argv) {
+  const first = argv[0] && !argv[0].startsWith('--') ? argv[0] : null;
+  if (command === 'root') return first === 'recovery'
+    ? `root recovery ${argv[1] && !argv[1].startsWith('--') ? argv[1] : ''}`
+    : `root ${first || ''}`;
+  return first ? `${command} ${first}` : command;
+}
+
+function requireExactRunId(rawArgv) {
+  let count = 0;
+  let value;
+  let malformed = false;
+  for (let index = 0; index < rawArgv.length; index += 1) {
+    const token = rawArgv[index];
+    if (token === '--run-id') {
+      count += 1;
+      const next = rawArgv[index + 1];
+      if (next === undefined || next.startsWith('--') || next.length === 0) malformed = true;
+      else { value = next; index += 1; }
+    } else if (typeof token === 'string' && token.startsWith('--run-id=')) {
+      count += 1;
+      const inline = token.slice('--run-id='.length);
+      if (inline.length === 0) malformed = true;
+      else value = inline;
+    }
+  }
+  if (malformed || count !== 1) return { ok: false };
+  return { ok: true, value };
+}
+
 // 변경 명령 펜싱 (spec §9.1) — owner/generation 불일치 시 LEASE_FENCED.
 function intArg(f, name) {
   const v = f[name];
@@ -300,11 +426,12 @@ const handlers = {
     const f = parseFlags(args);
     const target = reqStr(f, 'target');
     const projectRoot = reqStr(f, 'project-root');
-    const runId = reqStr(f, 'run-id');
-    if (!target || !projectRoot || !runId) {
+    if (!target || !projectRoot) {
       error('USAGE: path resolve requires valued --target, --project-root, and --run-id');
       return 2;
     }
+    const runId = exactReadRunId(f);
+    if (!runId) return exactReadFailureCode(f);
     if (target !== 'run-dir' && target !== 'workstream') {
       throw new Error(`PATH_TARGET_INVALID: ${target}`);
     }
@@ -326,10 +453,16 @@ const handlers = {
     const sv = validateLoop(sample);
     if (!sv.ok) errors.push(`builder self-test: ${sv.errors.join('; ')}`);
     const root = rootOf(f);
-    const runId = runIdOf(root, f);
+    const runId = Object.hasOwn(f, 'run-id') ? exactReadRunId(f) : null;
+    if (Object.hasOwn(f, 'run-id') && !runId) return exactReadFailureCode(f);
     if (runId) {
       try {
-        const { data } = captureReconciledRunSnapshot(root, runId);
+        const captured = captureVerifiedRunSnapshot(root, runId);
+        if (captured?.ok === false) {
+          if (!existsSync(join(runDir(root, runId), 'loop.json'))) throw new Error(`STATE_MISSING: ${runId} loop.json absent`);
+          throw new Error(captured.kind || 'INTEGRITY_INVALID');
+        }
+        const { data } = captured.snapshot || captured;
         const rv = validateLoop(data);
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
@@ -355,6 +488,49 @@ const handlers = {
     const f = parseFlags(a); const root = rootOf(f);
     try { json(matchRecipe(f.goal || '', detectPlugins(root))); return 0; }
     catch (e) { error(String(e?.message || e)); return 1; }   // NO_VALID_RECIPES (degraded bundle) → exit 1, no raw stack
+  },
+  run: async (a) => {
+    const [verb, ...rest] = a;
+    const f = parseFlags(rest);
+    const root = rootOf(f);
+    if (verb === 'list') {
+      const captured = captureVerifiedRunSet(root, { maxRunIds: 64, deadlineMs: 500 });
+      if (captured.ok === false) { json(captured); return 1; }
+      const current = (() => {
+        try { return readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim(); }
+        catch { return null; }
+      })();
+      const runs = captured.runIds.map(runId => {
+        const snapshot = captured.runs[runId]?.snapshot || captured.runs[runId];
+        const data = snapshot?.data || {};
+        return {
+          run_id: runId,
+          status: data.status ?? null,
+          created_at: data.created_at ?? null,
+          updated_at: data.event_log_head?.ts ?? null,
+          continuation_policy: data.autonomy?.continuation_policy ?? null,
+          worktrees: (data.workstreams || []).map(workstream => workstream.worktree)
+            .filter(value => typeof value === 'string' && value.length > 0)
+            .sort().slice(0, 8).map(value => value.length > 256 ? `${value.slice(0, 253)}...` : value),
+          is_current: runId === current,
+        };
+      });
+      json({ ok: true, runs, errors: captured.errors || {} });
+      return 0;
+    }
+    if (verb === 'resolve') {
+      const purpose = reqStr(f, 'purpose') || 'cli-read';
+      const result = resolveRunContext({
+        root,
+        purpose,
+        explicitRunId: f['run-id'] === true ? null : (f['run-id'] ?? null),
+        cwd: f.cwd === undefined || f.cwd === true ? null : String(f.cwd),
+      });
+      json(projectRunResolution(result));
+      return result.ok ? 0 : 1;
+    }
+    error(`unknown run verb: ${verb ?? '<none>'}`);
+    return 2;
   },
   root: async (a) => {
     const [verb, ...rest] = a;
@@ -395,11 +571,20 @@ const handlers = {
     if (!['diagnose', 'rebind', 'recover'].includes(verb)) { error(`unknown root verb: ${verb}`); return 2; }
     const candidateRoot = reqStr(f, 'candidate-project-root');
     if (!candidateRoot) { error('USAGE: --candidate-project-root ROOT is required'); return 2; }
-    const runId = reqStr(f, 'run-id');
-    if (!runId) { error('USAGE: --run-id RUN_ID is required'); return 2; }
+    const runId = verb === 'diagnose' ? exactReadRunId(f) : reqStr(f, 'run-id');
+    if (!runId) return exactReadFailureCode(f);
 
     if (verb === 'diagnose') {
-      json(diagnoseProjectRoot(candidateRoot, runId));
+      try {
+        const diagnosed = diagnoseVerifiedProjectRoot(candidateRoot, runId);
+        if (diagnosed?.ok === false) { json(diagnosed); return 1; }
+        json(diagnosed); return 0;
+      }
+      catch (cause) {
+        const message = String(cause?.message || cause);
+        error(message);
+        return /^(?:PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message) ? 3 : 1;
+      }
       return 0;
     }
 
@@ -568,8 +753,11 @@ const handlers = {
     }
   },
   'next-action': async (a) => {
-    const f = parseFlags(a); const root = rootOf(f);
-    const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
+    const f = parseFlags(a); const root = rootOf(f); const runId = exactReadRunId(f);
+    if (!runId) return exactReadFailureCode(f);
+    const captured = verifiedExactSnapshot(root, runId);
+    if (!captured.ok) return reportVerifiedExactFailure(captured);
+    const { data } = captured.snapshot;
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
     json(renderNextAction(nextAction(data, { now: parseNow(f), unattended }))); return 0;
   },
@@ -602,12 +790,15 @@ const handlers = {
       return 2;
     }
     const root = rootOf(f);
-    const runId = runIdOf(root, f);
+    const runId = verb === 'inspect' ? exactReadRunId(f) : runIdOf(root, f);
+    if (verb === 'inspect' && !runId) return exactReadFailureCode(f);
     if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
 
     if (verb === 'inspect') {
       if (f.json !== true) { error('USAGE: checkpoint inspect requires --json'); return 2; }
-      json(inspectCompactCheckpoint(root, runId, { now: parseNow(f) }));
+      const verified = captureVerifiedCheckpointSet({ root, runId, now: parseNow(f) });
+      if (!verified.ok) { json(verified); return 1; }
+      json(selectVerifiedCheckpointDescriptor(verified));
       return 0;
     }
 
@@ -654,11 +845,16 @@ const handlers = {
       return 2;
     }
     const root = rootOf(f);
-    const runId = runIdOf(root, f);
-    if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const snapshot = captureReconciledRunSnapshot(root, runId, {
+    const runId = exactReadRunId(f);
+    if (!runId) return exactReadFailureCode(f);
+    const captured = captureVerifiedRunSnapshot(root, runId, {
       artifactRels: ['terminal/launch-command.txt', 'terminal/launch-command.meta.json'],
     });
+    if (captured?.ok === false) {
+      error(`${captured.kind || 'integrity-invalid'}:${captured.operation_id || 'none'}:${captured.phase || 'verified-vector'}`);
+      return 1;
+    }
+    const snapshot = captured.snapshot;
     const { data } = snapshot;
     const lease = data.session_chain?.lease || {};
     const childRunId = typeof lease.handoff_child_run_id === 'string'
@@ -840,15 +1036,24 @@ const handlers = {
     return 0;
   },
   tick: async (a) => {
-    const f = parseFlags(a); const root = rootOf(f);
-    const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
+    const f = parseFlags(a); const root = rootOf(f); const runId = exactReadRunId(f);
+    if (!runId) return exactReadFailureCode(f);
+    const captured = verifiedExactSnapshot(root, runId);
+    if (!captured.ok) return reportVerifiedExactFailure(captured);
+    const { data } = captured.snapshot;
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
     json(renderNextAction({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) })); return 0;
   },
   lease: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f);
+    if (verb === 'check') {
+      const exactRunId = exactReadRunId(f); if (!exactRunId) return exactReadFailureCode(f);
+      const captured = verifiedExactSnapshot(root, exactRunId);
+      if (!captured.ok) return reportVerifiedExactFailure(captured);
+      json(leaseCheck(captured.snapshot.data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0;
+    }
     if (verb === 'acquire') {
+      const runId = runIdOf(root, f);
       const owner = strArg(f, 'owner');
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
@@ -901,7 +1106,10 @@ const handlers = {
         || r.reason === 'RECOVERY_ACQUIRE_REQUIRED'
       )) ? 3 : 0;
     }
-    if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'release') {
+      const runId = runIdOf(root, f);
+      json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0;
+    }
     error(`unknown lease verb: ${verb}`); return 2;
   },
   workstream: async (a) => {
@@ -1124,28 +1332,19 @@ const handlers = {
     }
   },
   state: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f);
     if (verb === 'get') {
-      if (runId == null) { json(null); return 0; }   // no pointer at all (first entry) → clean null
-      const explicit = f['run-id'] != null;           // explicit --run-id vs implicit .deep-loop/current
-      let data;
-      try { ({ data } = captureReconciledRunSnapshot(root, runId)); }
-      catch (e) {
-        // null ONLY for: implicit current pointer AND the run dir itself is absent (genuine stale pointer).
-        if ((e && e.code === 'ENOENT' || String(e?.message || e) === 'LOCK_RUN_INVALID')
-          && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
-        // run dir present but loop.json gone = partial state loss → fail closed (don't mask as "no run").
-        if (e && e.code === 'ENOENT' && existsSync(runDir(root, runId))) {
-          error(`STATE_MISSING: ${runId} loop.json absent but run dir exists`); return 1;
-        }
-        // explicit --run-id miss / STATE_TAMPERED / bad JSON / EACCES / RUN_ID_INVALID / other → surface.
-        error(String(e && e.message || e)); return 1;
-      }
+      const exactRunId = exactReadRunId(f);
+      if (!exactRunId) return exactReadFailureCode(f);
+      const captured = verifiedExactSnapshot(root, exactRunId);
+      if (!captured.ok) return reportVerifiedExactFailure(captured);
+      const { data } = captured.snapshot;
       if (f.field === undefined || f.field === true) { json(data); return 0; }
       const val = String(f.field).split('.').reduce((o, k) => (o == null ? undefined : o[k]), data);
       json(val === undefined ? null : val); return 0;
     }
     if (verb === 'patch') {
+      const runId = runIdOf(root, f);
       if (runId == null) { error('MISSING_RUN_ID'); return 2; }   // mutating with no run = usage error (before fence)
       requireLease(root, runId, f);   // --owner/--generation 누락·불일치 → exit 3 (fence)
       const field = reqStr(f, 'field'); if (!field) { error('MISSING_FIELD'); return 2; }       // Codex r1 sf-6: 비-fence 누락 → exit 2
@@ -1320,8 +1519,14 @@ const handlers = {
     json({ protocol, dispatch, await: awaitD, read, checker_via: 'review dispatch --point <p> --workstream <ws> (kernel derives checker episode + descriptor)', guard }); return 0;
   },
   budget: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f);
+    if (verb === 'check') {
+      const exactRunId = exactReadRunId(f); if (!exactRunId) return exactReadFailureCode(f);
+      const captured = verifiedExactSnapshot(root, exactRunId);
+      if (!captured.ok) return reportVerifiedExactFailure(captured);
+      json(checkBudget(captured.snapshot.data, { now: parseNow(f) })); return 0;
+    }
+    const runId = runIdOf(root, f);
     if (verb === 'record') {
       requireLease(root, runId, f);
       // Codex r4 sf-4: parseFlags 는 값 없는 플래그를 true 로 둔다 → Number(true)=1 오기록 방지.
@@ -1369,9 +1574,15 @@ const handlers = {
     error(`unknown budget verb: ${verb}`); return 2;
   },
   comprehension: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'status') { const { data } = captureReconciledRunSnapshot(root, runId); json(computeDebt(data)); return 0; }
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f);
+    if (verb === 'status') {
+      const exactRunId = exactReadRunId(f); if (!exactRunId) return exactReadFailureCode(f);
+      const captured = verifiedExactSnapshot(root, exactRunId);
+      if (!captured.ok) return reportVerifiedExactFailure(captured);
+      json(computeDebt(captured.snapshot.data)); return 0;
+    }
     if (verb === 'ack') {
+      const runId = runIdOf(root, f);
       requireLease(root, runId, f);   // fence 인자 → exit 3
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
       if (f.actor === true) { error('USAGE: --actor requires a value (human|agent)'); return 2; }   // value-less 거부
@@ -1394,9 +1605,15 @@ const handlers = {
     error(`unknown comprehension verb: ${verb}`); return 2;
   },
   breaker: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBreaker(data)); return 0; }
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f);
+    if (verb === 'check') {
+      const exactRunId = exactReadRunId(f); if (!exactRunId) return exactReadFailureCode(f);
+      const captured = verifiedExactSnapshot(root, exactRunId);
+      if (!captured.ok) return reportVerifiedExactFailure(captured);
+      json(checkBreaker(captured.snapshot.data)); return 0;
+    }
     if (verb === 'reset') {
+      const runId = runIdOf(root, f);
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
       const owner = strArg(f, 'owner');
       const fence = { owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
@@ -1412,7 +1629,10 @@ const handlers = {
     const f = parseFlags(verb ? a.slice(1) : a);
     const root = rootOf(f);
     if (verb === null) {
-      const selfRunId = runIdOf(root, f);
+      const selfRunId = exactReadRunId(f);
+      if (!selfRunId) return exactReadFailureCode(f);
+      const runSet = captureVerifiedInsightsRunSet(root);
+      if (runSet.ok === false) { json(runSet); return 1; }
       if (f.run !== undefined) {
         const target = String(f.run);
         // runDir는 unsafe path segment('/'·'..' 등)에 RUN_ID_INVALID를 throw — read-only 조회에서는
@@ -1420,12 +1640,16 @@ const handlers = {
         let targetDir;
         try { targetDir = runDir(root, target); } catch { error(`RUN_NOT_FOUND: ${target}`); return 1; }
         if (!existsSync(targetDir)) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
-        const out = computeInsights(captureReconciledRunSet(root), { selfRunId, now: parseNow(f) });
+        const out = computeInsights(runSet, { selfRunId, now: parseNow(f) });
         json({ ...out, per_run: { [target]: out.per_run[target] ?? null } }); return 0;
       }
-      json(computeInsights(captureReconciledRunSet(root), { selfRunId, now: parseNow(f) })); return 0;
+      json(computeInsights(runSet, { selfRunId, now: parseNow(f) })); return 0;
     }
-    if (verb === 'latest') { json(latestInsights(captureLatestInsightsSet(root))); return 0; }
+    if (verb === 'latest') {
+      const result = latestInsights(captureLatestInsightsSet(root));
+      json(result);
+      return result?.ok === false ? 1 : 0;
+    }
     if (verb === 'emit') {
       const runId = runIdOf(root, f);
       requireLease(root, runId, f);
@@ -1629,6 +1853,11 @@ const handlers = {
 
 const fn = handlers[sub];
 if (!fn) { error(`unknown subcommand: ${sub ?? '<none>'}`); process.exit(2); }
+const routeKey = rawRouteKey(sub, rest);
+if (MUTATING_ROUTE_SET.has(routeKey) && !requireExactRunId(rest).ok) {
+  error('USAGE: mutating routes require exactly one valued --run-id');
+  process.exit(2);
+}
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
 // (integrity 등의 detect-and-fail-stop 모델을 넓은 catch로 삼키지 않는다).
 try {

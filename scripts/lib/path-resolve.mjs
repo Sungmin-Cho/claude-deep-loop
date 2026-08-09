@@ -2,7 +2,7 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
-import { captureReconciledRunSnapshot } from './state.mjs';
+import { captureVerifiedRunSnapshot as captureVerifiedRunSnapshotDefault } from './integrity.mjs';
 
 const realpath = realpathSync.native || realpathSync;
 
@@ -48,11 +48,41 @@ function assertNoAliasComponents(canonicalRoot, lexicalCandidate) {
   assertDirectoryLineage(canonicalRoot, lexicalCandidate, 'WORKSTREAM_WORKTREE_ESCAPE');
 }
 
-export function resolveRunPath(root, runId, { target, workstreamId } = {}) {
+function verifiedSnapshot(root, runId, options) {
+  const supplied = options.snapshot;
+  const captured = supplied === undefined
+    ? (options.captureVerifiedRunSnapshot || captureVerifiedRunSnapshotDefault)(root, runId)
+    : supplied;
+  if (captured?.ok === false) {
+    const operation = captured.operation_id ? `:${captured.operation_id}` : '';
+    throw new Error(`${captured.kind || 'integrity-invalid'}${operation}:${captured.phase || 'snapshot'}`);
+  }
+  const snapshot = captured?.snapshot || captured;
+  if (!snapshot || typeof snapshot !== 'object' || !snapshot.data || typeof snapshot.hash !== 'string') {
+    throw new Error('integrity-invalid: verified snapshot required');
+  }
+  if (snapshot.data.run_id !== runId) throw new Error('integrity-invalid: snapshot run mismatch');
+  let snapshotRoot;
+  try { snapshotRoot = canonicalProjectRoot(snapshot.data.project?.root); }
+  catch { throw new Error('integrity-invalid: snapshot root mismatch'); }
+  if (snapshotRoot !== root) throw new Error('integrity-invalid: snapshot root mismatch');
+  return snapshot;
+}
+
+export function resolveRunPath(rootOrOptions, runIdArg, optionsArg = {}) {
+  const objectForm = rootOrOptions && typeof rootOrOptions === 'object' && !Array.isArray(rootOrOptions);
+  const root = objectForm ? rootOrOptions.root : rootOrOptions;
+  const runId = objectForm ? rootOrOptions.runId : runIdArg;
+  const {
+    target, workstreamId, snapshot, captureVerifiedRunSnapshot,
+  } = objectForm ? rootOrOptions : optionsArg;
   const canonicalRoot = canonicalProjectRoot(root);
   safeRunId(runId);
   assertSafeRunStateLineage(canonicalRoot, runId);
-  const { data } = captureReconciledRunSnapshot(canonicalRoot, runId);
+  const { data } = verifiedSnapshot(canonicalRoot, runId, {
+    snapshot,
+    captureVerifiedRunSnapshot,
+  });
 
   if (target === 'run-dir') {
     const lexicalRuns = resolve(canonicalRoot, '.deep-loop', 'runs');

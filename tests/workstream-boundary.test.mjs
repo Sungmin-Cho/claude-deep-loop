@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { captureReconciledRunSnapshot, readState, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
@@ -19,7 +20,7 @@ import { runDir } from '../scripts/lib/state.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, captureVerifiedRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { makeCodexProcessReceipt, settleCodexProcessCost } from '../scripts/lib/budget.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 
@@ -57,6 +58,10 @@ function durableBytes(root) {
   };
   visit(root);
   return files;
+}
+
+function durableRunBytes(root, runId) {
+  return durableBytes(runDir(root, runId));
 }
 
 function seedReviewed(runtime = 'claude') {
@@ -423,6 +428,75 @@ function closeWithSibling(runtime = 'claude') {
     .find(session => session.run_id === f.runId).scope.terminal_event;
   return { ...f, sibling, boundary };
 }
+
+function realBoundaryFixture() {
+  const f = seedReviewed();
+  const siblingWorkstream = newWorkstream(f.root, f.runId, {
+    title: 'sibling workstream', branch: 'feature/sibling-workstream',
+    worktree: '.claude/worktrees/sibling-workstream', fence: f.f,
+  }).id;
+  const siblingRun = initRun(f.root, {
+    runtime: 'claude',
+    goal: 'sibling clean run',
+    now: new Date(Date.parse(NOW) + 1),
+  });
+  recordWorkstreamTerminal(f.root, f.runId, f.ws, {
+    status: 'ready', proof: {}, fence: f.f, now: Date.parse(NOW),
+  });
+  const { data } = readState(f.root, f.runId);
+  const boundary = data.session_chain.sessions
+    .find(session => session.run_id === f.runId).scope.terminal_event;
+  assert.deepEqual(boundary, nextAction(data, { now: Date.parse(NOW) }).action.boundary_event);
+  return { ...f, siblingWorkstream, siblingRunId: siblingRun.runId, boundary };
+}
+
+test('R15-REAL-COMMITTED-BOUNDARY preserves committed publication through verified capture and resume', () => {
+  const f = realBoundaryFixture();
+  const beforeEmit = {
+    a: durableRunBytes(f.root, f.runId),
+    b: durableRunBytes(f.root, f.siblingRunId),
+  };
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(emitted.idempotent, false);
+  assert.match(emitted.key, /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+  const committedPath = join(runDir(f.root, f.runId), 'transactions', emitted.key, 'committed.json');
+  assert.equal(readFileSync(committedPath).length > 0, true);
+  const afterEmit = {
+    a: durableRunBytes(f.root, f.runId),
+    b: durableRunBytes(f.root, f.siblingRunId),
+  };
+  assert.notDeepEqual(afterEmit.a, beforeEmit.a);
+  assert.deepEqual(afterEmit.b, beforeEmit.b);
+
+  const verified = captureVerifiedRunSnapshot(f.root, f.runId, {
+    artifactRels: ['terminal/launch-command.txt', 'terminal/launch-command.meta.json'],
+  });
+  assert.equal(verified.ok, true);
+  assert.equal(verified.kind, 'clean-committed');
+  assert.deepEqual(durableRunBytes(f.root, f.runId), afterEmit.a);
+  assert.deepEqual(durableRunBytes(f.root, f.siblingRunId), afterEmit.b);
+
+  const resumeSource = readFileSync(CLI, 'utf8');
+  const resumeStart = resumeSource.indexOf("'resume-command'");
+  assert.ok(resumeStart >= 0);
+  const resumeRoute = resumeSource.slice(resumeStart, resumeSource.indexOf("\n  },", resumeStart));
+  assert.match(resumeRoute, /captureVerifiedRunSnapshot/);
+  assert.doesNotMatch(resumeRoute, /captureReconciledRunSnapshot/);
+  const resumed = spawnSync(process.execPath, [
+    CLI, 'resume-command', '--project-root', f.root, '--run-id', f.runId,
+  ], { encoding: 'utf8' });
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+  assert.deepEqual(durableRunBytes(f.root, f.runId), afterEmit.a);
+  assert.deepEqual(durableRunBytes(f.root, f.siblingRunId), afterEmit.b);
+});
 
 test('public next-action renders one exact closed boundary while the pure action retains its object identity', () => {
   const f = closeWithSibling();

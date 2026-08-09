@@ -16,11 +16,19 @@ user-invocable: true
 
 `/deep-loop-status` — 현재 run의 상태(status), 예산, comprehension debt, circuit breaker, 미검토 episode, session chain, workstream 표를 **읽기 전용**으로 표시한다.
 
-status 조회 대상 descriptor/current run의 `<run_id>`는 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. 아래 사람 전용 mutation을 제안하거나 실행하기 전에는 current lease를 새로 읽는다.
+프로젝트에 여러 run이 있을 수 있으므로 먼저 `run list`로 bounded verified 목록을 보고 대상 `<run_id>`를 선택한다. `current` 포인터는 마지막 생성 run을 가리키는 hint일 뿐이고 sole authority나 tie-breaker가 아니다. status 조회 대상 `<run_id>`는 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. 아래 사람 전용 mutation을 제안하거나 실행하기 전에는 선택한 run의 lease를 새로 읽는다.
 스킬의 autonomous 진단은 durable state를 **읽기만** 한다. 아래 mutation은
 명시적 사람 확인 뒤 public kernel CLI로만 실행하며 상태 파일을 직접 쓰지 않는다.
 
 ## 조회 순서
+
+### 0. Run 목록과 선택
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" run list --project-root "<canonical_project_root>"
+```
+
+목록에서 확인한 `<run_id>`를 모든 아래 read와 사람 전용 mutation에 명시한다. current가 다른 run을 가리켜도 그 포인터로 바꾸거나 fallback하지 않는다.
 
 ### 1. 전체 Loop 상태
 
@@ -96,7 +104,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode abandon --id <id> --reason "
 - 정상 진행 중: `/deep-loop-continue`
 - handoff 대기: `/deep-loop-resume`
 - 완료 가능: `/deep-loop-finish`
-- breaker tripped: `breaker reset --confirm --owner <owner_run_id> --generation <n>` (사람 직접 실행)
+- breaker tripped: 아래 exact command를 사람이 직접 실행한다:
+  ```
+  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker reset --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+  ```
 
 ## Human-only safety relief
 

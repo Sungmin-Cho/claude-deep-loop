@@ -1,21 +1,1255 @@
-# deep-loop — scheduled autonomous loop (GitHub Actions template).
-# 사용자가 .github/workflows/ 로 복사. 안전장치는 drive-headless.mjs(headlessSpawn 래퍼)가 제공 — raw claude -p 금지.
 name: deep-loop
 on:
-  schedule:
-    - cron: "0 8 * * *"   # 매일 08:00 UTC
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 8 * * *"
+
+# Official automation is a provisioned run-A Linux/x64 source-preflight boundary.
+# vars.DEEP_LOOP_PROJECT_ROOT and vars.DEEP_LOOP_RUN_ID are captured once from
+# init-run and are the canonical project-root/run-id pair; repository RUN_ID,
+# DEEP_LOOP_ROOT, and the current hint are never authority. GITHUB_WORKSPACE is
+# only the ordinary target checkout workspace and is kept disjoint from the
+# persistent project/state and candidate source roots.
+#
+# Official runner labels are intentionally exact: self-hosted, deep-loop, linux, x64.
+# The target checkout may omit plugin scripts because the candidate root is the
+# only staged source authority; an invalid candidate stops before child launch.
+# No checkout/clean/reset/delete or durable upload/restore is performed here.
+#
+# Official automation is a provisioned Linux/x64 source-preflight boundary. It
+# intentionally has no checkout, cleanup, shell fallback, or runtime fallback.
+# The later verified execution stage may invoke drive-headless.mjs only after
+# this source identity, target snapshot, and stage-token boundary succeeds.
+# External push/PR/merge/publish/delete remains proposal-only and human-approved.
 jobs:
-  loop:
-    runs-on: ubuntu-latest
+  preflight:
+    runs-on: [self-hosted, deep-loop, linux, x64]
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      # headless 구동 — 비대화형(non-tty)이라 unattended=headless. drive-headless 가 timeout + usage fail-closed 강제.
-      - name: Drive deep-loop (headless, fail-closed)
+      - name: Trusted staged source preflight
         env:
-          DEEP_LOOP_UNATTENDED: "1"
-        run: node scripts/hooks-impl/drive-headless.mjs
-      # 주의: 비가역 외부 행동(push/PR/merge/publish/delete)은 v1 에서 proposal-only —
-      # 사람 승인 게이트. 이 workflow 는 코드 변경/세션 연속만 자동화하며 자동 머지/배포하지 않는다.
+          DEEP_LOOP_CANDIDATE_ROOT: ${{ vars.DEEP_LOOP_CANDIDATE_ROOT }}
+          DEEP_LOOP_STAGE_PARENT: ${{ vars.DEEP_LOOP_STAGE_PARENT }}
+          DEEP_LOOP_PROJECT_ROOT: ${{ vars.DEEP_LOOP_PROJECT_ROOT }}
+          DEEP_LOOP_CANONICAL_PROJECT_ROOT: ${{ vars.DEEP_LOOP_CANONICAL_PROJECT_ROOT }}
+          DEEP_LOOP_RUN_ID: ${{ vars.DEEP_LOOP_RUN_ID }}
+          DEEP_LOOP_EXPECTED_PLUGIN_NAME: ${{ vars.DEEP_LOOP_EXPECTED_PLUGIN_NAME }}
+          DEEP_LOOP_EXPECTED_PLUGIN_VERSION: ${{ vars.DEEP_LOOP_EXPECTED_PLUGIN_VERSION }}
+          DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: ${{ vars.DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256 }}
+          DEEP_LOOP_RUN_CHILDREN: "1"
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import zlib from 'node:zlib';
+          import childProcess from 'node:child_process';
+
+          // deep-loop-plugin-source-v1: fixed trusted source identity. The
+          // expected value is provisioned out-of-band, never read from source.
+          const SOURCE_HEADER_HEX = '646565702d6c6f6f702d706c7567696e2d736f757263652d763100';
+          const WRONG_HEADER_HEX = '5c30'; // wrong header is rejected; single-NUL/trailing NUL is exact.
+          const SOURCE_HEADER = Buffer.from(SOURCE_HEADER_HEX, 'hex');
+          const SOURCE_ROOTS = Object.freeze(['scripts', 'skills', 'schemas', 'protocols', 'recipes', 'hooks']);
+          const METADATA = Object.freeze(['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'package.json']);
+          const PUBLIC_ENTRYPOINT_TABLE = Object.freeze([
+            Object.freeze({ owner: '.claude-plugin/plugin.json', rel: 'scripts/deep-loop.mjs' }),
+            Object.freeze({ owner: '.codex-plugin/plugin.json', rel: 'scripts/deep-loop.mjs' }),
+            Object.freeze({ owner: 'package.json', rel: 'scripts/deep-loop.mjs' }),
+          ]);
+          const TRANSITIVE_RUNTIME_TABLE = Object.freeze([
+            Object.freeze({ root: 'scripts', witnesses: Object.freeze(['scripts/deep-loop.mjs', 'scripts/hooks-impl/drive-headless.mjs', 'scripts/lib/headless-host.mjs']) }),
+            Object.freeze({ root: 'skills', witnesses: Object.freeze(['skills/deep-loop-continue/SKILL.md', 'skills/deep-loop-resume/SKILL.md', 'skills/deep-loop-workflow/references/adapters.md', 'skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml']) }),
+            Object.freeze({ root: 'schemas', witnesses: Object.freeze(['schemas/loop-run.schema.json', 'schemas/review-import.schema.json']) }),
+            Object.freeze({ root: 'protocols', witnesses: Object.freeze(['protocols/deep-work.json']) }),
+            Object.freeze({ root: 'recipes', witnesses: Object.freeze(['recipes/automation/github-actions-loop.yml', 'recipes/hillclimb-ledger.json', 'recipes/triage-and-discovery.json']) }),
+            Object.freeze({ root: 'hooks', witnesses: Object.freeze(['hooks/hooks.json']) }),
+          ]);
+          const POSITIVE_17_RECORD_DIGEST = 'f0a6680ee6b1c6d62c449b92d12ee6ab29462daabab094ae9dba124bda16a18c';
+          const MAX = Object.freeze({ files: 4096, directories: 4096, pathBytes: 4096,
+            totalPathBytes: 16 * 1024 * 1024, fileBytes: 16 * 1024 * 1024,
+            totalContentBytes: 256 * 1024 * 1024, framedBytes: 512 * 1024 * 1024 });
+          const ZERO = Object.freeze({ probe: 0, driver: 0, spawn: 0, mutation: 0 });
+          const CHILD_STARTUP_TIMEOUT_MS = 10_000;
+          const PROBE_EXIT_TIMEOUT_MS = 30_000;
+          const DRIVER_EXIT_TIMEOUT_MS = 1_800_000;
+          const CHILD_STDOUT_MAX_BYTES = 1_048_576;
+          const CHILD_STDERR_MAX_BYTES = 65_536;
+          const CHILD_TERMINATION_GRACE_MS = 250;
+          const CHILD_SETTLE_GRACE_MS = 1_250;
+          // Production keeps child timeout overrides disabled; tests rewrite this exact
+          // null sentinel in the extracted workflow source only.
+          const TEST_CHILD_TIMEOUT_MS = null;
+          const TEST_PROBE_PROJECT_ROOT = null;
+          const TEST_PROBE_RUN_ID = null;
+          const CHILD_REASONS = Object.freeze([
+            'child-startup-timeout', 'probe-exit-timeout', 'driver-exit-timeout',
+            'child-stdout-overflow', 'child-stderr-overflow', 'child-termination-failed',
+          ]);
+          // This source is workflow-owned and built only from Node built-ins. The stage pathname
+          // is comparison-only; all module resolution and DEEP_LOOP_ROOT values are FD-bound.
+          const TRUSTED_CHILD_BOOTSTRAP_SOURCE_TEMPLATE = [
+            "import fs from 'node:fs';",
+            "import path from 'node:path';",
+            "import crypto from 'node:crypto';",
+            "import { pathToFileURL } from 'node:url';",
+            "const all = process.argv.slice(1);",
+            "const controls = new Map(); let publicArgv = []; let separator = false;",
+            "for (let i = 0; i < all.length; i += 1) { const item = all[i]; if (item === '--') { publicArgv = all.slice(i + 1); separator = true; break; } if (!item.startsWith('--') || i + 1 >= all.length) throw new Error('bootstrap controls invalid'); controls.set(item, all[++i]); }",
+            "if (!separator || controls.get('--stage-fd') !== '3') throw new Error('bootstrap FD invalid');",
+            "if (process.platform !== 'linux' || process.arch !== 'x64' || Number(process.versions.node.split('.')[0]) < 20) throw new Error('unsupported provisioned Linux/x64 Node topology');",
+            "const fd = 3; const fdRoot = '/proc/self/fd/3'; const publicRoot = controls.get('--public-root'); const entrypoint = controls.get('--entrypoint'); const expectedDigest = controls.get('--expected-digest'); let expectedIdentity; try { expectedIdentity = JSON.parse(controls.get('--stage-identity') || 'null'); } catch { throw new Error('bootstrap stage identity malformed'); } const sourceRoots = ['scripts', 'skills', 'schemas', 'protocols', 'recipes', 'hooks']; const metadata = ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'package.json'];",
+            "if (!publicRoot || !expectedDigest || !/^[0-9a-f]{64}$/.test(expectedDigest) || !entrypoint || !/^[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*$/.test(entrypoint) || entrypoint.split('/').some(item => item === '.' || item === '..')) throw new Error('bootstrap binding invalid');",
+            "const fdStat = fs.fstatSync(fd); if (!Array.isArray(expectedIdentity) || expectedIdentity.length !== 3 || String(fdStat.dev) !== expectedIdentity[0] || String(fdStat.ino) !== expectedIdentity[1] || (fdStat.mode & 0o777) !== expectedIdentity[2] || !fdStat.isDirectory() || (fdStat.mode & 0o777) !== 0o555) throw new Error('bootstrap FD identity invalid');",
+            "const publicLexical = fs.lstatSync(publicRoot); const publicReal = fs.realpathSync.native(publicRoot); const publicStat = fs.lstatSync(publicReal); if (publicLexical.isSymbolicLink() || !publicLexical.isDirectory() || publicReal !== publicRoot || !publicStat.isDirectory() || publicStat.isSymbolicLink() || publicStat.dev !== fdStat.dev || publicStat.ino !== fdStat.ino) throw new Error('bootstrap public root mismatch');",
+            "const foldRecords = '__FULL_FOLD_TABLE__'; const foldMap = new Map(foldRecords.split(',').map(record => { const [key, value] = record.split(':'); return [Number.parseInt(key, 16), value.split('.').map(part => Number.parseInt(part, 16))]; })); if (foldMap.size !== 1530) throw new Error('bootstrap Unicode 15.1 table mismatch'); const fixedFold = value => [...value].flatMap(ch => { const mapping = foldMap.get(ch.codePointAt(0)); return mapping ? mapping.map(codePoint => String.fromCodePoint(codePoint)) : [ch]; }).join(''); const seenPaths = new Set(); const seenFold = new Set();",
+            "const records = []; const seenIdentity = new Set(); let directoryCount = 0; let inventoryFiles = 0; let inventoryPathBytes = 0; let inventoryFramedBytes = 27; let inventoryContentBytes = 0; let pathBytes = 0; let framedBytes = 27; let contentBytes = 0; const walk = (base, rel = '') => { const handle = fs.opendirSync(path.join(base, rel)); const names = []; let entry; while ((entry = handle.readSync()) !== null) { names.push(entry.name); if (names.length > 4096) throw new Error('bootstrap inventory bound exceeded'); } handle.closeSync(); names.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))); directoryCount += 1; if (directoryCount > 4096) throw new Error('bootstrap directory bound exceeded'); for (const name of names) { const child = path.join(base, rel, name); const childRel = rel ? rel + '/' + name : name; if (Buffer.byteLength(childRel) > 4096 || childRel.normalize('NFC') !== childRel || childRel.includes('\\\\') || [...childRel].some(ch => { const code = ch.codePointAt(0); return code <= 0x1f || (code >= 0x7f && code <= 0x9f); })) throw new Error('bootstrap portable path invalid'); const folded = fixedFold(childRel.normalize('NFC')); if (seenPaths.has(childRel) || seenFold.has(folded)) throw new Error('bootstrap path collision'); seenPaths.add(childRel); seenFold.add(folded); const stat = fs.lstatSync(child); if (stat.isSymbolicLink()) throw new Error('bootstrap stage alias'); if (stat.isDirectory()) { if ((stat.mode & 0o777) !== 0o555) throw new Error('bootstrap directory mode invalid'); walk(base, childRel); } else if (stat.isFile()) { const pathLength = Buffer.byteLength(childRel); const frameLength = 16 + pathLength + stat.size; if ((stat.mode & 0o777) !== 0o444 || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024 || inventoryFiles + 1 > 4096 || inventoryPathBytes + pathLength > 16 * 1024 * 1024 || inventoryFramedBytes + frameLength > 512 * 1024 * 1024 || inventoryContentBytes + stat.size > 256 * 1024 * 1024) throw new Error('bootstrap aggregate bound exceeded'); if (seenIdentity.has(`${stat.dev}:${stat.ino}`)) throw new Error('bootstrap file identity alias'); seenIdentity.add(`${stat.dev}:${stat.ino}`); inventoryFiles += 1; inventoryPathBytes += pathLength; inventoryFramedBytes += frameLength; inventoryContentBytes += stat.size; records.push({ rel: childRel, path: child, size: stat.size, dev: stat.dev, ino: stat.ino, mode: stat.mode & 0o777, nlink: stat.nlink }); } else throw new Error('bootstrap special stage entry'); } };",
+            "for (const required of sourceRoots) { const stat = fs.lstatSync(path.join(fdRoot, required)); if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o555) throw new Error('bootstrap source root invalid'); } for (const required of metadata) { const stat = fs.lstatSync(path.join(fdRoot, required)); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o444) throw new Error('bootstrap metadata invalid'); }",
+            "walk(fdRoot); records.sort((a, b) => Buffer.compare(Buffer.from(a.rel), Buffer.from(b.rel))); if (records.length > 4096) throw new Error('bootstrap file bound exceeded'); const hash = crypto.createHash('sha256'); hash.update(Buffer.from('646565702d6c6f6f702d706c7567696e2d736f757263652d763100', 'hex'));",
+            "for (const record of records) { const before = fs.lstatSync(record.path, { bigint: true }); const rel = Buffer.from(record.rel); const frameBytes = 16 + rel.length + Number(before.size); if (!before.isFile() || before.size > 16n * 1024n * 1024n || before.dev !== BigInt(record.dev) || before.ino !== BigInt(record.ino) || (before.mode & 0o777n) !== BigInt(record.mode) || before.nlink !== BigInt(record.nlink) || pathBytes + rel.length > 16 * 1024 * 1024 || framedBytes + frameBytes > 512 * 1024 * 1024 || contentBytes + Number(before.size) > 256 * 1024 * 1024) throw new Error('bootstrap aggregate bound exceeded'); const rfd = fs.openSync(record.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); let bytes; try { const opened = fs.fstatSync(rfd, { bigint: true }); if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.nlink !== before.nlink || (opened.mode & 0o777n) !== (before.mode & 0o777n)) throw new Error('bootstrap file identity drift'); bytes = Buffer.alloc(Number(opened.size)); let offset = 0; while (offset < bytes.length) { const read = fs.readSync(rfd, bytes, offset, bytes.length - offset, offset); if (read === 0) throw new Error('bootstrap short read'); offset += read; } } finally { fs.closeSync(rfd); } const after = fs.lstatSync(record.path, { bigint: true }); if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.nlink !== before.nlink || (after.mode & 0o777n) !== (before.mode & 0o777n)) throw new Error('bootstrap file changed after read'); contentBytes += bytes.length; pathBytes += rel.length; framedBytes += frameBytes; const pLen = Buffer.alloc(8); pLen.writeBigUInt64BE(BigInt(rel.length)); const cLen = Buffer.alloc(8); cLen.writeBigUInt64BE(BigInt(bytes.length)); hash.update(pLen); hash.update(rel); hash.update(cLen); hash.update(bytes); }",
+            "if (hash.digest('hex') !== expectedDigest) throw new Error('bootstrap stage digest mismatch');",
+            "const publicEntry = path.join(publicReal, ...entrypoint.split('/')); const fdEntry = path.join(fdRoot, ...entrypoint.split('/')); const publicEntryStat = fs.lstatSync(publicEntry); const fdEntryStat = fs.lstatSync(fdEntry); if (!publicEntryStat.isFile() || publicEntryStat.isSymbolicLink() || !fdEntryStat.isFile() || fdEntryStat.isSymbolicLink() || publicEntryStat.dev !== fdEntryStat.dev || publicEntryStat.ino !== fdEntryStat.ino) throw new Error('bootstrap entrypoint identity mismatch');",
+            "let postSwapOld = null; if (process.env.DEEP_LOOP_TEST_POST_FINAL_SWAP === '1') { postSwapOld = publicRoot + '.post-final-old'; fs.renameSync(publicRoot, postSwapOld); fs.cpSync(postSwapOld, publicRoot, { recursive: true, errorOnExist: true, force: false }); if (process.env.DEEP_LOOP_TEST_POST_FINAL_V2 === '1') { const v2Path = path.join(publicRoot, 'scripts/lib/child-transitive.mjs'); fs.chmodSync(v2Path, 0o644); fs.writeFileSync(v2Path, \"import fs from 'node:fs'; export function record() { if (process.env.DEEP_LOOP_CHILD_V1_MARKER) fs.appendFileSync(process.env.DEEP_LOOP_CHILD_V1_MARKER, 'v2-imported\\\\n'); }\\n\"); fs.chmodSync(v2Path, 0o444); } }",
+            "process.argv = [process.execPath, fdEntry, ...publicArgv]; process.env.DEEP_LOOP_ROOT = fdRoot; await import(pathToFileURL(fdEntry).href); if (postSwapOld) { const retainedPost = `${publicRoot}.post-new-${process.pid}`; fs.renameSync(publicRoot, retainedPost); fs.renameSync(postSwapOld, publicRoot); }",
+          ];
+          // Unicode 15.1.0 CaseFolding.txt, statuses C and F; F supersedes S, T excluded.
+          // 1530 fixed mappings are embedded as codepoint:codepoint(.codepoint)* records.
+          const CASE_FOLD_15_1_C_F_GZIP_B64 = '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';
+          const CASE_FOLD_15_1_C_F = zlib.gunzipSync(Buffer.from(CASE_FOLD_15_1_C_F_GZIP_B64, 'base64')).toString('utf8');
+          const UNICODE_15_1_CASE_FOLD_C_F = Object.freeze(new Map(
+            CASE_FOLD_15_1_C_F.split(',').map(record => {
+              const [key, value] = record.split(':');
+              return [Number.parseInt(key, 16), value.split('.').map(part => Number.parseInt(part, 16))];
+            }),
+          ));
+          if (UNICODE_15_1_CASE_FOLD_C_F.size !== 1530) throw new Error('pinned Unicode 15.1 case-fold table mismatch');
+          const fixedFold = value => [...value].flatMap(ch => {
+            const mapping = UNICODE_15_1_CASE_FOLD_C_F.get(ch.codePointAt(0));
+            return mapping ? mapping.map(codePoint => String.fromCodePoint(codePoint)) : [ch];
+          }).join('');
+          const TRUSTED_CHILD_BOOTSTRAP_SOURCE = TRUSTED_CHILD_BOOTSTRAP_SOURCE_TEMPLATE.join('\n')
+            .replace('__FULL_FOLD_TABLE__', CASE_FOLD_15_1_C_F);
+          const compareBytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+          const executionCounts = { ...ZERO };
+          const fail = (reason, detail = '', counts = executionCounts) => {
+            const out = { ok: false, kind: 'github-actions-configuration-invalid',
+              phase: 'source-preflight', reason, detail: String(detail).slice(0, 180), ...counts };
+            process.stdout.write(`${JSON.stringify(out)}\n`);
+            process.exitCode = 1;
+          };
+          const env = name => {
+            const value = process.env[name];
+            if (!value || /^\s*$/.test(value) || /<[^>]+>|\$\{[^}]+\}|\$GITHUB_WORKSPACE/.test(value))
+              throw new Error(`${name}: missing, empty, or placeholder`);
+            return value;
+          };
+          const canonical = (value, label) => {
+            if (!path.isAbsolute(value)) throw new Error(`${label}: non-absolute`);
+            const resolved = path.resolve(value);
+            const real = fs.realpathSync.native(resolved);
+            if (real !== resolved) throw new Error(`${label}: non-canonical or alias`);
+            const stat = fs.lstatSync(resolved);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label}: not regular directory`);
+            return real;
+          };
+          const rootToken = (value, label) => {
+            const real = fs.realpathSync.native(value);
+            if (real !== value) throw new Error(`${label}: root alias`);
+            const stat = fs.lstatSync(value);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label}: root is not a directory`);
+            return JSON.stringify([real, stat.dev, stat.ino]);
+          };
+          const within = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`);
+          const disjoint = (a, b) => a !== b && !within(a, b) && !within(b, a);
+          const safeName = name => {
+            if (!name || name === '.' || name === '..' || name.includes('\\') || name.includes('\0')
+              || name.normalize('NFC') !== name || /[\u0000-\u001f\u007f-\u009f]/u.test(name))
+              throw new Error('invalid or non-NFC path component');
+          };
+          const files = [];
+          const seenExact = new Set();
+          const seenFold = new Set();
+          const seenDirs = new Set();
+          const directoryIdentities = [];
+          let fileLimit = MAX.files;
+          const counts = { files: 0, directories: 0, pathBytes: 0, contentBytes: 0, framedBytes: SOURCE_HEADER.length };
+          const registerDirectory = (root, rel, stat) => {
+            const identity = JSON.stringify([stat.dev, stat.ino, stat.mode, stat.nlink]);
+            if (seenDirs.has(identity)) throw new Error('duplicate source directory identity');
+            seenDirs.add(identity);
+            directoryIdentities.push(JSON.stringify([rel, stat.dev, stat.ino, stat.mode, stat.nlink]));
+          };
+          const record = (root, rel) => {
+            const portable = rel.split(path.sep).join('/');
+            const pathBytes = Buffer.byteLength(portable);
+            if (pathBytes > MAX.pathBytes) throw new Error('path bound exceeded');
+            const folded = fixedFold(portable.normalize('NFC'));
+            if (seenExact.has(portable) || seenFold.has(folded)) throw new Error('path collision');
+            seenExact.add(portable); seenFold.add(folded);
+            let parent = root;
+            for (const component of portable.split('/').slice(0, -1)) {
+              parent = path.join(parent, component);
+              const parentStat = fs.lstatSync(parent);
+              if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) throw new Error('source parent alias');
+            }
+            const absolute = path.join(root, rel);
+            const before = fs.lstatSync(absolute);
+            if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1) throw new Error('non-regular or hardlink-alias source file');
+            if (before.size > MAX.fileBytes) throw new Error('file bound exceeded');
+            const nextFramedBytes = counts.framedBytes + 16 + pathBytes + before.size;
+            if (counts.files + 1 > fileLimit || counts.pathBytes + pathBytes > MAX.totalPathBytes
+              || counts.contentBytes + before.size > MAX.totalContentBytes || nextFramedBytes > MAX.framedBytes)
+              throw new Error('aggregate source bound exceeded before read');
+            let fd;
+            let bytes;
+            try {
+              fd = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+              const opened = fs.fstatSync(fd);
+              if (!opened.isFile() || opened.isSymbolicLink() || opened.nlink > 1 || opened.dev !== before.dev
+                || opened.ino !== before.ino || opened.size !== before.size || opened.mode !== before.mode)
+                throw new Error('source changed before bounded read');
+              bytes = Buffer.alloc(opened.size);
+              let offset = 0;
+              while (offset < bytes.length) {
+                const read = fs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+                if (read === 0) throw new Error('source short read');
+                offset += read;
+              }
+            } finally {
+              if (fd !== undefined) fs.closeSync(fd);
+            }
+            const after = fs.lstatSync(absolute);
+            if (!after.isFile() || after.size !== before.size || after.ino !== before.ino || after.dev !== before.dev
+              || after.mode !== before.mode || after.nlink !== before.nlink || after.mtimeMs !== before.mtimeMs
+              || after.ctimeMs !== before.ctimeMs || !bytes.length && after.size)
+              throw new Error('source changed while read');
+            counts.files += 1; counts.pathBytes += pathBytes; counts.contentBytes += bytes.length;
+            counts.framedBytes += 16 + pathBytes + bytes.length;
+            if (counts.files > MAX.files || counts.pathBytes > MAX.totalPathBytes
+              || counts.contentBytes > MAX.totalContentBytes || counts.framedBytes > MAX.framedBytes)
+              throw new Error('aggregate source bound exceeded');
+            files.push({ portable, bytes, dev: before.dev, ino: before.ino, size: before.size,
+              mode: before.mode, nlink: before.nlink, mtimeMs: before.mtimeMs, ctimeMs: before.ctimeMs });
+          };
+          const walk = (root, rel) => {
+            const absolute = path.join(root, rel);
+            const stat = fs.lstatSync(absolute);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('source root is not canonical');
+            registerDirectory(root, rel, stat);
+            counts.directories += 1;
+            if (counts.directories > MAX.directories) throw new Error('directory bound exceeded');
+            const entries = [];
+            const handle = fs.opendirSync(absolute);
+            let entry;
+            while ((entry = handle.readSync()) !== null) {
+              entries.push(entry.name);
+              if (entries.length > MAX.files) throw new Error('directory enumeration bound exceeded');
+            }
+            handle.closeSync();
+            const after = fs.lstatSync(absolute);
+            if (!after.isDirectory() || after.isSymbolicLink() || after.dev !== stat.dev || after.ino !== stat.ino
+              || after.mode !== stat.mode || after.nlink !== stat.nlink) throw new Error('source directory changed while read');
+            entries.sort((a, b) => compareBytes(a, b));
+            for (const name of entries) {
+              safeName(name);
+              const next = path.join(rel, name);
+              const child = fs.lstatSync(path.join(root, next));
+              if (child.isSymbolicLink() || (!child.isDirectory() && !child.isFile())) throw new Error('source alias or special entry');
+              if (child.isDirectory()) walk(root, next); else record(root, next);
+            }
+          };
+          const inventory = (root, expectedRootToken = null) => {
+            const observedRootToken = rootToken(root, 'inventory root');
+            if (expectedRootToken !== null && observedRootToken !== expectedRootToken)
+              throw new Error('inventory root identity changed');
+            files.length = 0; seenExact.clear(); seenFold.clear(); seenDirs.clear(); directoryIdentities.length = 0;
+            counts.files = 0; counts.directories = 0; counts.pathBytes = 0; counts.contentBytes = 0; counts.framedBytes = SOURCE_HEADER.length;
+            for (const rel of METADATA) record(root, rel);
+            for (const rel of METADATA) {
+              const parentRel = path.posix.dirname(rel);
+              const parent = path.join(root, parentRel);
+              const stat = fs.lstatSync(parent);
+              if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('metadata parent alias');
+              registerDirectory(root, parentRel, stat);
+            }
+            for (const name of SOURCE_ROOTS) {
+              safeName(name);
+              const stat = fs.lstatSync(path.join(root, name));
+              if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`missing or non-canonical source root ${name}`);
+              walk(root, name);
+            }
+            files.sort((a, b) => compareBytes(a.portable, b.portable));
+            const hash = crypto.createHash('sha256');
+            hash.update(SOURCE_HEADER);
+            let framedBytes = SOURCE_HEADER.length;
+            for (const item of files) {
+              const p = Buffer.from(item.portable);
+              const pLen = Buffer.alloc(8); pLen.writeBigUInt64BE(BigInt(p.length));
+              const cLen = Buffer.alloc(8); cLen.writeBigUInt64BE(BigInt(item.bytes.length));
+              hash.update(pLen); hash.update(p); hash.update(cLen); hash.update(item.bytes);
+              framedBytes += 16 + p.length + item.bytes.length;
+            }
+            if (framedBytes > MAX.framedBytes || SOURCE_HEADER.toString('hex') !== SOURCE_HEADER_HEX
+              || SOURCE_HEADER[SOURCE_HEADER.length - 1] !== 0 || WRONG_HEADER_HEX === SOURCE_HEADER_HEX)
+              throw new Error('wrong header or framing');
+            return { digest: hash.digest('hex'), files: files.map(x => x.portable),
+              identities: files.map(x => JSON.stringify([x.portable, x.dev, x.ino, x.size, x.mode, x.nlink, x.mtimeMs, x.ctimeMs])),
+              rootIdentity: observedRootToken,
+              directories: [...directoryIdentities], entries: files.map(x => ({ portable: x.portable, bytes: x.bytes })) };
+          };
+          const copyTree = (candidate, stage) => {
+            const ensureDir = rel => {
+              let current = stage;
+              for (const component of rel.split('/').filter(Boolean)) {
+                current = path.join(current, component);
+                try {
+                  const stat = fs.lstatSync(current);
+                  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('stage directory alias');
+                } catch (error) {
+                  if (error.code !== 'ENOENT') throw error;
+                  fs.mkdirSync(current, { mode: 0o755 });
+                  const made = fs.lstatSync(current);
+                  if (!made.isDirectory() || made.isSymbolicLink()) throw new Error('stage directory creation drift');
+                }
+              }
+            };
+            for (const rel of SOURCE_ROOTS) ensureDir(rel);
+            for (const rel of METADATA) ensureDir(path.posix.dirname(rel));
+            for (const item of files) {
+              const target = path.join(stage, item.portable);
+              ensureDir(path.posix.dirname(item.portable));
+              fs.writeFileSync(target, item.bytes, { flag: 'wx', mode: 0o444 });
+              fs.chmodSync(target, 0o444);
+            }
+            const stack = [stage];
+            while (stack.length) {
+              const dir = stack.pop(); fs.chmodSync(dir, 0o555);
+              const handle = fs.opendirSync(dir); let entry;
+              while ((entry = handle.readSync()) !== null) {
+                const child = path.join(dir, entry.name);
+                if (entry.isDirectory()) stack.push(child);
+                else {
+                  fs.chmodSync(child, 0o444);
+                  const file = fs.lstatSync(child);
+                  if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o777) !== 0o444) throw new Error('stage file seal mismatch');
+                }
+              }
+              handle.closeSync();
+              const sealed = fs.lstatSync(dir);
+              if (!sealed.isDirectory() || sealed.isSymbolicLink() || (sealed.mode & 0o777) !== 0o555) throw new Error('stage directory seal mismatch');
+            }
+          };
+          const verifyManifest = entries => {
+            const name = env('DEEP_LOOP_EXPECTED_PLUGIN_NAME');
+            const version = env('DEEP_LOOP_EXPECTED_PLUGIN_VERSION');
+            const expected = env('DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256');
+            if (!/^[a-z0-9._-]+$/.test(name) || !/^\d+\.\d+\.\d+$/.test(version) || !/^[0-9a-f]{64}$/.test(expected))
+              throw new Error('wrong manifest/version/digest pin');
+            const captured = new Map(entries.map(entry => [entry.portable, entry.bytes]));
+            const readJson = rel => {
+              const bytes = captured.get(rel);
+              if (!bytes) throw new Error(`manifest entry missing: ${rel}`);
+              return JSON.parse(bytes.toString('utf8'));
+            };
+            const a = readJson('.claude-plugin/plugin.json');
+            const b = readJson('.codex-plugin/plugin.json');
+            const pkg = readJson('package.json');
+            if (a.name !== name || b.name !== name || pkg.name !== name || a.version !== version || b.version !== version || pkg.version !== version)
+              throw new Error('manifest/version identity mismatch');
+            for (const endpoint of PUBLIC_ENTRYPOINT_TABLE) {
+              if (!captured.has(endpoint.rel)) throw new Error(`public entrypoint mismatch: ${endpoint.owner}`);
+            }
+            for (const edge of TRANSITIVE_RUNTIME_TABLE) {
+              for (const rel of edge.witnesses) {
+                if (!captured.has(rel)) throw new Error(`runtime reachability mismatch: ${rel}`);
+              }
+            }
+            return { expected, semantic: JSON.stringify({
+              name: [a.name, b.name, pkg.name], version: [a.version, b.version, pkg.version],
+              public: PUBLIC_ENTRYPOINT_TABLE.map(endpoint => endpoint.rel),
+              transitive: TRANSITIVE_RUNTIME_TABLE.map(edge => [edge.root, ...edge.witnesses]),
+            }) };
+          };
+          const stableFileBytes = (absolute, label) => {
+            const parent = path.dirname(absolute);
+            const parentBefore = rootToken(parent, `${label} parent`);
+            const before = fs.lstatSync(absolute);
+            if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1) throw new Error(`${label} is not a stable regular file`);
+            if (before.size > MAX.fileBytes) throw new Error(`${label} exceeds bounded read`);
+            let fd;
+            let bytes;
+            try {
+              fd = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+              const opened = fs.fstatSync(fd);
+              if (!opened.isFile() || opened.isSymbolicLink() || opened.nlink > 1 || opened.dev !== before.dev
+                || opened.ino !== before.ino || opened.size !== before.size || opened.mode !== before.mode)
+                throw new Error(`${label} changed before bounded read`);
+              bytes = Buffer.alloc(opened.size);
+              let offset = 0;
+              while (offset < bytes.length) {
+                const read = fs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+                if (read === 0) throw new Error(`${label} short read`);
+                offset += read;
+              }
+            } finally {
+              if (fd !== undefined) fs.closeSync(fd);
+            }
+            const after = fs.lstatSync(absolute);
+            if (!after.isFile() || after.isSymbolicLink() || after.nlink > 1 || after.dev !== before.dev
+              || after.ino !== before.ino || after.size !== before.size || after.mode !== before.mode
+              || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
+              throw new Error(`${label} changed while read`);
+            if (rootToken(parent, `${label} parent`) !== parentBefore) throw new Error(`${label} parent changed while read`);
+            return bytes;
+          };
+          const containedDirectory = (base, components, label) => {
+            let current = base;
+            for (const component of components) {
+              safeName(component);
+              current = path.join(current, component);
+              const stat = fs.lstatSync(current);
+              const real = fs.realpathSync.native(current);
+              if (real !== current || !stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label}: containment alias`);
+            }
+            return current;
+          };
+          const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+            && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+          // Match production fs-safe normalization exactly. Caller-side equality below rejects
+          // aliases, while inventory-specific NFC/control rules remain separate.
+          const normalizePortableRelativePath = value => {
+            if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) return null;
+            const normalized = value.replaceAll('\\', '/');
+            if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) return null;
+            const parts = normalized.split('/');
+            if (parts.some(part => part.length === 0 || part === '.' || part === '..')) return null;
+            return normalized;
+          };
+          const reservedArtifactTarget = value => {
+            const parts = value.split('/');
+            const first = parts[0].toLowerCase();
+            return first === '.lock' || first === 'transactions'
+              || (parts.length === 1 && ['loop.json', '.loop.hash', 'event-log.jsonl'].includes(first));
+          };
+          const validArtifactRel = value => {
+            const normalized = normalizePortableRelativePath(value);
+            return normalized !== null && normalized === value && !reservedArtifactTarget(normalized);
+          };
+          const canonicalIso = value => typeof value === 'string'
+            && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+          const journalBytes = (file, label, budget = null) => {
+            const stat = fs.lstatSync(file);
+            if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX.fileBytes
+              || (budget && budget.used + stat.size > budget.limit))
+              throw new Error(`${label} exceeds bounded journal read budget`);
+            const bytes = stableFileBytes(file, label);
+            if (budget) budget.used += bytes.length;
+            return bytes;
+          };
+          const journalJson = (file, label, budget = null) => {
+            try { return JSON.parse(journalBytes(file, label, budget).toString('utf8')); }
+            catch { throw new Error(`${label} malformed JSON`); }
+          };
+          const identityBindsDirectory = (identity, directory) => {
+            if (!exactKeys(identity, ['dev', 'ino', 'birthtime_ns'])
+              || !/^(?:0|[1-9][0-9]*)$/.test(identity.dev || '')
+              || !/^(?:0|[1-9][0-9]*)$/.test(identity.ino || '')
+              || !/^(?:0|[1-9][0-9]*)$/.test(identity.birthtime_ns || '')) return false;
+            const stat = fs.lstatSync(directory, { bigint: true });
+            return stat.isDirectory() && !stat.isSymbolicLink()
+              && String(stat.dev) === identity.dev && String(stat.ino) === identity.ino
+              && String(stat.birthtimeNs) === identity.birthtime_ns;
+          };
+          const validFileIdentity = identity => exactKeys(identity, ['dev', 'ino', 'birthtime_ns'])
+            && Object.values(identity).every(value => /^(?:0|[1-9][0-9]*)$/.test(value || ''));
+          const fileIdentity = stat => ({ dev: String(stat.dev), ino: String(stat.ino), birthtime_ns: String(stat.birthtimeNs) });
+          const identityBindsFile = (identity, file) => {
+            if (!validFileIdentity(identity)) return false;
+            const stat = fs.lstatSync(file, { bigint: true });
+            return stat.isFile() && !stat.isSymbolicLink() && fileIdentity(stat).dev === identity.dev
+              && fileIdentity(stat).ino === identity.ino && fileIdentity(stat).birthtime_ns === identity.birthtime_ns;
+          };
+          const journalFile = (file, label, budget) => {
+            const before = fs.lstatSync(file, { bigint: true });
+            if (before.isSymbolicLink() || !before.isFile()) throw new Error(`${label} is not regular`);
+            const bytes = journalBytes(file, label, budget);
+            const after = fs.lstatSync(file, { bigint: true });
+            if (JSON.stringify(fileIdentity(before)) !== JSON.stringify(fileIdentity(after)))
+              throw new Error(`${label} identity changed`);
+            return { bytes, identity: fileIdentity(before) };
+          };
+          const validLockOwner = lock => exactKeys(lock, [
+            'protocol_version', 'token', 'pid', 'hostname', 'acquired_at_ms', 'heartbeat_at_ms', 'lock_identity',
+          ]) && lock.protocol_version === 1
+            && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(lock.token || '')
+            && Number.isSafeInteger(lock.pid) && lock.pid > 0
+            && typeof lock.hostname === 'string' && lock.hostname.length > 0
+            && Number.isSafeInteger(lock.acquired_at_ms) && lock.acquired_at_ms >= 0
+            && Number.isSafeInteger(lock.heartbeat_at_ms) && lock.heartbeat_at_ms >= lock.acquired_at_ms
+            && exactKeys(lock.lock_identity, ['dev', 'ino', 'birthtime_ns'])
+            && Object.values(lock.lock_identity).every(value => /^(?:0|[1-9][0-9]*)$/.test(value || ''));
+          const validateJournalOperation = (operationDir, operationId, runDirectory, canonicalProject, budget) => {
+            const runId = path.basename(runDirectory);
+            const owner = journalJson(path.join(operationDir, 'owner.json'), 'transaction owner', budget);
+            const envelope = owner?.envelope;
+            const payload = owner?.payload;
+            if (owner?.schema_version !== '1.0' || !envelope || envelope.producer !== 'deep-loop'
+              || envelope.artifact_kind !== 'transaction-owner' || envelope.schema?.name !== 'transaction-owner'
+              || envelope.schema?.version !== '1.0' || envelope.run_id !== runId || !canonicalIso(envelope.generated_at)
+              || !exactKeys(payload, ['operation_id', 'lock_owner', 'operation_dir_identity', 'created_at'])
+              || payload.operation_id !== operationId || !canonicalIso(payload.created_at)
+              || payload.created_at !== envelope.generated_at || !validLockOwner(payload.lock_owner)
+              || !identityBindsDirectory(payload.operation_dir_identity, operationDir))
+              throw new Error('transaction owner binding invalid');
+            const prepared = journalJson(path.join(operationDir, 'prepared.json'), 'prepared envelope', budget);
+            const preparedEnvelope = prepared?.envelope;
+            const preparedPayload = prepared?.payload;
+            if (prepared?.schema_version !== '1.0' || !preparedEnvelope || preparedEnvelope.producer !== 'deep-loop'
+              || preparedEnvelope.artifact_kind !== 'anchored-publication'
+              || preparedEnvelope.schema?.name !== 'anchored-publication' || preparedEnvelope.schema?.version !== '1.0'
+              || preparedEnvelope.run_id !== runId || !canonicalIso(preparedEnvelope.generated_at)
+              || preparedEnvelope.generated_at !== payload.created_at
+              || !exactKeys(preparedPayload, ['manifest', 'stages']) || !Array.isArray(preparedPayload.stages)
+              || preparedPayload.stages.length < 1 || preparedPayload.stages.length > MAX.files)
+              throw new Error('prepared envelope binding invalid');
+            const manifest = preparedPayload.manifest;
+            if (!exactKeys(manifest, [
+              'kind', 'operationId', 'expect', 'runtime', 'projectRoot', 'preLoopHash', 'preEventHead',
+              'eventLines', 'candidateLoopHash', 'topology', 'targets',
+            ]) || manifest.operationId !== operationId || typeof manifest.kind !== 'string' || !manifest.kind
+              || !exactKeys(manifest.expect, ['owner', 'generation']) || typeof manifest.expect.owner !== 'string'
+              || !Number.isSafeInteger(manifest.expect.generation) || manifest.expect.generation < 1
+              || !['claude', 'codex'].includes(manifest.runtime) || typeof manifest.projectRoot !== 'string'
+              || !/^[0-9a-f]{64}$/.test(manifest.preLoopHash || '')
+              || !Array.isArray(manifest.eventLines) || !Array.isArray(manifest.targets)
+              || typeof manifest.candidateLoopHash !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.candidateLoopHash))
+              throw new Error('prepared manifest binding invalid');
+            if (manifest.projectRoot !== canonicalProject)
+              throw new Error('prepared project root binding invalid');
+            const stageDirectory = path.join(operationDir, 'stages');
+            const stageDirectoryToken = rootToken(stageDirectory, 'transaction stages');
+            const stageNames = [];
+            const stageHandle = fs.opendirSync(stageDirectory);
+            let stageEntry;
+            while ((stageEntry = stageHandle.readSync()) !== null) {
+              stageNames.push(stageEntry.name);
+              if (stageNames.length > MAX.files) throw new Error('transaction stage bound exceeded');
+            }
+            stageHandle.closeSync();
+            const records = preparedPayload.stages;
+            const stageBytesByIndex = new Map();
+            const expectedStageNames = records.map((_, index) => `${String(index).padStart(6, '0')}.bin`);
+            if (JSON.stringify(stageNames.sort(compareBytes)) !== JSON.stringify(expectedStageNames))
+              throw new Error('transaction stage set invalid');
+            for (let index = 0; index < records.length; index += 1) {
+              const record = records[index];
+              if (!exactKeys(record, ['index', 'role', 'target_rel', 'sha256', 'size']) || record.index !== index
+                || !['artifact', 'event-line', 'candidate-loop', 'candidate-loop-hash'].includes(record.role)
+                || !/^[0-9a-f]{64}$/.test(record.sha256 || '') || !/^(?:0|[1-9][0-9]*)$/.test(String(record.size))
+                || (record.role === 'artifact' && !validArtifactRel(record.target_rel))
+                || (record.role !== 'artifact' && record.target_rel !== null))
+                throw new Error('transaction stage record invalid');
+              const bytes = journalBytes(path.join(stageDirectory, expectedStageNames[index]), `transaction stage ${index}`, budget);
+              stageBytesByIndex.set(index, bytes);
+              if (bytes.length > MAX.fileBytes || String(bytes.length) !== String(record.size)
+                || crypto.createHash('sha256').update(bytes).digest('hex') !== record.sha256)
+                throw new Error('transaction stage digest invalid');
+            }
+            const candidateStage = records.filter(record => record.role === 'candidate-loop');
+            const candidateHashStage = records.filter(record => record.role === 'candidate-loop-hash');
+            if (candidateStage.length !== 1 || candidateHashStage.length !== 1)
+              throw new Error('transaction candidate stages invalid');
+            const candidateBytes = stageBytesByIndex.get(candidateStage[0].index);
+            const candidateHashBytes = stageBytesByIndex.get(candidateHashStage[0].index);
+            if (crypto.createHash('sha256').update(candidateBytes).digest('hex') !== manifest.candidateLoopHash
+              || candidateHashBytes.toString('utf8').trim() !== manifest.candidateLoopHash)
+              throw new Error('transaction candidate binding invalid');
+            let candidate;
+            try { candidate = JSON.parse(candidateBytes.toString('utf8')); }
+            catch { throw new Error('candidate loop JSON invalid'); }
+            if (!candidate || Array.isArray(candidate) || candidate.run_id !== runId
+              || candidate.project?.root !== canonicalProject || candidate.autonomy?.session_runtime !== manifest.runtime
+              || !exactKeys(manifest.preEventHead, ['seq', 'checksum']) || !Number.isSafeInteger(manifest.preEventHead.seq)
+              || manifest.preEventHead.seq < 0 || (manifest.preEventHead.checksum !== 'GENESIS'
+                && !/^[0-9a-f]{64}$/.test(manifest.preEventHead.checksum || '')))
+              throw new Error('candidate authority binding invalid');
+            const candidateLease = candidate.session_chain?.lease;
+            if (!candidateLease || candidateLease.owner_run_id !== manifest.expect.owner
+              || candidateLease.generation !== manifest.expect.generation)
+              throw new Error('candidate lease authority invalid');
+            const projectRootDigest = crypto.createHash('sha256').update(canonicalProject).digest('hex');
+            const sameBoundary = (left, right) => exactKeys(left, ['seq', 'checksum']) && exactKeys(right, ['seq', 'checksum'])
+              && Number.isSafeInteger(left.seq) && left.seq > 0 && left.seq === right.seq
+              && /^[0-9a-f]{64}$/.test(left.checksum || '') && left.checksum === right.checksum;
+            if (manifest.kind === 'workstream-boundary-handoff') {
+              const topology = manifest.topology;
+              const topologyKeys = [
+                'boundary_event', 'child_run_id', 'handoff_rel', 'parent_run_id',
+                'phase', 'project_binding_generation', 'project_root_digest',
+              ];
+              if (!exactKeys(topology, topologyKeys) || topology.parent_run_id !== manifest.expect.owner
+                || typeof topology.child_run_id !== 'string' || topology.child_run_id.length === 0
+                || topology.phase !== 'emitted' || topology.project_binding_generation !== candidate.project.binding_generation
+                || topology.project_root_digest !== projectRootDigest || !sameBoundary(topology.boundary_event, topology.boundary_event))
+                throw new Error('boundary publication topology invalid');
+              const child = (candidate.session_chain?.sessions || []).find(session => session.run_id === topology.child_run_id);
+              const parent = (candidate.session_chain?.sessions || []).find(session => session.run_id === topology.parent_run_id);
+              const workstream = parent && (candidate.workstreams || []).find(item => item.id === parent.scope?.workstream_id);
+              if (candidateLease.takeover_kind !== 'boundary-handoff' || candidateLease.handoff_phase !== 'emitted'
+                || candidateLease.handoff_idempotency_key !== manifest.operationId
+                || candidateLease.handoff_child_run_id !== topology.child_run_id
+                || !sameBoundary(candidateLease.handoff_boundary_event, topology.boundary_event)
+                || candidateLease.handoff_project_binding_generation !== topology.project_binding_generation
+                || candidateLease.handoff_project_root_digest !== topology.project_root_digest
+                || !child || child.parent_run_id !== topology.parent_run_id || child.handoff_rel !== topology.handoff_rel
+                || child.project_binding_generation !== topology.project_binding_generation
+                || child.project_root_digest !== topology.project_root_digest
+                || !sameBoundary(child.parent_boundary_event, topology.boundary_event)
+                || child.scope?.kind !== 'workstream' || child.scope.workstream_id !== null || child.scope.terminal_event !== null
+                || !parent || parent.superseded_by !== topology.child_run_id || parent.scope?.kind !== 'workstream'
+                || parent.scope.closed_at == null || parent.scope.superseded_at == null
+                || !sameBoundary(parent.scope.terminal_event, topology.boundary_event)
+                || !workstream || !(workstream.terminal_events || []).some(event => sameBoundary(event, topology.boundary_event)))
+                throw new Error('boundary publication candidate topology invalid');
+              const expectedTargets = [
+                topology.handoff_rel,
+                `handoffs/${topology.child_run_id}-compaction-state.json`,
+                'terminal/launch-command.txt',
+                'terminal/launch-command.meta.json',
+              ];
+              if (manifest.targets.length !== expectedTargets.length
+                || manifest.targets.some((target, index) => target.rel !== expectedTargets[index]))
+                throw new Error('boundary publication targets invalid');
+              const launchTarget = manifest.targets[2];
+              const metadataTarget = manifest.targets[3];
+              const launchBytes = stageBytesByIndex.get(launchTarget.stage_index);
+              const metadataBytes = stageBytesByIndex.get(metadataTarget.stage_index);
+              let metadata;
+              try { metadata = JSON.parse(metadataBytes.toString('utf8')); }
+              catch { throw new Error('boundary launch metadata malformed'); }
+              const metadataEnvelope = metadata?.envelope;
+              const metadataPayload = metadata?.payload;
+              const metadataProvenance = metadataEnvelope?.provenance;
+              if (!exactKeys(metadata, ['schema_version', 'envelope', 'payload']) || metadata.schema_version !== '1.0'
+                || !exactKeys(metadataEnvelope, ['artifact_kind', 'generated_at', 'git', 'parent_run_id', 'producer', 'provenance', 'run_id', 'schema'])
+                || metadataEnvelope.producer !== 'deep-loop' || metadataEnvelope.artifact_kind !== 'launch-command-meta'
+                || !exactKeys(metadataEnvelope.schema, ['name', 'version']) || metadataEnvelope.schema.name !== 'launch-command-meta'
+                || metadataEnvelope.schema.version !== '1.0' || metadataEnvelope.run_id !== topology.child_run_id
+                || metadataEnvelope.parent_run_id !== topology.parent_run_id || !canonicalIso(metadataEnvelope.generated_at)
+                || metadataEnvelope.generated_at !== parent.scope.superseded_at || !exactKeys(metadataEnvelope.git, [])
+                || !exactKeys(metadataProvenance, ['source_artifacts', 'tool_versions'])
+                || JSON.stringify(metadataProvenance.source_artifacts) !== JSON.stringify([topology.handoff_rel])
+                || !exactKeys(metadataProvenance.tool_versions, [])
+                || !exactKeys(metadataPayload, ['boundary_event', 'child_run_id', 'handoff_phase', 'handoff_rel', 'launch_command_sha256', 'parent_run_id', 'project_binding_generation', 'project_root_digest'])
+                || metadataPayload.launch_command_sha256 !== crypto.createHash('sha256').update(launchBytes).digest('hex')
+                || metadataPayload.parent_run_id !== topology.parent_run_id || metadataPayload.child_run_id !== topology.child_run_id
+                || metadataPayload.handoff_phase !== 'emitted' || metadataPayload.handoff_rel !== topology.handoff_rel
+                || metadataPayload.project_root_digest !== topology.project_root_digest
+                || metadataPayload.project_binding_generation !== topology.project_binding_generation
+                || !sameBoundary(metadataPayload.boundary_event, topology.boundary_event))
+                throw new Error('boundary launch metadata invalid');
+            }
+            let expectedEventSeq = manifest.preEventHead.seq + 1;
+            let expectedEventChecksum = manifest.preEventHead.checksum;
+            const seenEventSeq = new Set();
+            let stagedCostTurns = 0;
+            let stagedCostTokens = 0;
+            for (const event of manifest.eventLines) {
+              if (!exactKeys(event, ['stage_index', 'seq', 'checksum', 'sha256', 'size'])
+                || !Number.isSafeInteger(event.stage_index) || event.stage_index < 0
+                || !Number.isSafeInteger(event.seq) || event.seq < 0 || !/^[0-9a-f]{64}$/.test(event.checksum || '')
+                || !/^[0-9a-f]{64}$/.test(event.sha256 || '') || !/^(?:0|[1-9][0-9]*)$/.test(String(event.size))
+                || records[event.stage_index]?.role !== 'event-line' || records[event.stage_index].sha256 !== event.sha256
+                || String(records[event.stage_index].size) !== String(event.size) || event.seq < 1)
+                throw new Error('transaction event binding invalid');
+              if (seenEventSeq.has(event.seq)) throw new Error('transaction event duplicate');
+              seenEventSeq.add(event.seq);
+              let stagedEvent;
+              const eventBytes = stageBytesByIndex.get(event.stage_index);
+              try {
+                if (!eventBytes.toString('utf8').endsWith('\n')) throw new Error('event newline');
+                stagedEvent = JSON.parse(eventBytes.toString('utf8').slice(0, -1));
+              } catch { throw new Error('transaction event stage malformed'); }
+              if (!stagedEvent || Array.isArray(stagedEvent)
+                || JSON.stringify(Object.keys(stagedEvent)) !== JSON.stringify(['seq', 'ts', 'type', 'data', 'checksum'])
+                || !canonicalIso(stagedEvent.ts) || typeof stagedEvent.type !== 'string' || stagedEvent.data === undefined
+                || stagedEvent.seq !== expectedEventSeq || stagedEvent.seq !== event.seq
+                || stagedEvent.checksum !== event.checksum
+                || crypto.createHash('sha256').update(`${stagedEvent.seq}|${stagedEvent.ts}|${stagedEvent.type}|${JSON.stringify(stagedEvent.data)}|${expectedEventChecksum}`).digest('hex') !== stagedEvent.checksum)
+                throw new Error('transaction event chain invalid');
+              if (stagedEvent.type === 'cost') {
+                if (!stagedEvent.data || !Number.isFinite(stagedEvent.data.turns) || stagedEvent.data.turns < 0
+                  || !Number.isFinite(stagedEvent.data.tokens) || stagedEvent.data.tokens < 0)
+                  throw new Error('transaction cost event invalid');
+                stagedCostTurns += stagedEvent.data.turns;
+                stagedCostTokens += stagedEvent.data.tokens;
+              }
+              expectedEventSeq += 1;
+              expectedEventChecksum = stagedEvent.checksum;
+            }
+            const candidateEventHead = candidate.event_log_head;
+            if (!exactKeys(candidateEventHead, ['seq', 'checksum']) || candidateEventHead.seq !== expectedEventSeq - 1
+              || candidateEventHead.checksum !== expectedEventChecksum)
+              throw new Error('candidate event head invalid');
+            const coveredStages = new Set([candidateStage[0].index, candidateHashStage[0].index]);
+            for (const event of manifest.eventLines) {
+              if (coveredStages.has(event.stage_index)) throw new Error('transaction stage overlap');
+              coveredStages.add(event.stage_index);
+            }
+            for (const target of manifest.targets) {
+              if (coveredStages.has(target.stage_index)) throw new Error('transaction stage overlap');
+              coveredStages.add(target.stage_index);
+            }
+            if (coveredStages.size !== records.length) throw new Error('transaction orphan stage');
+            const targetsByStage = new Map();
+            for (const target of manifest.targets) {
+              if (!exactKeys(target, ['role', 'rel', 'stage_index', 'candidate_sha256', 'candidate_size', 'predecessor'])
+                || target.role !== 'artifact' || !Number.isSafeInteger(target.stage_index) || target.stage_index < 0
+                || records[target.stage_index]?.role !== 'artifact' || records[target.stage_index].target_rel !== target.rel
+                || !validArtifactRel(target.rel)
+                || !/^[0-9a-f]{64}$/.test(target.candidate_sha256 || '')
+                || !/^(?:0|[1-9][0-9]*)$/.test(String(target.candidate_size))
+                || target.candidate_sha256 !== records[target.stage_index].sha256
+                || String(target.candidate_size) !== String(records[target.stage_index].size)
+                || !target.predecessor || !['absent', 'present'].includes(target.predecessor.kind)
+                || (target.predecessor.kind === 'present'
+                  && (!exactKeys(target.predecessor, ['kind', 'sha256', 'identity', 'size'])
+                    || !/^[0-9a-f]{64}$/.test(target.predecessor.sha256 || '')
+                    || !/^(?:0|[1-9][0-9]*)$/.test(String(target.predecessor.size))
+                    || !validFileIdentity(target.predecessor.identity)))
+                || (target.predecessor.kind === 'absent' && !exactKeys(target.predecessor, ['kind'])))
+                throw new Error('transaction target binding invalid');
+              if (targetsByStage.has(target.stage_index)) throw new Error('transaction target duplicate');
+              targetsByStage.set(target.stage_index, target);
+            }
+            if (rootToken(stageDirectory, 'transaction stages') !== stageDirectoryToken)
+              throw new Error('transaction stages changed while read');
+            const markersPath = path.join(operationDir, 'markers');
+            const markersDirectoryToken = rootToken(markersPath, 'transaction markers');
+            const markerNames = [];
+            const markerHandle = fs.opendirSync(markersPath);
+            let markerEntry;
+            while ((markerEntry = markerHandle.readSync()) !== null) {
+              markerNames.push(markerEntry.name);
+              if (markerNames.length > MAX.files) throw new Error('transaction marker bound exceeded');
+            }
+            markerHandle.closeSync();
+            for (const markerName of markerNames) {
+              if (!/^(?:replace-intent|target-done)-[0-9]{6}\.json$/.test(markerName))
+                throw new Error('transaction marker name invalid');
+              const marker = journalJson(path.join(markersPath, markerName), `transaction marker ${markerName}`, budget);
+              const target = targetsByStage.get(marker?.stage_index);
+              const predecessorSha = target?.predecessor?.kind === 'present' ? target.predecessor.sha256 : null;
+              const markerKind = markerName.startsWith('replace-intent-') ? 'replace-intent' : 'target-done';
+              if (!exactKeys(marker, ['kind', 'stage_index', 'rel', 'candidate_sha256', 'predecessor_sha256'])
+                || !['replace-intent', 'target-done'].includes(marker.kind)
+                || !Number.isSafeInteger(marker.stage_index) || marker.stage_index < 0
+                || marker.stage_index >= records.length || typeof marker.rel !== 'string'
+                || !/^[0-9a-f]{64}$/.test(marker.candidate_sha256 || '')
+                || (marker.predecessor_sha256 !== null && !/^[0-9a-f]{64}$/.test(marker.predecessor_sha256 || ''))
+                || !target || marker.rel !== target.rel || marker.candidate_sha256 !== target.candidate_sha256
+                || marker.predecessor_sha256 !== predecessorSha
+                || marker.kind !== markerKind
+                || (marker.kind === 'replace-intent' && (target.predecessor.kind !== 'present'
+                  || (target.predecessor.sha256 === target.candidate_sha256
+                    && String(target.predecessor.size) === String(target.candidate_size)))))
+                throw new Error('transaction marker binding invalid');
+            }
+            for (const target of manifest.targets) {
+              const targetDoneName = `target-done-${String(target.stage_index).padStart(6, '0')}.json`;
+              if (!markerNames.includes(targetDoneName)) throw new Error('transaction target-done marker missing');
+              const artifactRel = target.rel.split('/');
+              const artifact = journalFile(path.join(runDirectory, ...artifactRel), `published artifact ${target.rel}`, budget);
+              if (String(artifact.bytes.length) !== String(target.candidate_size)
+                || crypto.createHash('sha256').update(artifact.bytes).digest('hex') !== target.candidate_sha256)
+                throw new Error('published artifact binding invalid');
+              if (target.predecessor.kind === 'present') {
+                const unchanged = target.predecessor.sha256 === target.candidate_sha256
+                  && String(target.predecessor.size) === String(target.candidate_size);
+                const sameIdentity = JSON.stringify(artifact.identity) === JSON.stringify(target.predecessor.identity);
+                if ((unchanged && !sameIdentity) || (!unchanged && sameIdentity))
+                  throw new Error('published artifact predecessor identity invalid');
+              }
+            }
+            const actualLoopBytes = journalBytes(path.join(runDirectory, 'loop.json'), 'actual candidate loop', budget);
+            const actualHashBytes = journalBytes(path.join(runDirectory, '.loop.hash'), 'actual candidate loop hash', budget);
+            if (!actualLoopBytes.equals(candidateBytes) || !actualHashBytes.equals(candidateHashBytes))
+              throw new Error('candidate stage does not bind actual loop snapshot');
+            const actualLogBytes = journalBytes(path.join(runDirectory, 'event-log.jsonl'), 'actual event log', budget);
+            const actualLines = actualLogBytes.toString('utf8').split('\n');
+            if (actualLines.at(-1) !== '') throw new Error('actual event log framing invalid');
+            actualLines.pop();
+            if (actualLines.length < manifest.preEventHead.seq)
+              throw new Error('actual event log shorter than predecessor head');
+            let predecessorCostTurns = 0;
+            let predecessorCostTokens = 0;
+            for (let index = 0; index < manifest.preEventHead.seq; index += 1) {
+              let predecessorEvent;
+              try { predecessorEvent = JSON.parse(actualLines[index]); } catch { throw new Error('predecessor event malformed'); }
+              if (predecessorEvent.type === 'cost') {
+                if (!predecessorEvent.data || !Number.isFinite(predecessorEvent.data.turns) || predecessorEvent.data.turns < 0
+                  || !Number.isFinite(predecessorEvent.data.tokens) || predecessorEvent.data.tokens < 0)
+                  throw new Error('predecessor cost event invalid');
+                predecessorCostTurns += predecessorEvent.data.turns;
+                predecessorCostTokens += predecessorEvent.data.tokens;
+              }
+            }
+            if (candidate.budget?.spent !== predecessorCostTurns + stagedCostTurns
+              || candidate.budget?.tokens_spent !== predecessorCostTokens + stagedCostTokens)
+              throw new Error('candidate accounting invalid');
+            for (const event of manifest.eventLines) {
+              const actualLine = actualLines[event.seq - 1];
+              if (actualLine === undefined) throw new Error('event stage missing from actual log');
+              let actualEvent;
+              try { actualEvent = JSON.parse(actualLine); } catch { throw new Error('actual event log malformed'); }
+              if (actualEvent.seq !== event.seq || actualEvent.checksum !== event.checksum
+                || !stageBytesByIndex.get(event.stage_index).equals(Buffer.from(`${actualLine}\n`)))
+                throw new Error('event stage does not bind actual log');
+            }
+            if (rootToken(markersPath, 'transaction markers') !== markersDirectoryToken)
+              throw new Error('transaction markers changed while read');
+            const committed = journalJson(path.join(operationDir, 'committed.json'), 'committed marker', budget);
+            if (!exactKeys(committed, ['kind', 'operation_id', 'candidate_loop_hash'])
+              || committed.kind !== 'committed' || committed.operation_id !== operationId
+              || committed.candidate_loop_hash !== manifest.candidateLoopHash)
+              throw new Error('committed marker binding invalid');
+          };
+          const inspectTransactions = (runDirectory, canonicalProject, budget = { used: 0, limit: 256 * 1024 * 1024 }) => {
+            const transactions = path.join(runDirectory, 'transactions');
+            let transactionStat;
+            try { transactionStat = fs.lstatSync(transactions); }
+            catch (error) { if (error.code === 'ENOENT') return; throw error; }
+            if (!transactionStat.isDirectory() || transactionStat.isSymbolicLink())
+              throw new Error('transaction residue alias');
+            const allowed = new Set(['owner.json', 'stages', 'prepared.json', 'markers', 'committed.json']);
+            const transactionRootBefore = rootToken(transactions, 'transaction root');
+            const operationNames = [];
+            const rootHandle = fs.opendirSync(transactions);
+            let rootEntry;
+            while ((rootEntry = rootHandle.readSync()) !== null) {
+              operationNames.push(rootEntry.name);
+              if (operationNames.length > 64) throw new Error('transaction residue bound exceeded');
+            }
+            rootHandle.closeSync();
+            for (const operationName of operationNames) {
+              if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationName))
+                throw new Error('transaction operation id invalid');
+              const operationDir = path.join(transactions, operationName);
+              const operationTokenBefore = rootToken(operationDir, 'transaction operation');
+              const children = [];
+              const operationHandle = fs.opendirSync(operationDir);
+              let child;
+              while ((child = operationHandle.readSync()) !== null) {
+                children.push(child.name);
+                if (children.length > 64) throw new Error('transaction operation bound exceeded');
+              }
+              operationHandle.closeSync();
+              const childNames = new Set(children);
+              if (children.some(name => !allowed.has(name))) throw new Error('transaction residue unexpected entry');
+              for (const name of children) {
+                safeName(name);
+                const childPath = path.join(operationDir, name);
+                const childStat = fs.lstatSync(childPath);
+                if (childStat.isSymbolicLink() || (!childStat.isFile() && !childStat.isDirectory()))
+                  throw new Error('transaction residue special entry');
+                if (['stages', 'markers'].includes(name) !== childStat.isDirectory())
+                  throw new Error('transaction residue child shape');
+                if (childStat.isDirectory() && fs.realpathSync.native(childPath) !== childPath)
+                  throw new Error('transaction residue directory alias');
+              }
+              const hasPrepared = childNames.has('prepared.json');
+              const hasCommitted = childNames.has('committed.json');
+              if (!childNames.has('owner.json') || !childNames.has('stages'))
+                throw new Error('transaction residue missing ownership or stages');
+              if (hasPrepared && !hasCommitted)
+                throw new Error('prepared transaction residue');
+              if (hasCommitted && !hasPrepared)
+                throw new Error('committed transaction residue shape');
+              if (!hasPrepared && !hasCommitted)
+                throw new Error('unprepared transaction residue');
+              validateJournalOperation(operationDir, operationName, runDirectory, canonicalProject, budget);
+              if (rootToken(operationDir, 'transaction operation') !== operationTokenBefore)
+                throw new Error('transaction operation changed while read');
+            }
+            if (rootToken(transactions, 'transaction root') !== transactionRootBefore)
+              throw new Error('transaction root changed while read');
+          };
+          try {
+            if (process.platform !== 'linux' || process.arch !== 'x64' || Number(process.versions.node.split('.')[0]) < 20)
+              throw new Error('unsupported provisioned Linux/x64 Node topology');
+            const requestedFileLimit = Number(process.env.DEEP_LOOP_TEST_MAX_FILES || MAX.files);
+            if (Number.isSafeInteger(requestedFileLimit) && requestedFileLimit >= 1 && requestedFileLimit < MAX.files)
+              fileLimit = requestedFileLimit;
+            const candidate = canonical(env('DEEP_LOOP_CANDIDATE_ROOT'), 'candidate');
+            const stageParent = canonical(env('DEEP_LOOP_STAGE_PARENT'), 'stage parent');
+            const candidateRootToken = rootToken(candidate, 'candidate');
+            const stageParentRootToken = rootToken(stageParent, 'stage parent');
+            const project = canonical(env('DEEP_LOOP_PROJECT_ROOT'), 'project');
+            const canonicalProject = canonical(env('DEEP_LOOP_CANONICAL_PROJECT_ROOT'), 'canonical project');
+            const workspace = canonical(process.env.GITHUB_WORKSPACE || '', 'workspace');
+            const runId = env('DEEP_LOOP_RUN_ID');
+            if (!/^[A-Za-z0-9_-]{8,128}$/.test(runId) || runId.includes('/') || runId.includes('\\')) throw new Error('unsafe run id');
+            const state = canonical(path.join(project, '.deep-loop'), 'state');
+            const stateContained = containedDirectory(project, ['.deep-loop'], 'state');
+            if (stateContained !== state) throw new Error('state containment mismatch');
+            const runsDirectory = containedDirectory(state, ['runs'], 'runs');
+            const runDirectory = containedDirectory(runsDirectory, [runId], 'run directory');
+            const runDirectoryRootToken = rootToken(runDirectory, 'run directory');
+            const assertRunDirectoryStable = () => {
+              if (rootToken(runDirectory, 'run directory') !== runDirectoryRootToken)
+                throw new Error('run directory changed during target snapshot');
+            };
+            if (project !== canonicalProject || !disjoint(candidate, workspace) || !disjoint(candidate, project)
+              || !disjoint(candidate, state) || !disjoint(candidate, stageParent) || !disjoint(workspace, project)
+              || !disjoint(workspace, state) || !disjoint(stageParent, workspace) || !disjoint(stageParent, project)
+              || !disjoint(stageParent, state))
+              throw new Error('workspace/project/state overlap or non-disjoint stage parent');
+            const stageParentStat = fs.lstatSync(stageParent);
+            if ((stageParentStat.mode & 0o022) !== 0
+              || (typeof process.getuid === 'function' && stageParentStat.uid !== process.getuid()))
+              throw new Error('stage parent is not runner-owned and private');
+            for (let ancestor = stageParent; ; ancestor = path.dirname(ancestor)) {
+              const ancestorStat = fs.lstatSync(ancestor);
+              if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink()
+                || (ancestorStat.mode & 0o020) !== 0
+                || ((ancestorStat.mode & 0o002) !== 0 && (ancestorStat.mode & 0o1000) === 0))
+                throw new Error('stage parent ancestor is writable or aliased');
+              const parent = path.dirname(ancestor);
+              if (parent === ancestor) break;
+            }
+            const journalBudget = { used: 0, limit: 256 * 1024 * 1024 };
+            inspectTransactions(runDirectory, canonicalProject, journalBudget);
+            if (process.env.DEEP_LOOP_TEST_RUN_DIRECTORY_SWAP === '1') {
+              const oldRunDirectory = `${runDirectory}.old`;
+              fs.renameSync(runDirectory, oldRunDirectory);
+              fs.cpSync(oldRunDirectory, runDirectory, { recursive: true, errorOnExist: true, force: false });
+            }
+            assertRunDirectoryStable();
+            const loopPath = path.join(runDirectory, 'loop.json');
+            const hashPath = path.join(runDirectory, '.loop.hash');
+            const logPath = path.join(runDirectory, 'event-log.jsonl');
+            const loopBytes = journalBytes(loopPath, 'loop.json', journalBudget);
+            assertRunDirectoryStable();
+            const loop = JSON.parse(loopBytes.toString('utf8'));
+            if (loop?.run_id !== runId || loop?.project?.root !== canonicalProject)
+              throw new Error('target snapshot root/run binding mismatch');
+            const loopHash = journalBytes(hashPath, '.loop.hash', journalBudget).toString('utf8').trim();
+            assertRunDirectoryStable();
+            if (!/^[0-9a-f]{64}$/.test(loopHash)
+              || loopHash !== crypto.createHash('sha256').update(loopBytes).digest('hex'))
+              throw new Error('target snapshot hash mismatch');
+            if (fs.existsSync(logPath)) {
+              const logLines = journalBytes(logPath, 'event-log.jsonl', journalBudget).toString('utf8').trim().split('\n').filter(Boolean);
+              assertRunDirectoryStable();
+              if (!logLines.length) throw new Error('target event log integrity mismatch');
+              let previous = 'GENESIS';
+              for (let index = 0; index < logLines.length; index += 1) {
+                let event;
+                try { event = JSON.parse(logLines[index]); } catch { throw new Error('target event log parse mismatch'); }
+                if (event.seq !== index + 1 || typeof event.ts !== 'string'
+                  || typeof event.type !== 'string' || !event.data || !/^[0-9a-f]{64}$/.test(event.checksum || ''))
+                  throw new Error('target event log shape mismatch');
+                const checksum = crypto.createHash('sha256')
+                  .update(`${event.seq}|${event.ts}|${event.type}|${JSON.stringify(event.data)}|${previous}`).digest('hex');
+                if (checksum !== event.checksum) throw new Error('target event log chain mismatch');
+                previous = event.checksum;
+              }
+              if (loop.event_log_head?.seq !== logLines.length || loop.event_log_head?.checksum !== previous)
+                throw new Error('target event log head mismatch');
+            } else if (loop.event_log_head?.seq !== 0 || loop.event_log_head?.checksum !== 'GENESIS') {
+              throw new Error('target event log missing with nonempty head');
+            }
+            assertRunDirectoryStable();
+            if (process.env.DEEP_LOOP_TEST_CANDIDATE_SWAP === '1') {
+              const oldCandidate = `${candidate}.old`;
+              fs.renameSync(candidate, oldCandidate);
+              fs.cpSync(oldCandidate, candidate, { recursive: true, errorOnExist: true, force: false });
+            }
+            const candidateIdentity = inventory(candidate, candidateRootToken);
+            const candidateManifest = verifyManifest(candidateIdentity.entries);
+            const expected = candidateManifest.expected;
+            const testHeader = process.env.DEEP_LOOP_TEST_WRONG_HEADER === '1' ? WRONG_HEADER_HEX : SOURCE_HEADER_HEX;
+            if (testHeader !== SOURCE_HEADER_HEX) throw new Error('wrong header');
+            if (candidateIdentity.digest !== expected) throw new Error('candidate source digest mismatch');
+            const retainedParentBefore = rootToken(stageParent, 'stage parent retained scan');
+            const retained = fs.opendirSync(stageParent); let retainedCount = 0; let retainedObserved = 0; let retainedEntry;
+            while ((retainedEntry = retained.readSync()) !== null) {
+              retainedObserved += 1;
+              if (retainedObserved > 64) throw new Error('retained-stage enumeration bound exceeded');
+              if (!retainedEntry.name.startsWith('deep-loop-stage-')) continue;
+              const retainedPath = path.join(stageParent, retainedEntry.name);
+              const retainedStat = fs.lstatSync(retainedPath);
+              if (!retainedStat.isDirectory() || retainedStat.isSymbolicLink()
+                || fs.realpathSync.native(retainedPath) !== retainedPath
+                || (typeof process.getuid === 'function' && retainedStat.uid !== process.getuid())
+                || (retainedStat.mode & 0o777) !== 0o555) throw new Error('retained-stage identity invalid');
+              retainedCount += 1;
+            }
+            retained.closeSync();
+            if (process.env.DEEP_LOOP_TEST_RETAINED_PARENT_SWAP === '1') {
+              const oldParent = `${stageParent}.retained-old`;
+              fs.renameSync(stageParent, oldParent);
+              fs.mkdirSync(stageParent, { mode: 0o755 });
+            }
+            if (rootToken(stageParent, 'stage parent retained scan') !== retainedParentBefore)
+              throw new Error('stage parent changed during retained scan');
+            if (rootToken(stageParent, 'stage parent retained scan') !== stageParentRootToken)
+              throw new Error('stage parent changed before stage creation');
+            if (retainedCount >= 4) throw new Error('retained-stage quota exceeded');
+            if (process.env.DEEP_LOOP_TEST_STAGE_PARENT_POST_RETAINED_SWAP === '1') {
+              const oldParent = `${stageParent}.post-retained-old`;
+              fs.renameSync(stageParent, oldParent);
+              fs.mkdirSync(stageParent, { mode: 0o755 });
+            }
+            const stageParentBeforeMkdtemp = rootToken(stageParent, 'stage parent before mkdtemp');
+            const stage = fs.mkdtempSync(path.join(stageParent, 'deep-loop-stage-'));
+            if (rootToken(stageParent, 'stage parent after mkdtemp') !== stageParentBeforeMkdtemp
+              || rootToken(stageParent, 'stage parent after mkdtemp') !== stageParentRootToken)
+              throw new Error('stage parent changed during stage creation');
+            const stageRootToken = rootToken(stage, 'stage');
+            copyTree(candidate, stage);
+            if (process.env.DEEP_LOOP_TEST_STAGE_INITIAL_SWAP === '1') {
+              const oldStage = `${stage}.initial-old`;
+              fs.renameSync(stage, oldStage);
+              fs.cpSync(oldStage, stage, { recursive: true, errorOnExist: true, force: false });
+            }
+            const stageIdentity = inventory(stage, stageRootToken);
+            const stageManifest = verifyManifest(stageIdentity.entries);
+            if (stageIdentity.digest !== expected || stageManifest.semantic !== candidateManifest.semantic)
+              throw new Error('staged digest or manifest mismatch');
+            const stageToken = Object.freeze({ digest: stageIdentity.digest, rootIdentity: stageIdentity.rootIdentity,
+              files: stageIdentity.files.join('\n'), identities: stageIdentity.identities.join('\n'),
+              directories: stageIdentity.directories.join('\n') });
+            const verifyStage = () => {
+              const current = inventory(stage, stageToken.rootIdentity);
+              if (current.digest !== stageToken.digest || current.rootIdentity !== stageToken.rootIdentity
+                || current.files.join('\n') !== stageToken.files || current.identities.join('\n') !== stageToken.identities
+                || current.directories.join('\n') !== stageToken.directories)
+                throw new Error('stage token identity or inventory mismatch');
+            };
+            const copyToken = Object.freeze({ digest: candidateIdentity.digest, files: candidateIdentity.files.join('\n'),
+              identities: candidateIdentity.identities.join('\n'),
+              candidateRootIdentity: candidateIdentity.rootIdentity, directories: candidateIdentity.directories.join('\n'),
+              candidateRoot: candidate, capturedAt: Date.now() });
+            // Candidate V2 before the first token barrier is configuration-invalid.
+            const verifyCandidateStillMatches = () => {
+              const current = inventory(candidate, copyToken.candidateRootIdentity);
+              if (current.digest !== copyToken.digest || current.files.join('\n') !== copyToken.files
+                || current.identities.join('\n') !== copyToken.identities || current.rootIdentity !== copyToken.candidateRootIdentity
+                || current.directories.join('\n') !== copyToken.directories) throw new Error('candidate V2 before first barrier');
+            };
+            if (process.env.DEEP_LOOP_TEST_BARRIER === 'before-token')
+              fs.appendFileSync(path.join(candidate, 'scripts/deep-loop.mjs'), '\nV2\n');
+            verifyCandidateStillMatches();
+            // Candidate V2 after stage digest is configuration-invalid; the second candidate
+            // barrier is checked before probe/driver and driver=0. A target workspace without
+            // a plugin root is configuration-invalid before module resolution failure.
+            if (process.env.DEEP_LOOP_TEST_BARRIER === 'after-stage-digest')
+              fs.appendFileSync(path.join(candidate, 'scripts/deep-loop.mjs'), '\nV2\n');
+            if (process.env.DEEP_LOOP_TEST_METADATA_BARRIER === '1') {
+              const metadata = path.join(candidate, '.claude-plugin');
+              const oldMetadata = `${metadata}.old`;
+              fs.renameSync(metadata, oldMetadata);
+              fs.mkdirSync(metadata, { mode: 0o755 });
+              fs.renameSync(path.join(oldMetadata, 'plugin.json'), path.join(metadata, 'plugin.json'));
+            }
+            const replaceStageRootForTest = includeEmpty => {
+              const replacement = fs.mkdtempSync(path.join(stageParent, 'deep-loop-stage-replacement-'));
+              files.length = 0; files.push(...candidateIdentity.entries);
+              copyTree(candidate, replacement);
+              if (includeEmpty) {
+                const scriptDir = path.join(replacement, 'scripts');
+                fs.chmodSync(scriptDir, 0o755);
+                fs.mkdirSync(path.join(scriptDir, 'empty-extra'));
+                fs.chmodSync(path.join(scriptDir, 'empty-extra'), 0o555);
+                fs.chmodSync(scriptDir, 0o555);
+              }
+              const oldStage = `${stage}.old`;
+              fs.renameSync(stage, oldStage);
+              fs.renameSync(replacement, stage);
+            };
+            const addEmptyStageDirectoryForTest = () => {
+              const scriptDir = path.join(stage, 'scripts');
+              fs.chmodSync(scriptDir, 0o755);
+              fs.mkdirSync(path.join(scriptDir, 'empty-extra'));
+              fs.chmodSync(path.join(scriptDir, 'empty-extra'), 0o555);
+              fs.chmodSync(scriptDir, 0o555);
+            };
+            if (process.env.DEEP_LOOP_TEST_STAGE_ROOT_BARRIER === '1') replaceStageRootForTest(false);
+            if (process.env.DEEP_LOOP_TEST_STAGE_EMPTY_BARRIER === '1') addEmptyStageDirectoryForTest();
+            if (process.env.DEEP_LOOP_TEST_STAGE_BARRIER === '1') replaceStageRootForTest(true);
+            verifyStage();
+            const sealed = inventory(stage, stageToken.rootIdentity);
+            if (sealed.digest !== expected) throw new Error('stage changed after stage digest');
+            verifyCandidateStillMatches();
+            const runTrustedChild = (entrypoint, publicArgv, exitTimeoutMs, stageFd, stageStat) => new Promise(resolveChild => {
+              let settled = false;
+              let spawned = false;
+              let startupTimer;
+              let exitTimer;
+              let killTimer;
+              let settleTimer;
+              let failure = null;
+              let child = null;
+              let groupPollTimer;
+              let stdoutBytes = 0;
+              let stderrBytes = 0;
+              const stdout = [];
+              const stderr = [];
+              const groupGone = () => {
+                if (process.env.DEEP_LOOP_TEST_GROUP_NEVER_GONE === '1') return false;
+                if (!child?.pid) return true;
+                try { process.kill(-child.pid, 0); return false; }
+                catch (error) { return error?.code === 'ESRCH'; }
+              };
+              const finish = result => {
+                if (settled) return;
+                if (failure && !groupGone()) return;
+                settled = true;
+                clearTimeout(startupTimer); clearTimeout(exitTimer); clearTimeout(killTimer); clearTimeout(settleTimer); clearTimeout(groupPollTimer);
+                resolveChild({ ...result, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) });
+              };
+              const forceFinish = result => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(startupTimer); clearTimeout(exitTimer); clearTimeout(killTimer); clearTimeout(settleTimer); clearTimeout(groupPollTimer);
+                resolveChild({ ...result, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) });
+              };
+              const terminate = reason => {
+                if (failure || settled) return;
+                failure = reason;
+                if (!child?.pid) return finish({ ok: false, reason });
+                const signalGroup = signal => { if (!groupGone()) { try { process.kill(-child.pid, signal); } catch {} } };
+                signalGroup('SIGTERM');
+                killTimer = setTimeout(() => signalGroup('SIGKILL'), CHILD_TERMINATION_GRACE_MS);
+                settleTimer = setTimeout(() => {
+                  if (groupGone()) finish({ ok: false, reason: failure });
+                  else forceFinish({ ok: false, reason: 'child-termination-failed' });
+                }, CHILD_SETTLE_GRACE_MS);
+                groupPollTimer = setInterval(() => { if (groupGone()) finish({ ok: false, reason: failure }); }, 25);
+              };
+              const childExecutable = process.env.DEEP_LOOP_TEST_CHILD_STARTUP_FAILURE === '1'
+                ? '/definitely-missing-deep-loop-child' : process.execPath;
+              child = childProcess.spawn(childExecutable, [
+                '--preserve-symlinks', '--preserve-symlinks-main', '--input-type=module', '--eval',
+                TRUSTED_CHILD_BOOTSTRAP_SOURCE, '--', '--stage-fd', '3', '--public-root', stage,
+                '--entrypoint', entrypoint, '--expected-digest', expected,
+                '--stage-identity', JSON.stringify([String(stageStat.dev), String(stageStat.ino), stageStat.mode & 0o777]), '--',
+                ...publicArgv,
+              ], {
+                shell: false, detached: true, cwd: project,
+                env: { ...process.env, VERIFIED_DEEP_LOOP_ROOT: stage },
+                stdio: ['ignore', 'pipe', 'pipe', stageFd],
+              });
+              startupTimer = setTimeout(() => terminate('child-startup-timeout'), CHILD_STARTUP_TIMEOUT_MS);
+              child.on('spawn', () => {
+                spawned = true;
+                executionCounts.spawn += 1;
+                if (entrypoint === 'scripts/deep-loop.mjs') executionCounts.probe += 1;
+                else executionCounts.driver += 1;
+                clearTimeout(startupTimer);
+                const testExitTimeoutMs = Number(TEST_CHILD_TIMEOUT_MS);
+                const effectiveExitTimeoutMs = Number.isFinite(testExitTimeoutMs) && testExitTimeoutMs > 0
+                  ? Math.min(exitTimeoutMs, testExitTimeoutMs) : exitTimeoutMs;
+                exitTimer = setTimeout(() => terminate(entrypoint === 'scripts/deep-loop.mjs'
+                  ? 'probe-exit-timeout' : 'driver-exit-timeout'), effectiveExitTimeoutMs);
+              });
+              child.on('error', () => { if (!spawned) terminate('child-startup-timeout'); });
+              child.stdout.on('data', chunk => {
+                stdoutBytes += chunk.length;
+                if (stdoutBytes > CHILD_STDOUT_MAX_BYTES) terminate('child-stdout-overflow');
+                else stdout.push(Buffer.from(chunk));
+              });
+              child.stderr.on('data', chunk => {
+                stderrBytes += chunk.length;
+                if (stderrBytes > CHILD_STDERR_MAX_BYTES) terminate('child-stderr-overflow');
+                else stderr.push(Buffer.from(chunk));
+              });
+              child.on('close', (code, signal) => {
+                if (failure) return finish({ ok: false, reason: failure, code, signal });
+                if (code !== 0) {
+                  const reason = entrypoint === 'scripts/deep-loop.mjs' ? 'probe-exit-failed' : 'driver-exit-failed';
+                  if (groupGone()) finish({ ok: false, reason, code, signal });
+                  else terminate(reason);
+                  return;
+                }
+                if (groupGone()) finish({ ok: true, code, signal });
+                else terminate('child-termination-failed');
+              });
+            });
+            if (process.env.DEEP_LOOP_RUN_CHILDREN === '1') {
+              if (process.env.DEEP_LOOP_TEST_STAGE_HARDLINK_REPLACE === '1') {
+                const metadataDir = path.join(stage, '.codex-plugin');
+                const metadataTarget = path.join(metadataDir, 'plugin.json');
+                const metadataSource = path.join(stage, '.claude-plugin', 'plugin.json');
+                fs.chmodSync(metadataDir, 0o755);
+                fs.renameSync(metadataTarget, `${stage}.test-hardlink-original-${process.pid}`);
+                fs.linkSync(metadataSource, metadataTarget);
+                fs.chmodSync(metadataDir, 0o555);
+              }
+              if (process.env.DEEP_LOOP_TEST_STAGE_NONNFC_DIR === '1') {
+                const scriptsDir = path.join(stage, 'scripts');
+                fs.chmodSync(scriptsDir, 0o755);
+                fs.mkdirSync(path.join(scriptsDir, 'e\u0301'));
+                fs.chmodSync(path.join(scriptsDir, 'e\u0301'), 0o555);
+                fs.chmodSync(scriptsDir, 0o555);
+              }
+              if (process.env.DEEP_LOOP_TEST_STAGE_FOLD_DIR === '1') {
+                const scriptsDir = path.join(stage, 'scripts');
+                fs.chmodSync(scriptsDir, 0o755);
+                for (const name of ['\u00df', 'ss']) {
+                  const folded = path.join(scriptsDir, name);
+                  fs.mkdirSync(folded);
+                  fs.chmodSync(folded, 0o555);
+                }
+                fs.chmodSync(scriptsDir, 0o555);
+              }
+              if (process.env.DEEP_LOOP_TEST_STAGE_SYMLINK === '1') {
+                const renamed = stage + '.symlink-old';
+                fs.renameSync(stage, renamed);
+                fs.symlinkSync(renamed, stage);
+              }
+              const stageFd = fs.openSync(stage, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+              try {
+                const stageStat = fs.fstatSync(stageFd);
+                if (!stageStat.isDirectory() || (stageStat.mode & 0o777) !== 0o555)
+                  throw new Error('sealed stage FD invalid');
+                if (process.env.DEEP_LOOP_TEST_PRECHECK_RENAME === '1') {
+                  const renamed = stage + '.precheck-old';
+                  fs.renameSync(stage, renamed);
+                  fs.cpSync(renamed, stage, { recursive: true, errorOnExist: true, force: false });
+                }
+                const publicStageLexical = fs.lstatSync(stage);
+                const publicStageReal = fs.realpathSync.native(stage);
+                if (publicStageLexical.isSymbolicLink() || !publicStageLexical.isDirectory()
+                  || publicStageReal !== stage || publicStageLexical.dev !== stageStat.dev
+                  || publicStageLexical.ino !== stageStat.ino || (publicStageLexical.mode & 0o777) !== (stageStat.mode & 0o777))
+                  throw new Error('public stage path and FD identity mismatch');
+                const probe = await runTrustedChild('scripts/deep-loop.mjs', [
+                  'state', 'get', '--project-root', TEST_PROBE_PROJECT_ROOT || project,
+                  '--run-id', TEST_PROBE_RUN_ID || runId, '--field', 'project.root', '--json',
+                ], PROBE_EXIT_TIMEOUT_MS, stageFd, stageStat);
+                if (!probe.ok) throw new Error(probe.reason);
+                let probedRoot;
+                try { probedRoot = JSON.parse(probe.stdout.toString('utf8').trim()); }
+                catch { throw new Error('probe output malformed'); }
+                if (probedRoot !== canonicalProject) throw new Error('probe project root binding mismatch');
+                verifyCandidateStillMatches();
+                verifyStage();
+                const driver = await runTrustedChild('scripts/hooks-impl/drive-headless.mjs', [
+                  '--project-root', project, '--run-id', runId,
+                ], DRIVER_EXIT_TIMEOUT_MS, stageFd, stageStat);
+                if (!driver.ok) throw new Error(driver.reason);
+                process.stdout.write(JSON.stringify({ ok: true, kind: 'trusted-fd-execution', records: sealed.files.length, stage: 'sealed', run_id: runId, project_root: canonicalProject, probe: 1, driver: 1, spawn: 2, mutation: 0 }) + '\n');
+              } finally {
+                fs.closeSync(stageFd);
+              }
+            } else {
+              process.stdout.write(JSON.stringify({ ok: true, kind: 'source-identity-verified', records: sealed.files.length, stage: 'sealed', run_id: runId, project_root: canonicalProject, probe: 0, driver: 0, spawn: 0, mutation: 0 }) + '\n');
+            }
+          } catch (error) {
+            const message = error?.message || error;
+            const childReason = CHILD_REASONS.find(reason => String(message).includes(reason));
+            fail(childReason || (String(message).includes('V2') ? 'candidate-token-drift' : 'source-preflight-invalid'), message);
+          }
+          NODE

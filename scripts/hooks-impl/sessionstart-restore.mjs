@@ -1,13 +1,13 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
+import { relative } from 'node:path';
 import {
-  captureCheckpointSet,
-  inspectCompactCheckpoint,
+  captureVerifiedCheckpointSet,
   selectCheckpoint,
 } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
+import { runDir } from '../lib/state.mjs';
+import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
 import { sessionRuntime } from '../lib/runtime.mjs';
 
 const CAP = 3072;
@@ -18,11 +18,6 @@ function clamp(value) {
   let cut = bytes.toString('utf8');
   if (cut.endsWith('\uFFFD')) cut = cut.slice(0, -1);
   return `${cut}...`;
-}
-
-function currentRunId(root) {
-  const path = join(root, '.deep-loop', 'current');
-  return existsSync(path) ? readFileSync(path, 'utf8').trim() : null;
 }
 
 function strictHostSessionEvidence(input, runtime) {
@@ -40,7 +35,7 @@ function strictHostSessionEvidence(input, runtime) {
   };
 }
 
-function strictRestoreContext(runId, descriptor, { source }) {
+function strictRestoreContext(runId, descriptor, { source, selectionSource }) {
   const runtime = descriptor.runtime;
   const command = runtime === 'claude'
     ? '/deep-loop-compact restore'
@@ -50,7 +45,7 @@ function strictRestoreContext(runId, descriptor, { source }) {
     ? 'evidence-verified'
     : 'evidence-unverified';
   return clamp(
-    `deep-loop compact restore ${sourceLabel} ${evidenceLabel}: invoke ${command} now in the same owner session. `
+    `deep-loop compact restore ${sourceLabel} selection=${selectionSource} ${evidenceLabel}: invoke ${command} now in the same owner session. `
     + `checkpoint_rel=${descriptor.checkpoint_rel} owner=${descriptor.owner_run_id} `
     + `generation=${descriptor.generation} runtime=${runtime} `
     + `workstream=${descriptor.scope?.workstream_id ?? 'none'} run=${runId}.`,
@@ -76,27 +71,94 @@ function strictUnavailableContext({ evidencePresent, runtime }) {
     );
 }
 
+function routingDiagnostic(selection) {
+  if (!selection || selection.kind === 'none') return null;
+  return formatBoundedRoutingDiagnostic({
+    kind: selection.kind,
+    reason: selection.reason,
+    ...(selection.errors && typeof selection.errors === 'object' && !Array.isArray(selection.errors)
+      ? { errors: selection.errors } : {}),
+    ...(selection.candidates ? { candidates: selection.candidates } : {}),
+    ...(selection.total !== undefined ? { total: selection.total } : {}),
+    ...(selection.max_run_ids !== undefined ? { max_run_ids: selection.max_run_ids } : {}),
+    ...(selection.deadline_ms !== undefined ? { deadline_ms: selection.deadline_ms } : {}),
+    ...(selection.observed_count !== undefined ? { observed_count: selection.observed_count } : {}),
+    ...(selection.total_is_lower_bound !== undefined
+      ? { total_is_lower_bound: selection.total_is_lower_bound } : {}),
+  });
+}
+
+function strictDescriptorFromVerifiedBytes(root, runId, checkpointSet) {
+  const candidates = [];
+  for (const checkpoint of checkpointSet.checkpoints || []) {
+    try {
+      const envelope = JSON.parse(checkpoint.bytes.toString('utf8'));
+      const context = envelope?.payload?.context;
+      if (!context || typeof envelope?.envelope?.generated_at !== 'string') continue;
+      const relCandidate = relative(runDir(root, runId), checkpoint.path);
+      const rel = relCandidate && !relCandidate.startsWith('..')
+        ? relCandidate.split('\\').join('/')
+        : null;
+      if (!rel) continue;
+      candidates.push({ checkpoint, envelope, context, rel });
+    } catch { /* captureVerifiedCheckpointSet already rejected malformed bytes */ }
+  }
+  candidates.sort((left, right) => (
+    right.envelope.envelope.generated_at.localeCompare(left.envelope.envelope.generated_at)
+      || right.rel.localeCompare(left.rel)
+  ));
+  const selected = candidates[0];
+  if (!selected) return null;
+  const { context } = selected;
+  return {
+    ok: true,
+    checkpoint_rel: selected.rel,
+    owner_run_id: context.owner_run_id,
+    generation: context.generation,
+    runtime: context.runtime,
+    scope: context.scope,
+    workstream: context.workstream,
+    current_episode: context.current_episode,
+    next_action: context.next_action,
+    provider_evidence: {
+      present: context.provider_evidence !== null,
+      matched: context.provider_evidence !== null,
+    },
+  };
+}
+
 // Read-only restore glue (spec §4.2). No branch mutates durable state.
 export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
   now = Date.now(),
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
+  resolveContextFn = resolveRunContext,
+  captureVerifiedCheckpointSetFn = captureVerifiedCheckpointSet,
 } = {}) {
   if (Object.hasOwn(input, 'source') && input.source !== 'compact') {
     return { ok: true, branch: 'source-other', additionalContext: null };
   }
-  const runId = currentRunId(root);
-  if (!runId) return { ok: true, branch: 'no-run', additionalContext: null };
-
-  let loop;
-  let hash;
-  let checkpointSet;
-  try {
-    checkpointSet = captureCheckpointSet(root, runId);
-    ({ data: loop, hash } = checkpointSet.snapshot);
-  } catch {
-    return { ok: true, branch: 'unreadable', additionalContext: null };
+  const selection = resolveContextFn({
+    root,
+    cwd: typeof input.cwd === 'string' ? input.cwd : process.cwd(),
+    purpose: 'hook-restore',
+    nowFn: () => (now instanceof Date ? now.getTime() : now),
+  });
+  if (!selection?.ok || selection.kind !== 'selected') {
+    const branch = selection?.reason === 'no-runs' ? 'no-run'
+      : selection?.reason === 'run-set-integrity' ? 'unreadable'
+        : selection?.reason || selection?.kind || 'unreadable';
+    const diagnostic = routingDiagnostic(selection);
+    return {
+      ok: true,
+      branch,
+      ...(diagnostic ? { diagnostic } : {}),
+      additionalContext: null,
+    };
   }
+  const runId = selection.runId;
+  const loop = selection.snapshot.data;
+  const hash = selection.snapshot.hash;
 
   if (['completed', 'stopped', 'paused'].includes(loop.status)) {
     return { ok: true, branch: 'terminal-or-paused', additionalContext: null };
@@ -112,32 +174,37 @@ export function runSessionStartRestore(input = {}, {
     } catch {
       return { ok: false, branch: 'evidence-invalid', additionalContext: null };
     }
-    const inspected = inspectCompactCheckpoint(root, runId, {
+    const checkpointSet = captureVerifiedCheckpointSetFn({
+      root,
+      runId,
+      snapshot: selection.snapshot,
       hostSessionEvidence,
       now,
     });
-    if (!inspected.ok) {
+    if (!checkpointSet?.ok) {
       return {
         ok: true,
-        branch: hostSessionEvidence
-          ? 'checkpoint-unavailable-with-trusted-evidence'
-          : 'no-checkpoint',
-        additionalContext: strictUnavailableContext({
-          evidencePresent: hostSessionEvidence !== undefined,
-          runtime,
-        }),
+        branch: checkpointSet?.kind || 'checkpoint-unavailable',
+        diagnostic: JSON.stringify({
+          kind: checkpointSet?.kind || 'checkpoint-unavailable',
+          phase: checkpointSet?.phase || 'checkpoint',
+        }).slice(0, 220),
+        additionalContext: null,
       };
     }
+    const inspected = strictDescriptorFromVerifiedBytes(root, runId, checkpointSet);
+    if (!inspected) return { ok: true, branch: 'no-checkpoint', additionalContext: null };
     return {
       ok: true,
       branch: input.source === 'compact' ? 'resume' : 'resume-source-unverified',
       additionalContext: strictRestoreContext(runId, inspected, {
         source: input.source,
+        selectionSource: selection.source,
       }),
     };
   }
 
-  const advisory = `deep-loop lease owner=${lease.owner_run_id} gen=${lease.generation}. 이 세션이 해당 run의 owner가 아니면 mutation을 시도하지 말 것.`;
+  const advisory = `deep-loop lease owner=${lease.owner_run_id} gen=${lease.generation} selection=${selection.source}. 이 세션이 해당 run의 owner가 아니면 mutation을 시도하지 말 것.`;
 
   if (lease.handoff_phase === 'reserved' && lease.state === 'active') {
     return {
@@ -172,6 +239,21 @@ export function runSessionStartRestore(input = {}, {
     };
   }
 
+  const checkpointSet = captureVerifiedCheckpointSetFn({
+    root,
+    runId,
+    snapshot: selection.snapshot,
+    now,
+  });
+  if (!checkpointSet?.ok) return {
+    ok: true,
+    branch: checkpointSet?.kind || 'checkpoint-unavailable',
+    diagnostic: JSON.stringify({
+      kind: checkpointSet?.kind || 'checkpoint-unavailable',
+      phase: checkpointSet?.phase || 'checkpoint',
+    }).slice(0, 220),
+    additionalContext: null,
+  };
   const checkpoint = selectCheckpoint(checkpointSet, {
     owner: lease.owner_run_id,
     generation: lease.generation,
@@ -189,7 +271,9 @@ export function runSessionStartRestore(input = {}, {
 
   let envelope;
   try {
-    envelope = JSON.parse(readCheckpoint(checkpoint.path, checkpoint.bytes));
+    // The checkpoint bytes are already part of the verified immutable vector;
+    // never reopen the live path after capture.
+    envelope = JSON.parse(checkpoint.bytes.toString('utf8'));
   } catch {
     return {
       ok: true,
@@ -222,6 +306,7 @@ export async function main() {
       : process.cwd();
     const result = runSessionStartRestore(input ?? {}, { root: findRoot(cwd) });
     if (!result.ok) throw new Error('restore-context-invalid');
+    if (result.diagnostic) process.stderr.write(`deep-loop: sessionstart ${result.diagnostic.slice(0, 220)}\n`);
     if (result.additionalContext) {
       process.stdout.write(`${JSON.stringify({
         hookSpecificOutput: {

@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  opendirSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -22,8 +23,9 @@ import { captureStableFileIdentity, matchingStableFileIdentity } from '../script
 import { runDir, withLock } from '../scripts/lib/state.mjs';
 import * as stateApi from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import * as integrityApi from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { createDirectoryJunction, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { createDirectoryJunction, createFileSymlink, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 test('transaction journal exports the locked preparation surface', () => {
   assert.equal(typeof journal.preparePublicationStagesLocked, 'function');
@@ -1402,4 +1404,885 @@ test('full-vector classification rejects later-ahead artifacts, event-ahead arti
     assert.equal(existsSync(join(dir, 'artifacts', 'boundary.txt')), false, `${vector}: no earlier artifact repair`);
     assert.equal(existsSync(join(operationDir, 'markers')), false, `${vector}: no marker repair`);
   }
+});
+
+function seedPreparedPublication({ barrier = 'prepared:digest-verified', operationId = 'verified-read' } = {}) {
+  const { root, runId, dir } = anchoredSeed();
+  assert.throws(
+    () => publishOnce(root, runId, operationId, {
+      faultAt(label) { if (label === barrier) throw new Error(`read-fixture:${barrier}`); },
+    }),
+    /TRANSACTION_PENDING/,
+  );
+  return { root, runId, dir, operationId };
+}
+
+function seedOrphanedPublication({ barrier, operationId } = {}) {
+  const fixtureState = anchoredSeed();
+  assert.throws(
+    () => publishOnce(fixtureState.root, fixtureState.runId, operationId, {
+      faultAt(label) {
+        if (label === 'prepared:before-write' || label === barrier || label === 'orphan:delete') {
+          throw new Error(`orphan-fixture:${barrier}`);
+        }
+      },
+    }),
+    /TRANSACTION_NOT_PREPARED/,
+  );
+  const transactions = join(fixtureState.dir, 'transactions');
+  const orphanName = readdirSync(transactions).find(name => name.startsWith('.orphan-'));
+  assert.match(orphanName, new RegExp(`^\\.orphan-${operationId}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`));
+  return { ...fixtureState, orphanName };
+}
+
+function durableRunBytes(root, runId) {
+  const base = runDir(root, runId);
+  const entries = [];
+  const visit = current => {
+    for (const name of readdirSync(current).sort()) {
+      if (name === '.lock') continue;
+      const path = join(current, name);
+      const stat = lstatSync(path);
+      const rel = path.slice(base.length + 1);
+      if (stat.isDirectory()) visit(path);
+      else entries.push([rel, Buffer.from(readFileSync(path))]);
+    }
+  };
+  visit(base);
+  return entries;
+}
+
+function exactCommittedMarker(dir, operationId) {
+  const prepared = JSON.parse(readFileSync(join(dir, 'transactions', operationId, 'prepared.json'), 'utf8'));
+  return JSON.stringify({
+    kind: 'committed',
+    operation_id: operationId,
+    candidate_loop_hash: prepared.payload.manifest.candidateLoopHash,
+  });
+}
+
+function durableRunVector(root, runId, expectedAbsent = []) {
+  const base = runDir(root, runId);
+  const entries = [[runId, '', 'directory', { identity: captureStableFileIdentity(base) }]];
+  const present = new Set(['']);
+  const visit = current => {
+    for (const name of readdirSync(current).sort()) {
+      if (name === '.lock') continue;
+      const path = join(current, name);
+      // The verified vector contract is portable-root-relative and always uses '/'.
+      const rel = path.slice(base.length + 1).split('\\').join('/');
+      const stat = lstatSync(path);
+      present.add(rel);
+      if (stat.isDirectory()) {
+        entries.push([runId, rel, 'directory', { identity: captureStableFileIdentity(path) }]);
+        visit(path);
+      } else {
+        const before = captureStableFileIdentity(path);
+        const bytes = Buffer.from(readFileSync(path));
+        const after = captureStableFileIdentity(path);
+        entries.push([runId, rel, 'file', {
+          base64: bytes.toString('base64'),
+          sha256: contentHash(bytes),
+          size: bytes.length,
+          identity_before: before,
+          identity_after: after,
+        }]);
+      }
+    }
+  };
+  visit(base);
+  for (const rel of expectedAbsent) {
+    if (!present.has(rel)) entries.push([runId, rel, 'ABSENT']);
+  }
+  return entries.sort((left, right) => JSON.stringify(left.slice(0, 3)).localeCompare(JSON.stringify(right.slice(0, 3))));
+}
+
+function durableRunSetVector(root, runIds, expectedAbsentByRun = {}) {
+  return runIds.flatMap(runId => durableRunVector(root, runId, expectedAbsentByRun[runId] || []));
+}
+
+test('verified capture rejects an unowned valid-name transaction sibling as integrity-invalid', () => {
+  const fixtureState = anchoredSeed();
+  const operationId = 'verified-tree-complete';
+  const published = publishOnce(fixtureState.root, fixtureState.runId, operationId);
+  assert.equal(published.ok, true);
+  assert.equal(published.operation_id, operationId);
+  const sibling = join(fixtureState.dir, 'transactions', 'ignored-sibling');
+  mkdirSync(join(sibling, 'unprepared'), { recursive: true });
+  writeFileSync(join(sibling, 'unprepared', 'note.txt'), 'ignored transaction entry');
+  const before = durableRunVector(fixtureState.root, fixtureState.runId, [
+    'episodes', 'checkpoints', 'transactions/absent-sibling',
+  ]);
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'transaction-tree',
+  });
+  assert.deepEqual(durableRunVector(fixtureState.root, fixtureState.runId, [
+    'episodes', 'checkpoints', 'transactions/absent-sibling',
+  ]), before);
+});
+
+test('verified capture classifies only production-shaped orphan crash residue as bounded reconciliation-required', () => {
+  for (const barrier of ['prepared:before-write', 'orphan:delete']) {
+    const operationId = `verified-orphan-${barrier.replaceAll(':', '-')}`;
+    const fixtureState = seedOrphanedPublication({ barrier, operationId });
+    const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+
+    const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+    assert.deepEqual(result, {
+      ok: false,
+      kind: 'reconciliation-required',
+      operation_id: operationId,
+      phase: 'transaction-tree',
+    }, barrier);
+    assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before, barrier);
+  }
+});
+
+test('verified capture classifies production bootstrap, empty, and partial-stage residues as bounded reconciliation-required', () => {
+  const barriers = ['bootstrap:renamed', 'stage:0:write', 'stage:1:write'];
+  for (const barrier of barriers) {
+    const operationId = `verified-production-${barrier.replaceAll(':', '-')}`;
+    const fixtureState = anchoredSeed();
+    assert.throws(
+      () => publishOnce(fixtureState.root, fixtureState.runId, operationId, {
+        faultAt(label) {
+          if (label === barrier || label === 'orphan:delete') throw new Error(`production-residue:${barrier}`);
+        },
+      }),
+      /TRANSACTION_NOT_PREPARED/,
+      barrier,
+    );
+    const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+    const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+    assert.deepEqual(result, {
+      ok: false,
+      kind: 'reconciliation-required',
+      operation_id: operationId,
+      phase: 'transaction-tree',
+    }, barrier);
+    assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before, barrier);
+  }
+});
+
+test('verified capture lets malformed prepared sibling dominate a valid production orphan', () => {
+  const fixtureState = seedOrphanedPublication({
+    barrier: 'prepared:before-write',
+    operationId: 'verified-valid-orphan',
+  });
+  const malformedOperation = 'verified-malformed-prepared';
+  const malformedDir = join(fixtureState.dir, 'transactions', malformedOperation);
+  mkdirSync(malformedDir, { recursive: true });
+  writeFileSync(join(malformedDir, 'prepared.json'), '{malformed');
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: malformedOperation,
+    phase: 'transaction-tree',
+  });
+});
+
+test('verified capture rejects a valid orphan name without its owner and staging structure', () => {
+  const fixtureState = anchoredSeed();
+  const transactions = join(fixtureState.dir, 'transactions');
+  const operationId = 'unowned-orphan';
+  const orphan = join(transactions, `.orphan-${operationId}-00000000-0000-4000-8000-000000000000`);
+  mkdirSync(orphan, { recursive: true });
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'transaction-tree',
+  });
+});
+
+test('verified capture reports malformed-only transaction entries with a bounded null operation diagnostic', () => {
+  const fixtureState = anchoredSeed();
+  const transactions = join(fixtureState.dir, 'transactions');
+  mkdirSync(transactions, { recursive: true });
+  mkdirSync(join(transactions, '-malformed-name'));
+  mkdirSync(join(transactions, 'contains space'));
+  mkdirSync(join(transactions, 'x'.repeat(129)));
+
+  assert.doesNotThrow(() => integrityApi.captureVerifiedRunSnapshot(
+    fixtureState.root,
+    fixtureState.runId,
+  ));
+  assert.deepEqual(integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId), {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'transaction-tree',
+  });
+});
+
+test('verified capture reports a regular transactions entry as structured integrity-invalid', () => {
+  const fixtureState = anchoredSeed();
+  writeFileSync(join(fixtureState.dir, 'transactions'), 'not a directory');
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'transaction-tree',
+  });
+});
+
+test('verified read paths expose no local mutation call graph and preserve recursive A/B vectors', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-tx-verified-vector-'));
+  const now = new Date('2026-07-23T00:00:00.000Z');
+  const runA = initRun(root, { runtime: 'claude', goal: 'verified vector A', now }).runId;
+  const runB = initRun(root, { runtime: 'claude', goal: 'verified vector B', now: new Date(now.getTime() + 1) }).runId;
+  assert.equal(publishOnce(root, runA, 'verified-vector-clean').ok, true);
+  const transactionsB = join(runDir(root, runB), 'transactions');
+  mkdirSync(transactionsB, { recursive: true });
+  mkdirSync(join(transactionsB, 'malformed only'));
+  const runIds = [runA, runB];
+  const expectedAbsentByRun = {
+    [runA]: ['episodes', 'checkpoints', 'transactions/absent-entry'],
+    [runB]: ['episodes', 'checkpoints', 'transactions/absent-entry', 'transactions/malformed only/prepared.json'],
+  };
+  const before = durableRunSetVector(root, runIds, expectedAbsentByRun);
+
+  const source = readFileSync(fileURLToPath(new URL('../scripts/lib/integrity.mjs', import.meta.url)), 'utf8');
+  const readPathStart = source.indexOf('// VERIFIED_READ_CLOSURE_START');
+  const readPathEnd = source.indexOf('// VERIFIED_READ_CLOSURE_END', readPathStart);
+  assert.ok(readPathStart >= 0 && readPathEnd > readPathStart);
+  const readPathSource = source.slice(readPathStart, readPathEnd);
+  for (const forbiddenCall of [
+    'reconcileAnchoredPublicationLocked', 'publishArtifactTargetsLocked',
+    'markPublicationCommittedLocked', 'retireCommittedPublicationLocked',
+    'writeState', 'durableAtomicWrite', 'appendFileSync', 'renameSync', 'rmSync', 'unlinkSync',
+  ]) {
+    assert.doesNotMatch(readPathSource, new RegExp(`\\b${forbiddenCall}\\s*\\(`), forbiddenCall);
+  }
+  for (const name of [
+    'validTransactionOwner', 'captureArtifactLocked', 'captureArtifactsLocked',
+    'classifyPreparedRun', 'captureVerifiedDurableVectorLocked',
+  ]) assert.ok(integrityApi.VERIFIED_READ_CLOSURE_NAMES.includes(name), name);
+
+  const result = integrityApi.captureVerifiedRunSet(root, {
+    runIds,
+  });
+
+  assert.deepEqual(Object.keys(result.runs), []);
+  assert.equal(result.errors[runB].kind, 'integrity-invalid');
+  assert.equal(result.errors[runB].operation_id, null);
+  assert.deepEqual(durableRunSetVector(root, runIds, expectedAbsentByRun), before);
+});
+
+test('verified clean snapshot binds the complete frozen portable durable vector', () => {
+  const fixtureState = anchoredSeed();
+  assert.equal(publishOnce(fixtureState.root, fixtureState.runId, 'verified-complete-vector').ok, true);
+  mkdirSync(join(fixtureState.dir, 'episodes'), { recursive: true });
+  writeFileSync(join(fixtureState.dir, 'episodes', 'episode.json'), '{"episode":true}');
+  mkdirSync(join(fixtureState.dir, 'checkpoints'), { recursive: true });
+  writeFileSync(join(fixtureState.dir, 'checkpoints', 'checkpoint.json'), '{"checkpoint":true}');
+  writeFileSync(join(fixtureState.dir, 'artifacts', 'unrequested.bin'), Buffer.from([0, 1, 2, 255]));
+  const expected = durableRunVector(fixtureState.root, fixtureState.runId);
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+  assert.equal(result.ok, true);
+  assert.equal(Object.isFrozen(result.snapshot.vector), true);
+  assert.deepEqual(result.snapshot.vector, expected);
+  assert.equal(result.snapshot.vector.some(entry => entry[2] === 'directory'), true);
+  assert.equal(result.snapshot.vector.some(entry => entry[2] === 'file'), true);
+  assert.equal(result.snapshot.vector.every(entry => !entry[1].startsWith('/')), true);
+
+  const clean = anchoredSeed();
+  const cleanResult = integrityApi.captureVerifiedRunSnapshot(clean.root, clean.runId);
+  assert.equal(cleanResult.snapshot.vector.some(entry => entry[2] === 'ABSENT'), true);
+});
+
+test('verified exact capture classifies prepared publication without replay', () => {
+  const fixtureState = seedPreparedPublication({ operationId: 'verified-prepared' });
+  const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: fixtureState.operationId,
+    phase: 'prepared',
+  });
+  assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before);
+});
+
+test('verified exact capture classifies partial publication without replay', () => {
+  const fixtureState = seedPreparedPublication({
+    barrier: 'artifact:0:target-done',
+    operationId: 'verified-partial',
+  });
+  const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: fixtureState.operationId,
+    phase: 'partial',
+  });
+  assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before);
+});
+
+test('verified exact capture classifies premature committed without snapshot', () => {
+  const fixtureState = seedPreparedPublication({ operationId: 'verified-premature' });
+  writeFileSync(
+    join(fixtureState.dir, 'transactions', fixtureState.operationId, 'committed.json'),
+    exactCommittedMarker(fixtureState.dir, fixtureState.operationId),
+  );
+  const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: fixtureState.operationId,
+    phase: 'premature-committed',
+  });
+  assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before);
+});
+
+test('verified exact capture classifies inconsistent committed without snapshot', () => {
+  const fixtureState = seedPreparedPublication({ operationId: 'verified-inconsistent' });
+  writeFileSync(
+    join(fixtureState.dir, 'transactions', fixtureState.operationId, 'committed.json'),
+    JSON.stringify({ kind: 'committed', operation_id: fixtureState.operationId, candidate_loop_hash: '0'.repeat(64) }),
+  );
+  const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: fixtureState.operationId,
+    phase: 'committed',
+  });
+  assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before);
+});
+
+test('verified exact capture preserves valid committed publication byte identity', () => {
+  const fixtureState = anchoredSeed();
+  const published = publishOnce(fixtureState.root, fixtureState.runId, 'verified-clean');
+  assert.equal(published.ok, true);
+  assert.equal(published.operation_id, 'verified-clean');
+  const before = durableRunBytes(fixtureState.root, fixtureState.runId);
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.equal(result.ok, true);
+  assert.equal(result.kind, 'clean-committed');
+  assert.equal(result.operation_id, 'verified-clean');
+  assert.ok(result.snapshot);
+  assert.deepEqual(durableRunBytes(fixtureState.root, fixtureState.runId), before);
+});
+
+test('verified run set discards earlier clean snapshot after later error', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-tx-verified-set-'));
+  const now = new Date('2026-07-23T00:00:00.000Z');
+  const runA = initRun(root, { runtime: 'claude', goal: 'verified A', now }).runId;
+  const runB = initRun(root, { runtime: 'claude', goal: 'verified B', now: new Date(now.getTime() + 1) }).runId;
+  assert.throws(
+    () => publishOnce(root, runB, 'verified-later-error', {
+      faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('read-fixture:later'); },
+    }),
+    /TRANSACTION_PENDING/,
+  );
+  const result = integrityApi.captureVerifiedRunSet(root, { runIds: [runA, runB] });
+  assert.deepEqual(Object.keys(result.runs), []);
+  assert.equal(result.errors[runB].kind, 'reconciliation-required');
+});
+
+test('bounded run enumeration rejects the 65th historical directory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-tx-bounded-enum-'));
+  const runs = join(root, '.deep-loop', 'runs');
+  mkdirSync(runs, { recursive: true });
+  for (let index = 0; index < 65; index++) {
+    mkdirSync(join(runs, `01J000000000000000000000${String(index).padStart(2, '0')}`));
+  }
+
+  const result = integrityApi.captureVerifiedRunSet(root, {
+    nowFn: () => 100,
+    deadlineMs: 500,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'run-set-bound-exceeded');
+  assert.equal(result.reason, 'run-set-bound-exceeded');
+  assert.equal(result.max_run_ids, 64);
+  assert.equal(result.observed_count, 65);
+  assert.equal(result.total_is_lower_bound, true);
+  assert.deepEqual(result.runIds, []);
+  assert.deepEqual(Object.keys(result.runs), []);
+  assert.match(JSON.stringify(result), /run-set-bound-exceeded/);
+});
+
+test('bounded run enumeration rejects lock retry after the absolute deadline', () => {
+  const fixtureState = anchoredSeed();
+  let clock = 100;
+  const sleeps = [];
+  withLock(fixtureState.root, fixtureState.runId, () => {
+    const result = integrityApi.captureVerifiedRunSet(fixtureState.root, {
+      runIds: [fixtureState.runId],
+      deadlineMs: 5,
+      nowFn: () => clock,
+      lockOptions: {
+        retries: 10,
+        backoffMs: 50,
+        nowFn: () => clock,
+        sleepFn(ms) { sleeps.push(ms); clock += ms; },
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, 'run-set-bound-exceeded');
+    assert.equal(result.phase, 'lock-retry');
+    assert.deepEqual(Object.keys(result.runs), []);
+    assert.deepEqual(sleeps, [5]);
+  });
+});
+
+test('verified capture gives valid orphan residue precedence over a valid committed sibling', () => {
+  const fixtureState = anchoredSeed();
+  assert.equal(publishOnce(fixtureState.root, fixtureState.runId, 'verified-committed-sibling').ok, true);
+  assert.throws(
+    () => publishOnce(fixtureState.root, fixtureState.runId, 'verified-orphan-sibling', {
+      faultAt(label) {
+        if (label === 'prepared:before-write' || label === 'orphan:delete') {
+          throw new Error('orphan-fixture:valid-committed-mix');
+        }
+      },
+    }),
+    /TRANSACTION_NOT_PREPARED/,
+  );
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: 'verified-orphan-sibling',
+    phase: 'transaction-tree',
+  });
+});
+
+test('verified vector uses frozen portable file metadata with before/read/after identity binding', () => {
+  const fixtureState = anchoredSeed();
+  assert.equal(publishOnce(fixtureState.root, fixtureState.runId, 'verified-portable-vector').ok, true);
+  const rel = 'artifacts/vector-bytes.bin';
+  const bytes = Buffer.from([0, 1, 2, 255]);
+  writeFileSync(join(fixtureState.dir, rel), bytes);
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  const entry = result.snapshot.vector.find(item => item[1] === rel);
+
+  assert.equal(result.ok, true);
+  assert.equal(entry[2], 'file');
+  assert.deepEqual(entry[3], {
+    base64: bytes.toString('base64'),
+    sha256: contentHash(bytes),
+    size: bytes.length,
+    identity_before: entry[3].identity_before,
+    identity_after: entry[3].identity_after,
+  });
+  assert.equal(matchingStableFileIdentity(entry[3].identity_before, entry[3].identity_after), true);
+  assert.equal(Object.isFrozen(entry), true);
+  assert.equal(Object.isFrozen(entry[3]), true);
+  assert.equal(Object.isFrozen(entry[3].identity_before), true);
+  assert.equal(Object.isFrozen(entry[3].identity_after), true);
+  assert.throws(() => { entry[3].base64 = 'mutated'; }, TypeError);
+});
+
+test('verified vector rejects entry, byte, depth, and deadline limit violations before traversal work', () => {
+  const fixtureState = anchoredSeed();
+  assert.equal(publishOnce(fixtureState.root, fixtureState.runId, 'verified-vector-limits').ok, true);
+  mkdirSync(join(fixtureState.dir, 'deep', 'one', 'two', 'three'), { recursive: true });
+  writeFileSync(join(fixtureState.dir, 'deep', 'one', 'two', 'three', 'payload.bin'), 'payload');
+
+  for (const vectorOptions of [
+    { maxEntries: 1_000, maxDepth: 2 },
+    { maxEntries: 1, maxDepth: 100 },
+    { maxEntries: 1_000, maxBytes: 1 },
+    { maxEntries: 1_000, maxDepth: 100, nowFn: () => 100, deadlineAtMs: 100 },
+  ]) {
+    const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+      vectorOptions,
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      kind: 'integrity-invalid',
+      operation_id: null,
+      phase: 'verified-vector',
+    }, JSON.stringify(vectorOptions));
+  }
+});
+
+test('verified exact and run-set classify symlink residue as structured integrity-invalid', t => {
+  const fixtureState = anchoredSeed();
+  assert.equal(publishOnce(fixtureState.root, fixtureState.runId, 'verified-symlink').ok, true);
+  const symlink = join(fixtureState.dir, 'artifacts', 'symlink-entry');
+  if (!createFileSymlinkOrSkip(t, join(fixtureState.dir, 'loop.json'), symlink)) return;
+
+  const exact = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.deepEqual(exact, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.doesNotThrow(() => integrityApi.captureVerifiedRunSet(fixtureState.root, {
+    runIds: [fixtureState.runId],
+  }));
+  const set = integrityApi.captureVerifiedRunSet(fixtureState.root, {
+    runIds: [fixtureState.runId],
+  });
+  assert.deepEqual(Object.keys(set.runs), []);
+  assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');
+});
+
+test('verified exact and run-set classify readdir, read, identity drift, and special entries structurally', () => {
+  for (const failure of ['readdir', 'read', 'identity', 'special']) {
+    const fixtureState = anchoredSeed();
+    assert.equal(publishOnce(fixtureState.root, fixtureState.runId, `verified-${failure}`).ok, true);
+    const rel = 'artifacts/drift-fixture.bin';
+    const target = join(fixtureState.dir, rel);
+    writeFileSync(target, 'drift');
+    const identityCalls = new Map();
+    const vectorOptions = {
+      opendirFn(path, ...args) {
+        if (failure === 'readdir' && path === fixtureState.dir) throw new Error('fixture readdir drift');
+        return opendirSync(path, ...args);
+      },
+      readFileFn(path, ...args) {
+        if (failure === 'read' && path === target) throw new Error('fixture read drift');
+        return readFileSync(path, ...args);
+      },
+      identityFn(path) {
+        const identity = captureStableFileIdentity(path);
+        const calls = (identityCalls.get(path) || 0) + 1;
+        identityCalls.set(path, calls);
+        if (failure === 'identity' && path === target && calls === 2) {
+          return { ...identity, ino: (BigInt(identity.ino) + 1n).toString() };
+        }
+        return identity;
+      },
+    };
+    if (failure === 'special') {
+      vectorOptions.lstatFn = (path, ...args) => {
+        const actual = lstatSync(path, ...args);
+        if (path !== target) return actual;
+        const fake = Object.create(actual);
+        fake.isFile = () => false;
+        fake.isDirectory = () => false;
+        fake.isSymbolicLink = () => false;
+        fake.isSocket = () => true;
+        return fake;
+      };
+      delete vectorOptions.identityFn;
+    }
+
+    const exact = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+      vectorOptions,
+    });
+    identityCalls.clear();
+    const set = integrityApi.captureVerifiedRunSet(fixtureState.root, {
+      runIds: [fixtureState.runId],
+      vectorOptionsByRun: { [fixtureState.runId]: vectorOptions },
+    });
+    assert.deepEqual(exact, {
+      ok: false,
+      kind: 'integrity-invalid',
+      operation_id: null,
+      phase: 'verified-vector',
+    }, failure);
+    assert.deepEqual(Object.keys(set.runs), [], failure);
+    assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid', failure);
+  }
+});
+
+test('verified exact and run-set propagate one absolute deadline through lock and vector capture', () => {
+  const fixtureState = anchoredSeed();
+  const nowFn = () => 100;
+  const expected = {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  };
+
+  assert.deepEqual(integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    deadlineBudgetMs: 0,
+    nowFn,
+  }), expected);
+  const set = integrityApi.captureVerifiedRunSet(fixtureState.root, {
+    runIds: [fixtureState.runId],
+    deadlineBudgetMs: 0,
+    nowFn,
+  });
+  assert.deepEqual(Object.keys(set.runs), []);
+  assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');
+});
+
+test('verified read lock clamps contention sleep to the shared deadline', () => {
+  const fixtureState = anchoredSeed();
+  let clock = 100;
+  const sleeps = [];
+
+  withLock(fixtureState.root, fixtureState.runId, () => {
+    const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+      deadlineBudgetMs: 5,
+      nowFn: () => clock,
+      lockOptions: {
+        retries: 10,
+        backoffMs: 50,
+        nowFn: () => clock,
+        sleepFn(ms) {
+          sleeps.push(ms);
+          clock += ms;
+        },
+      },
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      kind: 'integrity-invalid',
+      operation_id: null,
+      phase: 'verified-vector',
+    });
+  });
+
+  assert.deepEqual(sleeps, [5]);
+
+  let calls = 0;
+  const finalAttemptSleeps = [];
+  withLock(fixtureState.root, fixtureState.runId, () => {
+    const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+      deadlineBudgetMs: 5,
+      nowFn: () => (++calls >= 4 ? 105 : 100),
+      lockOptions: {
+        retries: 1,
+        backoffMs: 50,
+        nowFn: () => (++calls >= 4 ? 105 : 100),
+        sleepFn(ms) { finalAttemptSleeps.push(ms); },
+      },
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      kind: 'integrity-invalid',
+      operation_id: null,
+      phase: 'verified-vector',
+    });
+  });
+  assert.deepEqual(finalAttemptSleeps, []);
+});
+
+test('verified vector bounds directory iteration before materializing an oversized directory', () => {
+  const fixtureState = anchoredSeed();
+  for (let index = 0; index < 32; index++) {
+    writeFileSync(join(fixtureState.dir, `bounded-${String(index).padStart(2, '0')}`), 'x');
+  }
+  let rootReads = 0;
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      maxEntries: 1,
+      opendirFn(path, ...args) {
+        const directory = opendirSync(path, ...args);
+        if (path !== fixtureState.dir) return directory;
+        return {
+          readSync() {
+            rootReads += 1;
+            return directory.readSync();
+          },
+          closeSync() { return directory.closeSync(); },
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.ok(rootReads <= 2, `rootReads=${rootReads}`);
+});
+
+test('verified exact and run-set reject non-portable backslash path collisions', () => {
+  if (process.platform === 'win32') return;
+  const fixtureState = anchoredSeed();
+  mkdirSync(join(fixtureState.dir, 'artifacts'), { recursive: true });
+  writeFileSync(join(fixtureState.dir, 'artifacts', 'a\\b'), 'backslash');
+  mkdirSync(join(fixtureState.dir, 'artifacts', 'a'), { recursive: true });
+  writeFileSync(join(fixtureState.dir, 'artifacts', 'a', 'b'), 'slash');
+
+  const exact = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId);
+  assert.deepEqual(exact, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  const set = integrityApi.captureVerifiedRunSet(fixtureState.root, { runIds: [fixtureState.runId] });
+  assert.deepEqual(Object.keys(set.runs), []);
+  assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');
+});
+
+test('verified vector binds the initial regular-file identity against a symlink swap', () => {
+  if (process.platform === 'win32') return;
+  const fixtureState = anchoredSeed();
+  mkdirSync(join(fixtureState.dir, 'artifacts'), { recursive: true });
+  const target = join(fixtureState.dir, 'artifacts', 'race.bin');
+  const outside = join(fixtureState.root, 'outside.bin');
+  writeFileSync(target, 'inside');
+  writeFileSync(outside, 'escape');
+  let swapped = false;
+
+  const exact = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      lstatFn(path, ...args) {
+        const stat = lstatSync(path, ...args);
+        if (path === target && !swapped) {
+          swapped = true;
+          rmSync(target);
+          createFileSymlink(outside, target);
+        }
+        return stat;
+      },
+    },
+  });
+
+  assert.deepEqual(exact, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  const set = integrityApi.captureVerifiedRunSet(fixtureState.root, { runIds: [fixtureState.runId] });
+  assert.deepEqual(Object.keys(set.runs), []);
+  assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');
+});
+
+test('verified transaction inspection binds the initial directory identity before enumeration', () => {
+  if (process.platform === 'win32') return;
+  const fixtureState = anchoredSeed();
+  assert.throws(
+    () => publishOnce(fixtureState.root, fixtureState.runId, 'directory-swap-orphan', {
+      faultAt(label) {
+        if (label === 'prepared:before-write' || label === 'orphan:delete') {
+          throw new Error('directory-swap-fixture');
+        }
+      },
+    }),
+    /TRANSACTION_NOT_PREPARED/,
+  );
+  const transactions = join(fixtureState.dir, 'transactions');
+  const outside = join(fixtureState.root, 'outside-transactions');
+  renameSync(transactions, outside);
+  mkdirSync(transactions);
+  let swapped = false;
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      identityFn(path) {
+        if (path === transactions && !swapped) {
+          swapped = true;
+          rmSync(transactions, { recursive: true });
+          createDirectoryJunction(outside, transactions);
+        }
+        return captureStableFileIdentity(path);
+      },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'integrity-invalid');
+  assert.equal(result.operation_id, null);
+  // The injected directory swap is fail-closed before data consumption. Depending on
+  // filesystem observation order, the immutable vector or immediate transaction-tree
+  // classifier may be the first boundary to report the same identity drift.
+  assert.ok(['verified-vector', 'transaction-tree'].includes(result.phase),
+    `directory race must fail closed at an allowed boundary, got ${result.phase}`);
+});
+
+test('verified clean capture rejects transaction-tree drift between vector and classification', () => {
+  const fixtureState = anchoredSeed();
+  let created = false;
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      lstatFn(path, ...args) {
+        const stat = lstatSync(path, ...args);
+        if (path === fixtureState.dir && !created) {
+          created = true;
+          mkdirSync(join(fixtureState.dir, 'transactions', 'malformed entry'), { recursive: true });
+        }
+        return stat;
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'transaction-tree',
+  });
+});
+
+test('verified vector binds parent directory identity while reading children', () => {
+  const fixtureState = anchoredSeed();
+  const artifacts = join(fixtureState.dir, 'artifacts');
+  const outside = join(fixtureState.root, 'original-artifacts');
+  const payload = join(artifacts, 'payload.bin');
+  mkdirSync(artifacts, { recursive: true });
+  writeFileSync(payload, 'inside');
+  let swapped = false;
+
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      lstatFn(path, ...args) {
+        const stat = lstatSync(path, ...args);
+        if (path === payload && !swapped) {
+          swapped = true;
+          renameSync(artifacts, outside);
+          mkdirSync(artifacts);
+          writeFileSync(payload, 'escape');
+        }
+        return stat;
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+});
+
+test('verified-read closure explicitly includes every local transitive reader and no writer', () => {
+  for (const name of [
+    'readRawRun',
+    'snapshotRaw',
+    'readStableRegularFile',
+    'readStableDirectoryNames',
+    'validTransactionOwner',
+    'captureArtifactLocked',
+    'captureArtifactsLocked',
+    'validatePreparedAuthority',
+    'classifyPreparedRun',
+    'committedMarkerInspection',
+    'inspectAnchoredPublication',
+    'captureVerifiedDurableVectorLocked',
+    'inspectTransactionTreeLocked',
+    'verifiedCaptureLocked',
+  ]) assert.ok(integrityApi.VERIFIED_READ_CLOSURE_NAMES.includes(name), name);
 });
