@@ -497,8 +497,32 @@ function runCliAsync(args, cwd = REPO_ROOT) {
 }
 
 function lockBusyResult(result) {
-  return result?.status === 1 && /^LOCK_BUSY(?::|$)/m.test(String(result.stderr || '').trim());
+  const stderr = String(result?.stderr || '').replace(/\u001b\[[0-9;]*m/g, '').trim();
+  return result?.status === 1 && /^\[deep-loop:error\] LOCK_BUSY(?::|$)/.test(stderr);
 }
+
+test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => {
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '\u001b[31m[deep-loop:error]\u001b[0m LOCK_BUSY: run-a\n',
+  }), true);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] LOCK_BUSY: run-a\n',
+  }), true);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] OTHER_ERROR: run-a\n',
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 2,
+    stderr: '[deep-loop:error] LOCK_BUSY: run-a\n',
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: 'prefix [deep-loop:error] LOCK_BUSY: run-a\n',
+  }), false);
+});
 
 async function retryLockBusyDiagnose(result, args, cwd) {
   let current = result;
