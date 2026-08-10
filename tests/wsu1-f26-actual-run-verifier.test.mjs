@@ -16,6 +16,10 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const exactKeys = (value, keys) => Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
 
 function checksumFor(seq, ts, type, data, prev) {
+  return sha256(Buffer.from(`${seq}|${ts}|${type}|${JSON.stringify(data)}|${prev}`));
+}
+
+function nulChecksumFor(seq, ts, type, data, prev) {
   return sha256(Buffer.from(`${seq}\0${ts}\0${type}\0${JSON.stringify(data)}\0${prev}`));
 }
 
@@ -296,6 +300,21 @@ test('STEP0-3 verifier test fixture guards the exact external-observation 20-key
     'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id', 'cwd', 'argv', 'env',
     'started_at', 'finished_at', 'exit_code', 'stdout', 'stderr', 'checker_terminal_status',
   ]), true);
+});
+
+test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production checksum chain', () => {
+  const fx = fixture();
+  fx.event.checksum = nulChecksumFor(
+    fx.event.seq, fx.event.ts, fx.event.type, fx.event.data, 'GENESIS',
+  );
+  fx.loop.event_log_head = { seq: fx.event.seq, checksum: fx.event.checksum };
+  writeFileSync(fx.eventPath, `${JSON.stringify(fx.event)}\n`);
+  fx.writeLoop();
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'WSU1_F26_EVENT_LOG\n');
 });
 
 test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atomically issues receipt', () => {

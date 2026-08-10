@@ -150,7 +150,7 @@ function eventLines(bytes) {
 }
 
 function checksumFor(seq, ts, type, data, prev) {
-  return sha256(Buffer.from(`${seq}\0${ts}\0${type}\0${JSON.stringify(data)}\0${prev}`));
+  return sha256(Buffer.from(`${seq}|${ts}|${type}|${JSON.stringify(data)}|${prev}`));
 }
 
 function validateEventLog(lines, head) {
