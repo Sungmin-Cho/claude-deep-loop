@@ -42,6 +42,17 @@ test('READMEs document stored activation custody, compatibility boundary, and de
   }
 });
 
+test('stored activation docs bind Windows ACL execution to trusted SystemRoot and forbid PATH lookup', () => {
+  for (const path of [...USER_DOCS, 'AGENTS.md']) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /SystemRoot/iu, `${path}: trusted Windows host root`);
+    assert.match(source, /System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe/iu,
+      `${path}: exact PowerShell identity`);
+    assert.match(source, /PATH[^.\n]*(?:forbid|금지|사용하지|resolve하지)/iu,
+      `${path}: PATH resolution forbidden`);
+  }
+});
+
 test('user docs publish Claude Code, Codex CLI, and Codex App install and invocation tables', () => {
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');

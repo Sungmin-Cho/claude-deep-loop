@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "design_sha256": "5b89254ca6816e4d907180d4171e96be5da5e0ff44c75ee6e43370c8b9d91d9b",
+  "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "0cfd7800b2791fccaac053aa4f4c69f5250a4f66b46c3349da13c7a80f57e73e",
+  "live_classification_sha256": "5664fa2bfdd337a60108ea52b00fc8c10e597dc4bcd16ac1a1715138be0261a5",
   "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
@@ -322,17 +322,32 @@
     {
       "id": "activation-secret.mjs#activateStoredLease",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "enforcement-origin",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "non-dominance",
           "path": [
-            "activation-secret.mjs#activateStoredLease"
+            "activation-secret.mjs#activateStoredLease",
+            "lease.mjs#activateLease",
+            "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/activation-secret.mjs:120"
+            "scripts/lib/activation-secret.mjs:242",
+            "scripts/lib/lease.mjs:566"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "activation-secret.mjs#activateStoredLease",
+            "lease.mjs#activateLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/activation-secret.mjs:242",
+            "scripts/lib/lease.mjs:566"
           ]
         }
       ]

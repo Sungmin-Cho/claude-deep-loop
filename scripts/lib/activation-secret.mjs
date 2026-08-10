@@ -4,7 +4,7 @@ import {
   readFileSync, realpathSync, linkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep, win32 as winPath } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { activateLease } from './lease.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
@@ -59,8 +59,34 @@ if ($allow.Count -ne 1 -or $allow[0].IdentityReference.Translate([System.Securit
 exit 0
 `;
 
-function defaultWindowsAcl({ path, kind }, execute) {
-  const result = execute('powershell.exe', [
+function trustedWindowsPowerShell({ env, lstatFn, realpathFn }) {
+  const systemRoot = env.SystemRoot;
+  if (typeof systemRoot !== 'string' || !winPath.isAbsolute(systemRoot)) {
+    throw closed('ACTIVATION_SECRET_ROOT_INVALID');
+  }
+  const relativeExecutable = winPath.join('System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const expected = winPath.join(systemRoot, relativeExecutable);
+  const rootStat = lstatFn(systemRoot);
+  const executableStat = lstatFn(expected);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+    || !executableStat.isFile() || executableStat.isSymbolicLink()) {
+    throw closed('ACTIVATION_SECRET_UNSAFE');
+  }
+  const canonicalRoot = winPath.normalize(realpathFn(systemRoot));
+  const canonicalExecutable = winPath.normalize(realpathFn(expected));
+  const boundExecutable = winPath.normalize(winPath.join(canonicalRoot, relativeExecutable));
+  if (canonicalExecutable.toLowerCase() !== boundExecutable.toLowerCase()) {
+    throw closed('ACTIVATION_SECRET_UNSAFE');
+  }
+  const rel = winPath.relative(canonicalRoot, canonicalExecutable);
+  if (rel.startsWith(`..${winPath.sep}`) || rel === '..' || winPath.isAbsolute(rel)) {
+    throw closed('ACTIVATION_SECRET_UNSAFE');
+  }
+  return canonicalExecutable;
+}
+
+function defaultWindowsAcl({ path, kind }, execute, executable) {
+  const result = execute(executable, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', ACL_SCRIPT, path, kind,
   ], { shell: false, stdio: 'ignore', windowsHide: true });
   return result.status === 0 && !result.error;
@@ -137,8 +163,8 @@ export function activateStoredLease(root, runId, {
   const linkFn = deps.linkFn ?? linkSync;
   const unlinkFn = deps.unlinkFn ?? unlinkSync;
   const windowsExecutor = deps.windowsExecutor ?? spawnSync;
-  const windowsAclFn = deps.windowsAclFn
-    ?? (options => defaultWindowsAcl(options, windowsExecutor));
+  const windowsExecutableLstatFn = deps.windowsExecutableLstatFn ?? lstatSync;
+  const windowsExecutableRealpathFn = deps.windowsExecutableRealpathFn ?? (realpathSync.native || realpathSync);
 
   try {
     if (typeof runId !== 'string' || !SAFE_ID.test(runId)
@@ -148,6 +174,13 @@ export function activateStoredLease(root, runId, {
       || typeof attemptId !== 'string' || !SAFE_ID.test(attemptId)) {
       throw closed('ACTIVATION_SECRET_BINDING_MISMATCH');
     }
+    const windowsExecutable = platform === 'win32'
+      ? trustedWindowsPowerShell({
+        env, lstatFn: windowsExecutableLstatFn, realpathFn: windowsExecutableRealpathFn,
+      })
+      : null;
+    const windowsAclFn = deps.windowsAclFn
+      ?? (options => defaultWindowsAcl(options, windowsExecutor, windowsExecutable));
     const canonicalRoot = canonicalProjectRootFn(root);
     const base = stateRoot({ platform, env, homedirFn, testStateRoot: deps.testStateRoot });
     if (typeof base !== 'string' || !isAbsolute(base)) throw closed('ACTIVATION_SECRET_ROOT_INVALID');

@@ -31,6 +31,24 @@ function linuxDeps(stateRoot, overrides = {}) {
   };
 }
 
+function windowsDeps(stateRoot, overrides = {}) {
+  const systemRoot = 'C:\\Windows';
+  const executable = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  return linuxDeps(stateRoot, {
+    platform: 'win32', testStateRoot: stateRoot,
+    env: { SystemRoot: systemRoot, LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local', PATH: 'C:\\attacker' },
+    windowsExecutableLstatFn(path) {
+      return {
+        isDirectory: () => path === systemRoot,
+        isFile: () => path === executable,
+        isSymbolicLink: () => false,
+      };
+    },
+    windowsExecutableRealpathFn: path => path,
+    ...overrides,
+  });
+}
+
 test('stored activation publishes one opaque private exact-schema secret and reuses it', () => {
   const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-state-'));
   const seen = [];
@@ -99,8 +117,7 @@ test('stored activation root selection rejects relative trusted config and Windo
 
   const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-win-'));
   let calls = 0;
-  const deps = linuxDeps(stateRoot, {
-    platform: 'win32', testStateRoot: stateRoot,
+  const deps = windowsDeps(stateRoot, {
     windowsAclFn: ({ kind }) => { calls += 1; return kind === 'directory'; },
   });
   assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
@@ -116,8 +133,7 @@ test('Windows ACL command absence, failure, and overbroad verification fail clos
   ]) {
     const stateRoot = mkdtempSync(join(tmpdir(), `dl-secret-win-${label.replaceAll(' ', '-')}-`));
     const calls = [];
-    const deps = linuxDeps(stateRoot, {
-      platform: 'win32', testStateRoot: stateRoot,
+    const deps = windowsDeps(stateRoot, {
       windowsExecutor(command, args, options) {
         calls.push({ command, args, options });
         return result;
@@ -126,11 +142,34 @@ test('Windows ACL command absence, failure, and overbroad verification fail clos
     assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
       error => error?.message === 'ACTIVATION_SECRET_UNSAFE', label);
     assert.equal(calls.length, 1, label);
-    assert.equal(calls[0].command, 'powershell.exe');
+    assert.equal(calls[0].command,
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     assert.equal(calls[0].options.shell, false);
     assert.equal(calls[0].options.stdio, 'ignore');
     assert.equal(calls[0].args.some(arg => typeof arg === 'string' && arg.includes('WlpaWlpa')), false,
       `${label}: token must not enter process arguments`);
+  }
+});
+
+test('Windows PowerShell identity ignores PATH and rejects missing, relative, or mismatched SystemRoot', () => {
+  for (const [label, overrides, code] of [
+    ['missing SystemRoot', { env: { PATH: 'C:\\attacker' } }, 'ACTIVATION_SECRET_ROOT_INVALID'],
+    ['relative SystemRoot', { env: { SystemRoot: 'Windows', PATH: 'C:\\attacker' } }, 'ACTIVATION_SECRET_ROOT_INVALID'],
+    ['mismatched executable', {
+      windowsExecutableRealpathFn(path) {
+        return path.endsWith('powershell.exe') ? 'C:\\attacker\\powershell.exe' : path;
+      },
+    }, 'ACTIVATION_SECRET_UNSAFE'],
+  ]) {
+    const stateRoot = mkdtempSync(join(tmpdir(), `dl-secret-win-identity-${label.replaceAll(' ', '-')}-`));
+    let executed = false;
+    const deps = windowsDeps(stateRoot, {
+      ...overrides,
+      windowsExecutor() { executed = true; return { status: 0 }; },
+    });
+    assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
+      error => error?.message === code, label);
+    assert.equal(executed, false, `${label}: untrusted executable must not run`);
   }
 });
 

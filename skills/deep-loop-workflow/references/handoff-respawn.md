@@ -128,7 +128,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease activate --stored-token --owne
 ```
 
 helper가 high-entropy token을 caller-private run+attempt binding에 원자 영속화한다. 스킬은
-state-root 환경 변수를 덮어쓰지 않고 raw token/path를 descriptor/handoff/env/receipt/stdout/log로
+state-root/SystemRoot/PATH 환경 변수를 덮어쓰지 않고 raw token/path를 descriptor/handoff/env/receipt/stdout/log로
 내보내지 않는다. `proceed:true` 뒤 `activated` 또는 같은 stored token의 `already-activated`만 성공이다.
 `ACTIVATION_SECRET_ROOT_INVALID|UNSAFE|MALFORMED|BINDING_MISMATCH|IO_UNAVAILABLE` 및 다른
 결과는 profile/continue 없이 fail closed한다. 응답 유실은 같은 attempt와 같은 stored token으로

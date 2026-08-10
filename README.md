@@ -97,6 +97,8 @@ Stored mode publishes a child-generated 32-byte token under the OS user-state
 `deep-loop/activation-secrets` directory. Directories/files are private 0700/0600 on POSIX;
 Windows requires a verified current-user-only ACL. Skills never override the trusted state-root
 environment or copy the raw token/path to descriptors, handoffs, env, receipts, stdout, or logs.
+On Windows, trusted ambient `SystemRoot` binds the ACL helper to the exact
+`System32/WindowsPowerShell/v1.0/powershell.exe`; PATH resolution is forbidden.
 Lost responses reuse the same attempt and stored token. The raw-token CLI remains compatibility-only;
 production skills use stored mode. Automatic cleanup and TTL are forbidden: retain the secret until
 future GC has durable generation-superseded or terminal proof.

@@ -668,6 +668,33 @@ function callAt(record, index, recordsByFile) {
   return null;
 }
 
+function collectBodyDefaultAliases(record, recordsByFile) {
+  const tokens = record.module.tokens;
+  const local = recordsByFile.get(record.module.file);
+  for (let index = record.start; index < record.end - 3; index += 1) {
+    if (!['const', 'let', 'var'].includes(tokens[index].value)
+      || !IDENTIFIER.test(tokens[index + 1]?.value || '')
+      || tokens[index + 2]?.value !== '=') continue;
+    let cursor = index + 3;
+    let nesting = 0;
+    while (cursor < record.end) {
+      const value = tokens[cursor].value;
+      if (['(', '[', '{'].includes(value)) nesting += 1;
+      if ([')', ']', '}'].includes(value)) nesting -= 1;
+      if (nesting === 0 && [';', ','].includes(value)) break;
+      if (nesting === 0 && value === '??') {
+        const fallback = tokens[cursor + 1]?.value;
+        if (IDENTIFIER.test(fallback || '')) {
+          const target = originForImport(record.module, fallback) || local?.get(fallback)?.id;
+          if (target) record.aliases.set(tokens[index + 1].value, target);
+        }
+        break;
+      }
+      cursor += 1;
+    }
+  }
+}
+
 function splitArguments(tokens, open, close) {
   const args = [];
   let start = open + 1;
@@ -753,6 +780,7 @@ function rangeLeaseStatus(record, range, recordsByFile, seen = new Set()) {
 
 function directFacts(record, recordsByFile) {
   const tokens = record.module.tokens;
+  collectBodyDefaultAliases(record, recordsByFile);
   const calls = [];
   const failures = [];
   const primitiveReferences = new Set();

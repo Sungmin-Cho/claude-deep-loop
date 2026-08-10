@@ -46,7 +46,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<cano
 재호출에 `{proceed:true, replayed:true}`를 재발급한다 — `Status: consumed`와 그 replay는
 동시에 성립한다(같은 durable 상태에 대한 두 사실이다). 따라서 보유한 값으로 아래 Boundary
 handoff의 acquire를 **정확히 한 번** 재시도하고, 그 응답의 `proceed`로 판단한다:
-`proceed:true`면 승격하고 계속하며(`replayed:true`는 같은 시도의 재확인이다),
+`proceed:true`면 같은 owner/new generation/attempt binding으로 `lease activate --stored-token`을
+실행하고 `{ok:true,reason:"activated"}` 또는 `{ok:true,reason:"already-activated"}`를 받은 뒤에만
+승격하고 계속한다(`replayed:true`는 같은 시도의 재확인이다).
 `proceed:false`면 그때 멈춘다. 보유한 값이 없다면 새로 만들지 않는다 — 새 값은 다른 시도이므로
 replay가 성립하지 않고, 그 경우는 §4-(b)③의 사람 런북 대상이다.
 
@@ -54,10 +56,10 @@ replay가 성립하지 않고, 그 경우는 §4-(b)③의 사람 런북 대상�
 > 덧붙인다(영수증이 `attempt_id`를 담고 run이 `running`일 때). 그 절이 있으면 위 예외를 그대로
 > 적용한다. **절이 없다는 것만으로 replay 불가를 결론내지 말 것** — 판단 기준은 "이 소비가
 > `lease acquire`로 이뤄졌고 그때 `--attempt-id`를 주었는가"다. `normal`·`boundary-handoff`·
-> **`boundary-recovery`** 세 경로는 모두 `lease acquire`로 소비되므로 nonce와 replay의 대상이며
-> (boundary-recovery의 resume invocation도 `lease acquire`다), `recovery acquire`와
-> `root recovery acquire`로 한 소비만 nonce를 받지 않아 replay가 원리적으로 없다. 절이 없는데
-> 보유한 값이 있다면 그 값으로 한 번 재시도해 응답의 `proceed`로 판단한다.
+> **`boundary-recovery`** 세 경로는 모두 `lease acquire`로 소비되므로 nonce와 replay의 대상이다.
+> `recovery acquire`와 `root recovery acquire`도 durable `attempt_id`를 입력받고 같은 attempt의
+> 응답 유실을 replay하므로, 절이 없는데 보유한 값이 있다면 해당 exact route를 같은 값으로 한 번
+> 재시도해 응답의 `proceed`로 판단한다.
 
 ## Boundary handoff
 
@@ -90,7 +92,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id>
 
 **`proceed:true`를 받은 execution child의 다음 의무는 stored activation이다.** helper가
 32-byte high-entropy token을 caller-private run+attempt binding으로 원자 영속화한 뒤 실행한다.
-스킬은 XDG_STATE_HOME/LOCALAPPDATA/HOME 등 state-root 환경 변수를 덮어쓰지 않고 raw token/path를
+스킬은 XDG_STATE_HOME/LOCALAPPDATA/HOME/SystemRoot/PATH 등 trusted host 환경 변수를 덮어쓰지 않고 raw token/path를
 descriptor, handoff, env, receipt, stdout 또는 log에 복사하지 않는다.
 
 ```
@@ -116,7 +118,8 @@ attempt+owner+generation의 stored binding을 보유한 경우에만 activate를
 **일시적 락 경합.** 응답이 정확히 `reason:"lock-busy"`, `retryable:true`,
 `proceed:false`이면 소유권은 이동하지 않았다. `proceed:false` 응답에서 승격하거나 새 attempt id를 만들지 말고, 이미
 영속화한 **같은** `<attempt_id>`로 나중에 제한적으로 재시도한다. 재시도도 `proceed:true`일
-때만 승격한다. 제한된 재시도 후에도 `lock-busy`이면 그 구조화 응답을 포함해 사람에게
+때 같은 binding의 `lease activate --stored-token`을 실행하고
+`activated|already-activated`를 확인한 뒤에만 승격한다. 제한된 재시도 후에도 `lock-busy`이면 그 구조화 응답을 포함해 사람에게
 보고하고 멈춘다. `retryable:true` 없는 다른 `proceed:false` 응답은 재시도하지 않는다.
 
 **오용 복구.** 자신이 위임된 실행 세션이 아닌데 `proceed:true`를 받았다면(위임 전 사전
@@ -133,7 +136,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --reason "acquire-misuse" --mo
 `Recovery: kind=affinity-supersession`이면 ordinary acquisition을 하지 않는다.
 `resume-command`의 첫 줄은 `recovery acquire --capsule ...`이며, exact returned
 command를 그대로 실행해야 한다.
-그 command의 `proceed:true`도 durable attempt → stored activation → 승격 순서를 따른다.
+그 command의 `proceed:true`도 durable attempt 뒤 같은 binding의
+`lease activate --stored-token`을 실행하고 `activated|already-activated`를 확인한 뒤에만
+승격/continue한다. acquire나 activation 응답 유실은 같은 attempt와 stored token으로 재시도한다.
 
 실행 전 fresh session/lease metadata의 `recovery_rel`, `recovery_sha256`,
 `recovery_project_root_digest`, `recovery_project_binding_generation`,
@@ -164,7 +169,9 @@ relocation recovery publication 뒤 `resume-command`를 다시 실행한다.
 실행한다. descriptor의 capsule rel, SHA-256, candidate root digest,
 `current_binding_generation`, child, runtime, lease generation이 fresh
 state와 일치하지 않으면 중단한다. generic acquisition은 금지한다.
-`proceed:true`이면 같은 attempt와 반환된 새 generation으로 stored activation 뒤에만 승격한다.
+`proceed:true`이면 같은 attempt와 반환된 새 generation으로 `lease activate --stored-token`을
+실행하고 `activated|already-activated`를 확인한 뒤에만 승격/continue한다. acquire나 activation
+응답 유실은 같은 attempt와 stored token으로 재시도한다.
 
 ## 단계 2.5: 세션 model/effort refresh (성공한 acquire 직후)
 

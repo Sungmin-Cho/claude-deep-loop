@@ -191,6 +191,38 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
   assert.equal(conditionalRows.length, 10);
   assert.equal(conditionalRows.every(({ evidence }) =>
     evidence.some(({ kind }) => kind === 'conditional-dominance')), true);
+  const stored = result.rows.find(({ id }) => id === 'activation-secret.mjs#activateStoredLease');
+  assert.equal(stored.write_reachability, 'reaches');
+  assert.equal(stored.leasecheck_dominance, 'does-not-dominate');
+  assert.equal(stored.evidence.some(({ kind, path }) => kind === 'transitive'
+    && path[0] === 'activation-secret.mjs#activateStoredLease'
+    && path[1] === 'lease.mjs#activateLease'
+    && path.at(-1) === 'integrity.mjs#appendAnchored'), true);
+  assert.equal(stored.evidence.some(({ kind }) => kind === 'no-path'), false,
+    'default dependency aliases must not seal stale no-path evidence');
+});
+
+test('STEP0-3 analyzer generically follows nullish default dependency aliases', async () => {
+  const analyzer = await import(STATIC_ANALYZER);
+  const scratch = mkdtempSync(join(tmpdir(), 'wsu1-f26-default-alias-'));
+  const wrapper = join(scratch, 'default-alias.mjs');
+  writeFileSync(wrapper, `import { appendAnchored } from '${join(ROOT, 'scripts', 'lib', 'integrity.mjs')}';\n`
+    + 'export function wrapper(deps = {}) {\n'
+    + '  const writeFn = deps.writeFn ?? appendAnchored;\n'
+    + "  return writeFn('/root', 'run', { type: 'x' }, () => {}, () => {});\n"
+    + '}\n');
+  const result = analyzer.analyzeClassification({
+    files: [wrapper],
+    live: { rows: new Map([['default-alias.mjs#wrapper', {
+      classification: 'X', reason: 'enforcement-origin',
+    }]]) },
+    requireExactSurface: false,
+  });
+  assert.deepEqual(result.failures, []);
+  const row = result.rows[0];
+  assert.equal(row.write_reachability, 'reaches');
+  assert.deepEqual(row.evidence.find(({ kind }) => kind === 'direct')?.path,
+    ['default-alias.mjs#wrapper', 'integrity.mjs#appendAnchored']);
 });
 
 test('STEP0-3 W1 and W2 inspect direct calls or references for every E2-E5/E7/E8 row', async () => {
@@ -301,7 +333,7 @@ test('STEP0-3 tracked evidence matrix is canonical and exactly matches source re
     'candidate_ids_sha256', 'candidate_ids', 'rows',
   ]);
   assert.equal(evidence.schema_version, 1);
-  assert.equal(evidence.design_sha256, '5b89254ca6816e4d907180d4171e96be5da5e0ff44c75ee6e43370c8b9d91d9b');
+  assert.equal(evidence.design_sha256, '5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2');
   assert.equal(evidence.seed_sha256, sha256(seedBytes));
   assert.equal(evidence.live_classification_sha256, sha256(liveBytes));
   assert.equal(evidence.candidate_ids_sha256,

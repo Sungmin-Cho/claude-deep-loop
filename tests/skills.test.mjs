@@ -507,12 +507,47 @@ test('resume and respawn prescribe stored activation before promotion with fail-
       `${name}: retry must reuse custody`);
     assert.match(source, /환경 변수[^\n]*덮어쓰지|must not override[^\n]*environment/i,
       `${name}: ambient state-root override forbidden`);
-    const acquire = source.indexOf('lease acquire');
-    const stored = source.indexOf('lease activate --stored-token');
-    const promote = source.indexOf('activation 성공', stored);
+    const ordered = name === 'deep-loop-resume'
+      ? source.slice(source.indexOf('## Boundary handoff'), source.indexOf('## Affinity recovery capsule'))
+      : source;
+    const acquire = ordered.indexOf('lease acquire');
+    const stored = ordered.indexOf('lease activate --stored-token');
+    const promote = ordered.indexOf('activation 성공', stored);
     assert.ok(acquire >= 0 && stored > acquire, `${name}: activation follows acquire`);
     assert.ok(promote > stored, `${name}: activation precedes promotion`);
   }
+});
+
+test('resume gates each proceeding branch locally through stored activation', () => {
+  const source = _rf(skillPath('deep-loop-resume'), 'utf8');
+  const section = (start, end) => {
+    const from = source.indexOf(start);
+    const to = source.indexOf(end, from + start.length);
+    assert.ok(from >= 0 && to > from, `bounded branch ${start}`);
+    return source.slice(from, to);
+  };
+  const branches = [
+    ['consumed replay', '**예외 — 이 세션이 durable하게 보유한 attempt_id', '## Boundary handoff'],
+    ['normal and lock-busy', '## Boundary handoff', '## Affinity recovery capsule'],
+    ['affinity recovery', '## Affinity recovery capsule', '## Project-root relocation recovery'],
+    ['root recovery', '## Project-root relocation recovery', '## 단계 2.5'],
+  ];
+  for (const [name, start, end] of branches) {
+    const branch = section(start, end);
+    assert.match(branch, /proceed:true/iu, `${name}: proceeding polarity`);
+    assert.match(branch, /lease activate --stored-token/iu, `${name}: stored activation route`);
+    assert.match(branch, /activated[^\n]*already-activated|already-activated[^\n]*activated/iu,
+      `${name}: exact accepted activation reasons`);
+    const promote = branch.search(/승격|continue/iu);
+    const activate = branch.indexOf('lease activate --stored-token');
+    assert.ok(activate >= 0 && promote > activate, `${name}: activation must precede promotion/continue`);
+  }
+  const lockBusy = section('**일시적 락 경합.**', '**오용 복구.**');
+  assert.match(lockBusy, /lease activate --stored-token/);
+  assert.match(lockBusy, /activated[^\n]*already-activated|already-activated[^\n]*activated/);
+  assert.doesNotMatch(source,
+    /nonce를 받지|replay가 원리적으로 없다/,
+    'affinity and root recovery must not falsely deny same-attempt replay');
 });
 
 test('status and workflow references make activation a required post-acquire gate', () => {

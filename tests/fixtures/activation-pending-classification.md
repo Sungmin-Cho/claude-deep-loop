@@ -3,7 +3,7 @@
 This tracked overlay resolves the pinned seed into the current execution surface. The seed remains immutable; this file owns post-design export deltas and the strengthened machine/human boundary.
 
 - Seed SHA-256: `6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13`
-- Reviewed design SHA-256: `5b89254ca6816e4d907180d4171e96be5da5e0ff44c75ee6e43370c8b9d91d9b`
+- Reviewed design SHA-256: `5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2`
 - W1: every E2–E5/E7/E8 declaration body or initializer fails when `writeState`, `appendEvent`, or `appendAnchored` is directly called **or directly referenced**.
 - W2: the W1 domain is the closed set E2, E3, E4, E5, E7, E8; no E subclass may be silently omitted.
 - Machine boundary: guards 1–4, rule-B canonicalization, bidirectional/disjoint partition, direct/transitive call reachability, same-mutation-lock dominance, closed reason enum, and classification/reason/recalculation consistency.
@@ -13,7 +13,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
 {
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "design_sha256": "5b89254ca6816e4d907180d4171e96be5da5e0ff44c75ee6e43370c8b9d91d9b",
+  "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
   "expected_counts": { "L": 28, "B": 7, "X": 33, "E2": 116, "E3": 12, "E4": 16, "E5": 1, "E7": 73, "E8": 26 },
   "base_x_reasons": {
     "safety-downgrade": ["budget.mjs#settleTerminalCodexMakerCost"],

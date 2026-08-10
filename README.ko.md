@@ -86,6 +86,8 @@ stored mode는 child가 생성한 32-byte token을 OS user-state의 `deep-loop/a
 게시한다. POSIX directory/file은 0700/0600이고 Windows는 검증된 current-user-only ACL이 필수다.
 skill은 trusted state-root 환경 변수를 덮어쓰거나 raw token/path를 descriptor, handoff, env,
 receipt, stdout, log에 복사하지 않는다. 응답 유실은 같은 attempt와 stored token으로 재시도한다.
+Windows ACL helper는 trusted ambient `SystemRoot` 아래 exact
+`System32/WindowsPowerShell/v1.0/powershell.exe`에만 결속하며 PATH resolve는 사용하지 않는다.
 raw-token CLI는 호환 전용이고 production skill은 stored mode만 쓴다. 자동 cleanup과 TTL은 금지하며
 future GC가 generation 교체 또는 terminal 증거를 확인할 때까지 보존한다.
 
