@@ -2,7 +2,7 @@
   "schema_version": 1,
   "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "5664fa2bfdd337a60108ea52b00fc8c10e597dc4bcd16ac1a1715138be0261a5",
+  "live_classification_sha256": "f9980aa94b5394bb2f2e76736327a91cfb7c34b89765a105267da59348a30b8b",
   "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
@@ -2272,18 +2272,39 @@
     },
     {
       "id": "headless-host.mjs#acquireHeadlessHostLock",
-      "classification": "E4",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
-      "reason": "non-run-state-durable-write",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "non-dominance",
           "path": [
-            "headless-host.mjs#acquireHeadlessHostLock"
+            "headless-host.mjs#acquireHeadlessHostLock",
+            "state.mjs#withReconciledMutationLock",
+            "integrity.mjs#withReconciledMutationLock",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:189"
+            "scripts/lib/headless-host.mjs:208",
+            "scripts/lib/state.mjs:270",
+            "scripts/lib/integrity.mjs:709",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "headless-host.mjs#acquireHeadlessHostLock",
+            "state.mjs#withReconciledMutationLock",
+            "integrity.mjs#withReconciledMutationLock",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:208",
+            "scripts/lib/state.mjs:270",
+            "scripts/lib/integrity.mjs:709",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]
@@ -2702,17 +2723,30 @@
     {
       "id": "integrity.mjs#captureReconciledRootRecoverySnapshot",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "direct",
           "path": [
-            "integrity.mjs#captureReconciledRootRecoverySnapshot"
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/integrity.mjs:680"
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]
@@ -2720,17 +2754,34 @@
     {
       "id": "integrity.mjs#captureReconciledRunSet",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "non-dominance",
           "path": [
-            "integrity.mjs#captureReconciledRunSet"
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/integrity.mjs:640"
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]
@@ -2738,17 +2789,30 @@
     {
       "id": "integrity.mjs#captureReconciledRunSnapshot",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "direct",
           "path": [
-            "integrity.mjs#captureReconciledRunSnapshot"
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/integrity.mjs:618"
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]
@@ -2828,12 +2892,21 @@
     {
       "id": "integrity.mjs#reconcileAnchoredPublicationLocked",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "direct",
+          "path": [
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "non-dominance",
           "path": [
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
@@ -5925,17 +5998,34 @@
     {
       "id": "state.mjs#captureReconciledRootRecoverySnapshot",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "non-dominance",
           "path": [
-            "state.mjs#captureReconciledRootRecoverySnapshot"
+            "state.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:265"
+            "scripts/lib/state.mjs:266",
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "state.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:266",
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]
@@ -5943,17 +6033,38 @@
     {
       "id": "state.mjs#captureReconciledRunSet",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "non-dominance",
           "path": [
-            "state.mjs#captureReconciledRunSet"
+            "state.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:261"
+            "scripts/lib/state.mjs:262",
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "state.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:262",
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]
@@ -5961,17 +6072,34 @@
     {
       "id": "state.mjs#captureReconciledRunSnapshot",
       "classification": "X",
-      "write_reachability": "does-not-reach",
-      "leasecheck_dominance": "not-applicable",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
       "reason": "damage-repair",
       "evidence": [
         {
-          "kind": "no-path",
+          "kind": "non-dominance",
           "path": [
-            "state.mjs#captureReconciledRunSnapshot"
+            "state.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:257"
+            "scripts/lib/state.mjs:258",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "state.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:258",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
           ]
         }
       ]

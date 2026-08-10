@@ -14,7 +14,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
   "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
-  "expected_counts": { "L": 28, "B": 7, "X": 33, "E2": 116, "E3": 12, "E4": 16, "E5": 1, "E7": 73, "E8": 26 },
+  "expected_counts": { "L": 28, "B": 7, "X": 34, "E2": 116, "E3": 12, "E4": 15, "E5": 1, "E7": 73, "E8": 26 },
   "base_x_reasons": {
     "safety-downgrade": ["budget.mjs#settleTerminalCodexMakerCost"],
     "boot-observation": ["detect-terminal.mjs#detectAndPersist", "initrun.mjs#initRun"],
@@ -27,7 +27,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
   },
   "add": [
     { "id": "activation-secret.mjs#activateStoredLease", "classification": "X", "reason": "enforcement-origin" },
-    { "id": "headless-host.mjs#acquireHeadlessHostLock", "classification": "E4", "reason": "non-run-state-durable-write" },
+    { "id": "headless-host.mjs#acquireHeadlessHostLock", "classification": "X", "reason": "damage-repair" },
     { "id": "lease.mjs#activateLease", "classification": "X", "reason": "enforcement-origin" },
     { "id": "lease.mjs#reapLease", "classification": "X", "reason": "enforcement-origin" },
     { "id": "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed", "classification": "E4", "reason": "non-run-state-durable-write" },

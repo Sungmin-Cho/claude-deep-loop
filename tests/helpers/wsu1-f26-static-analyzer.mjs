@@ -514,8 +514,7 @@ const WRITE_PRIMITIVES = new Set([
   'integrity.mjs#appendAnchored',
 ]);
 const WRITE_GATEWAYS = new Set([
-  'integrity.mjs#appendAnchored',
-  'state.mjs#withReconciledMutationLock',
+  'integrity.mjs#reconcileAnchoredPublicationLocked',
 ]);
 const E_WRITE_GUARD = new Set(['E2', 'E3', 'E4', 'E5', 'E7', 'E8']);
 const E3_IMPLEMENTATION_REFERENCES = new Map([
@@ -909,6 +908,30 @@ function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
   return { reaches, dominance: reaches ? dominance : 'not-applicable', path, coordinates };
 }
 
+function analyzeRepairRecord(record, factsById, recordsById, stack = new Set()) {
+  if (!record || stack.has(record.id)) {
+    return { reaches: false, dominance: 'not-applicable', path: [], coordinates: [] };
+  }
+  if (WRITE_GATEWAYS.has(record.id)) return {
+    reaches: true,
+    dominance: 'does-not-dominate',
+    path: [record.id],
+    coordinates: [`${relativeSourcePath(record.module.file)}:${record.line}`],
+  };
+  const next = new Set(stack).add(record.id);
+  for (const call of factsById.get(record.id).calls) {
+    const nested = analyzeRepairRecord(recordsById.get(call.target), factsById, recordsById, next);
+    if (!nested.reaches) continue;
+    return {
+      reaches: true,
+      dominance: 'does-not-dominate',
+      path: [record.id, ...nested.path],
+      coordinates: [call.coordinate, ...nested.coordinates],
+    };
+  }
+  return { reaches: false, dominance: 'not-applicable', path: [], coordinates: [] };
+}
+
 function recordOrCalleeContains(record, factsById, recordsById, needle, stack = new Set()) {
   if (!record || stack.has(record.id)) return false;
   const own = record.module.tokens.slice(record.start, record.end).some((token) => token.raw.includes(needle));
@@ -951,7 +974,9 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
       violations.push({ code: `CLASSIFICATION_REASON_MISMATCH:${id}` });
     }
     const record = exportedRecord(modules, recordsByFile, id);
-    const calculated = analyzeRecord(record, factsById, recordsById);
+    const calculated = declared.classification === 'X' && declared.reason === 'damage-repair'
+      ? analyzeRepairRecord(record, factsById, recordsById)
+      : analyzeRecord(record, factsById, recordsById);
     const primitiveReferences = new Set([
       ...(record ? factsById.get(record.id)?.primitiveReferences || [] : []),
       ...exportedInitializerPrimitiveReferences(modules, id),
@@ -993,7 +1018,7 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
       || declared.classification === 'E8' && declared.reason === 'non-callable-value') && calculated.reaches) {
       violations.push({ code: 'CLASSIFICATION_RECALCULATION_MISMATCH', id });
     }
-    if ((declared.classification === 'X' && declared.reason === 'transitive'
+    if ((declared.classification === 'X' && ['transitive', 'damage-repair'].includes(declared.reason)
       || declared.classification === 'B') && !calculated.reaches) {
       violations.push({ code: 'CLASSIFICATION_RECALCULATION_MISMATCH', id });
     }

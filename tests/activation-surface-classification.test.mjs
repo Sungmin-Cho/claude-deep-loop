@@ -127,7 +127,7 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
   assert.deepEqual(live.counts, {
-    L: 28, B: 7, X: 33, E2: 116, E3: 12, E4: 16, E5: 1, E7: 73, E8: 26,
+    L: 28, B: 7, X: 34, E2: 116, E3: 12, E4: 15, E5: 1, E7: 73, E8: 26,
   });
   assert.equal(live.rows.size, 312);
   assert.deepEqual([...live.rows.entries()].filter(([id]) => [
@@ -145,7 +145,7 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     'schema.mjs#validProcessStreamMetadata',
   ].includes(id)), [
     ['activation-secret.mjs#activateStoredLease', { classification: 'X', reason: 'enforcement-origin' }],
-    ['headless-host.mjs#acquireHeadlessHostLock', { classification: 'E4', reason: 'non-run-state-durable-write' }],
+    ['headless-host.mjs#acquireHeadlessHostLock', { classification: 'X', reason: 'damage-repair' }],
     ['lease.mjs#activateLease', { classification: 'X', reason: 'enforcement-origin' }],
     ['lease.mjs#reapLease', { classification: 'X', reason: 'enforcement-origin' }],
     ['preflight-receipt-journal.mjs#markCheckerImportUnconfirmed', { classification: 'E4', reason: 'non-run-state-durable-write' }],
@@ -172,6 +172,45 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.violations, []);
   assert.equal(result.rows.length, 312);
+  assert.deepEqual(result.rows.find(({ id }) => id === 'headless-host.mjs#acquireHeadlessHostLock'), {
+    id: 'headless-host.mjs#acquireHeadlessHostLock',
+    classification: 'X',
+    write_reachability: 'reaches',
+    leasecheck_dominance: 'does-not-dominate',
+    reason: 'damage-repair',
+    evidence: [
+      {
+        kind: 'non-dominance',
+        path: [
+          'headless-host.mjs#acquireHeadlessHostLock',
+          'state.mjs#withReconciledMutationLock',
+          'integrity.mjs#withReconciledMutationLock',
+          'integrity.mjs#reconcileAnchoredPublicationLocked',
+        ],
+        coordinates: [
+          'scripts/lib/headless-host.mjs:208',
+          'scripts/lib/state.mjs:270',
+          'scripts/lib/integrity.mjs:709',
+          'scripts/lib/integrity.mjs:575',
+        ],
+      },
+      {
+        kind: 'transitive',
+        path: [
+          'headless-host.mjs#acquireHeadlessHostLock',
+          'state.mjs#withReconciledMutationLock',
+          'integrity.mjs#withReconciledMutationLock',
+          'integrity.mjs#reconcileAnchoredPublicationLocked',
+        ],
+        coordinates: [
+          'scripts/lib/headless-host.mjs:208',
+          'scripts/lib/state.mjs:270',
+          'scripts/lib/integrity.mjs:709',
+          'scripts/lib/integrity.mjs:575',
+        ],
+      },
+    ],
+  });
   assert.deepEqual(result.rows.find(({ id }) => id === 'session-profile.mjs#setSessionProfile'), {
     id: 'session-profile.mjs#setSessionProfile',
     classification: 'L',
@@ -223,6 +262,45 @@ test('STEP0-3 analyzer generically follows nullish default dependency aliases', 
   assert.equal(row.write_reachability, 'reaches');
   assert.deepEqual(row.evidence.find(({ kind }) => kind === 'direct')?.path,
     ['default-alias.mjs#wrapper', 'integrity.mjs#appendAnchored']);
+});
+
+test('STEP0-3 repair gateway recursion rejects stale damage-repair no-path evidence', async () => {
+  const analyzer = await import(STATIC_ANALYZER);
+  const scratch = mkdtempSync(join(tmpdir(), 'wsu1-f26-repair-gateway-'));
+  const integrity = join(scratch, 'integrity.mjs');
+  const state = join(scratch, 'state.mjs');
+  const caller = join(scratch, 'headless-host.mjs');
+  const detached = join(scratch, 'detached.mjs');
+  writeFileSync(integrity, 'export function reconcileAnchoredPublicationLocked() {}\n');
+  writeFileSync(state, "import { reconcileAnchoredPublicationLocked } from './integrity.mjs';\nexport function withReconciledMutationLock() { return reconcileAnchoredPublicationLocked(); }\n");
+  writeFileSync(caller, "import { withReconciledMutationLock } from './state.mjs';\nexport function acquireHeadlessHostLock() { return withReconciledMutationLock(); }\n");
+  writeFileSync(detached, 'export function detachedRepair() {}\n');
+
+  const reached = analyzer.analyzeClassification({
+    files: [integrity, state, caller],
+    live: { rows: new Map([['headless-host.mjs#acquireHeadlessHostLock', {
+      classification: 'X', reason: 'damage-repair',
+    }]]) },
+    requireExactSurface: false,
+  });
+  assert.deepEqual(reached.violations, []);
+  assert.deepEqual(reached.rows[0].evidence.find(({ kind }) => kind === 'transitive').path, [
+    'headless-host.mjs#acquireHeadlessHostLock',
+    'state.mjs#withReconciledMutationLock',
+    'integrity.mjs#reconcileAnchoredPublicationLocked',
+  ]);
+
+  const stale = analyzer.analyzeClassification({
+    files: [detached],
+    live: { rows: new Map([['detached.mjs#detachedRepair', {
+      classification: 'X', reason: 'damage-repair',
+    }]]) },
+    requireExactSurface: false,
+  });
+  assert.equal(stale.rows[0].evidence[0].kind, 'no-path');
+  assert.deepEqual(stale.violations, [{
+    code: 'CLASSIFICATION_RECALCULATION_MISMATCH', id: 'detached.mjs#detachedRepair',
+  }]);
 });
 
 test('STEP0-3 W1 and W2 inspect direct calls or references for every E2-E5/E7/E8 row', async () => {
