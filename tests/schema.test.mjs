@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadSchema, validate } from '../scripts/lib/schema.mjs';
+import {
+  CHECKER_PROCESS_PHASES,
+  CHECKER_PROCESS_REASON_CODES,
+  loadSchema,
+  validate,
+  validCheckerProcessDiagnostic,
+} from '../scripts/lib/schema.mjs';
 import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { classifyPatch } from '../scripts/lib/state.mjs';
 
@@ -55,6 +61,43 @@ test('schema registry includes activation lifecycle event kinds', () => {
   const schema = loadSchema();
   assert.ok(schema.event_types.includes('lease-activated'));
   assert.ok(schema.event_types.includes('activation-expired'));
+});
+
+test('checker process diagnostic is backward-compatible but exact, closed, and path-free when present', () => {
+  const stream = { sha256: 'a'.repeat(64), byte_count: 0, truncated: false };
+  const diagnostic = {
+    reason_code: 'child-nonzero-exit',
+    process_phase: 'child-execution',
+    stderr: stream,
+    stdout: { sha256: 'b'.repeat(64), byte_count: 17, truncated: true },
+  };
+  assert.equal(validCheckerProcessDiagnostic(diagnostic), true);
+  assert.ok(CHECKER_PROCESS_REASON_CODES.includes(diagnostic.reason_code));
+  assert.ok(CHECKER_PROCESS_PHASES.includes(diagnostic.process_phase));
+
+  const absent = minimalValid();
+  absent.episodes.push({ id: '001-checker', status: 'blocked', request_rel: 'episodes/001-checker/request.md' });
+  assert.equal(validate(absent).ok, true, 'legacy episode without diagnostic remains valid');
+
+  const present = structuredClone(absent);
+  present.episodes[0].checker_process_diagnostic = diagnostic;
+  assert.equal(validate(present).ok, true);
+
+  const mutants = [
+    ['raw stderr', value => { value.stderr.raw = 'SECRET'; }],
+    ['attacker path', value => { value.path = '/tmp/secret'; }],
+    ['extra argv', value => { value.argv = ['--secret']; }],
+    ['open reason', value => { value.reason_code = 'exit-37:/secret'; }],
+    ['open phase', value => { value.process_phase = 'attacker-phase'; }],
+    ['negative count', value => { value.stderr.byte_count = -1; }],
+    ['non-canonical hash', value => { value.stderr.sha256 = 'A'.repeat(64); }],
+    ['non-boolean truncation', value => { value.stderr.truncated = 0; }],
+  ];
+  for (const [label, mutate] of mutants) {
+    const candidate = structuredClone(present);
+    mutate(candidate.episodes[0].checker_process_diagnostic);
+    assert.equal(validate(candidate).ok, false, label);
+  }
 });
 
 test('activation deadline config accepts inclusive bounds and rejects out-of-range values', () => {

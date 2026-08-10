@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,7 @@ import { makeCodexPreflightReceipt } from '../scripts/lib/budget.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/stream-emitter.mjs', import.meta.url));
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function streamingModule() {
   try {
@@ -392,8 +394,23 @@ test('runStreamingProcessSync fails closed without usage when its receipt journa
       bin: process.execPath,
       argv: [fixture, 'codex-stream'],
       usageOutputKind: 'codex-jsonl',
+      captureProcessDiagnostic: true,
     }, { timeoutMs: 2_000, usageReceipt });
-    assert.deepEqual(result, { ok: false, reason: 'usage-receipt-write-failed' }, label);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.reason, 'usage-receipt-write-failed', label);
+    assert.equal(result.process_diagnostic.reason_code, 'usage-receipt-write-failed', label);
+    assert.equal(result.process_diagnostic.process_phase, 'receipt-write', label);
+    assert.deepEqual(result.process_diagnostic.stderr, {
+      sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false,
+    }, label);
+    if (Object.hasOwn(result.process_diagnostic, 'stdout')) {
+      assert.equal(
+        result.process_diagnostic.stdout.byte_count > 0,
+        label === 'occupied immutable journal',
+        label,
+      );
+      assert.match(result.process_diagnostic.stdout.sha256, /^[0-9a-f]{64}$/, label);
+    }
     assert.equal(Object.hasOwn(result, 'usage'), false, label);
     assert.equal(Object.hasOwn(result, 'usageReceipt'), false, label);
   }
@@ -417,6 +434,69 @@ test('runStreamingProcessSync preserves timeout/non-zero precedence across the w
   assert.deepEqual(nonzero, { ok: false, reason: 'exit-7' });
   assert.equal(timedOut.usage, undefined);
   assert.equal(nonzero.usage, undefined);
+});
+
+test('checker process diagnostics hash full child streams without exposing raw bytes', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const secret = Buffer.from('checker-secret-on-stderr');
+  const stdout = Buffer.from('{"num_turns":1}');
+  const result = runStreamingProcessSync({
+    bin: process.execPath,
+    argv: ['-e', `process.stdout.write(${JSON.stringify(stdout.toString())});process.stderr.write(${JSON.stringify(secret.toString())});process.exit(7)`],
+    usageOutputKind: 'claude-json',
+    captureProcessDiagnostic: true,
+  }, { timeoutMs: 2_000 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'exit-7');
+  assert.deepEqual(result.process_diagnostic, {
+    reason_code: 'child-nonzero-exit',
+    process_phase: 'child-execution',
+    stderr: { sha256: sha256(secret), byte_count: secret.length, truncated: false },
+    stdout: { sha256: sha256(stdout), byte_count: stdout.length, truncated: false },
+  });
+  assert.equal(JSON.stringify(result).includes(secret.toString()), false);
+});
+
+test('checker stderr metadata hashes every byte beyond the capture limit and marks truncation', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const fullStderr = Buffer.alloc(4 * 1024 * 1024, 0x65);
+  const result = runStreamingProcessSync({
+    bin: process.execPath,
+    argv: [fixture, 'large-stderr'],
+    usageOutputKind: 'claude-json',
+    captureProcessDiagnostic: true,
+  }, { timeoutMs: 5_000 });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.process_streams.stderr, {
+    sha256: sha256(fullStderr),
+    byte_count: fullStderr.length,
+    truncated: true,
+  });
+  assert.equal(Object.hasOwn(result, 'stderr'), false);
+});
+
+test('worker protocol failure records only bounded stdout/stderr metadata', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const stdout = 'malformed worker output SECRET';
+  const stderr = 'worker stderr SECRET';
+  const result = runStreamingProcessSync({
+    bin: process.execPath, argv: [], captureProcessDiagnostic: true,
+  }, {
+    spawnSyncImpl: () => ({ status: 0, signal: null, stdout, stderr }),
+  });
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'worker-protocol-invalid',
+    process_diagnostic: {
+      reason_code: 'worker-protocol-invalid',
+      process_phase: 'worker-transport',
+      stderr: { sha256: sha256(Buffer.from(stderr)), byte_count: Buffer.byteLength(stderr), truncated: false },
+      stdout: { sha256: sha256(Buffer.from(stdout)), byte_count: Buffer.byteLength(stdout), truncated: false },
+    },
+  });
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });
 
 test('runStreamingProcessSync escalates timeout termination so the runtime cannot outlive its worker', async () => {

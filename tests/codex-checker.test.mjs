@@ -107,6 +107,10 @@ test('runIndependentCodexChecker preserves an exact measured turn when the final
   writeFileSync(schemaPath, '{}');
   const usage = { num_turns: 1, tokens: 12, input_tokens: 5, output_tokens: 7 };
 
+  const processStreams = {
+    stderr: { sha256: 'a'.repeat(64), byte_count: 0, truncated: false },
+    stdout: { sha256: 'b'.repeat(64), byte_count: 7, truncated: false },
+  };
   const result = runIndependentCodexChecker({
     executable: '/opt/codex/bin/codex',
     projectRoot: root,
@@ -115,10 +119,19 @@ test('runIndependentCodexChecker preserves an exact measured turn when the final
     contract: contract(root),
     env: { CODEX_HOME: '/home/test/.codex' },
     timeoutMs: 1_234,
-    runProcess: () => ({ ok: true, usage }),
+    runProcess: () => ({ ok: true, usage, process_streams: processStreams }),
   });
 
-  assert.deepEqual(result, { ok: false, reason: 'checker-final-message-invalid', usage });
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'checker-final-message-invalid',
+    usage,
+    process_diagnostic: {
+      reason_code: 'checker-final-message-invalid',
+      process_phase: 'final-message',
+      ...processStreams,
+    },
+  });
 });
 
 test('importReviewViaCli forwards the identical Buffer through trusted Node argv with bounded shell-free IO', async () => {

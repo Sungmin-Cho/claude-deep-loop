@@ -1,10 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createCodexJsonlParser, parseClaudeUsage, STREAM_LIMITS } from './usage-parser.mjs';
 import {
   readProcessUsageReceipt,
   validateProcessUsageReceiptDescriptor,
 } from './preflight-receipt-journal.mjs';
+import { validCheckerProcessDiagnostic, validProcessStreamMetadata } from './schema.mjs';
 
 const WORKER_REQUEST_BYTES = 2 * 1024 * 1024;
 // 256 KiB final-message bytes become ~350 KiB canonical base64; add the independently
@@ -14,6 +16,35 @@ const RUNTIME_KILL_GRACE_MS = 250;
 const WORKER_TIMEOUT_GRACE_MS = RUNTIME_KILL_GRACE_MS + 1_000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
 const workerPath = fileURLToPath(new URL('../workers/streaming-child.mjs', import.meta.url));
+const EMPTY_SHA256 = createHash('sha256').update(Buffer.alloc(0)).digest('hex');
+
+function emptyStreamMetadata() {
+  return { sha256: EMPTY_SHA256, byte_count: 0, truncated: false };
+}
+
+function bufferMetadata(value, truncated = false) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value || '', 'utf8');
+  return {
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    byte_count: bytes.length,
+    truncated,
+  };
+}
+
+function emptyDiagnostic(reasonCode, processPhase) {
+  return {
+    reason_code: reasonCode,
+    process_phase: processPhase,
+    stderr: emptyStreamMetadata(),
+    stdout: emptyStreamMetadata(),
+  };
+}
+
+function withEmptyDiagnostic(result, enabled, reasonCode, processPhase) {
+  return enabled
+    ? { ...result, process_diagnostic: emptyDiagnostic(reasonCode, processPhase) }
+    : result;
+}
 
 function validTimeout(timeoutMs) {
   return Number.isInteger(timeoutMs) && timeoutMs >= 0 && timeoutMs <= NODE_TIMER_MAX_MS;
@@ -43,7 +74,8 @@ function decodeBoundedDiagnostic(chunks) {
   return { text: bounded, encodingTruncated: true };
 }
 
-function withDiagnostic(result, stderrChunks, stderrTruncated) {
+function withDiagnostic(result, stderrChunks, stderrTruncated, processDiagnostic = null) {
+  if (processDiagnostic != null) return { ...result, process_diagnostic: processDiagnostic };
   const decoded = decodeBoundedDiagnostic(stderrChunks);
   if (stderrChunks.length > 0) result.stderr = decoded.text;
   if (stderrTruncated || decoded.encodingTruncated) result.stderrTruncated = true;
@@ -54,19 +86,32 @@ export function runStreamingProcess(entry, {
   timeoutMs = 30 * 60 * 1000,
   spawnImpl = spawn,
 } = {}) {
+  const captureProcessDiagnostic = entry?.captureProcessDiagnostic === true;
   if (!validTimeout(timeoutMs)) {
-    return Promise.resolve({ ok: false, reason: 'invalid-timeout' });
+    return Promise.resolve(withEmptyDiagnostic(
+      { ok: false, reason: 'invalid-timeout' }, captureProcessDiagnostic,
+      'process-config-invalid', 'request',
+    ));
   }
   if (!entry || typeof entry.bin !== 'string' || !Array.isArray(entry.argv)) {
-    return Promise.resolve({ ok: false, reason: 'invalid-entry' });
+    return Promise.resolve(withEmptyDiagnostic(
+      { ok: false, reason: 'invalid-entry' }, captureProcessDiagnostic,
+      'process-config-invalid', 'request',
+    ));
   }
   if (entry.shell != null && entry.shell !== false) {
-    return Promise.resolve({ ok: false, reason: 'shell-not-allowed' });
+    return Promise.resolve(withEmptyDiagnostic(
+      { ok: false, reason: 'shell-not-allowed' }, captureProcessDiagnostic,
+      'process-config-invalid', 'request',
+    ));
   }
 
   const usageKind = entry.usageOutputKind ?? 'claude-json';
   if (usageKind !== 'claude-json' && usageKind !== 'codex-jsonl') {
-    return Promise.resolve({ ok: false, reason: 'unsupported-usage-kind' });
+    return Promise.resolve(withEmptyDiagnostic(
+      { ok: false, reason: 'unsupported-usage-kind' }, captureProcessDiagnostic,
+      'process-config-invalid', 'request',
+    ));
   }
   const stdinPayload = entry.stdin ?? '';
   const stdinRequired = Buffer.isBuffer(stdinPayload)
@@ -83,16 +128,21 @@ export function runStreamingProcess(entry, {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
-      resolve({ ok: false, reason: `spawn-error: ${error?.message || error}` });
+      resolve(withEmptyDiagnostic(
+        { ok: false, reason: `spawn-error: ${error?.message || error}` }, captureProcessDiagnostic,
+        'child-spawn-failed', 'child-spawn',
+      ));
       return;
     }
 
     const stderrChunks = [];
     let stderrBytes = 0;
     let stderrTotalBytes = 0;
+    const stderrHash = captureProcessDiagnostic ? createHash('sha256') : null;
     const claudeChunks = [];
     let claudeBytes = 0;
     let claudeTotalBytes = 0;
+    const stdoutHash = captureProcessDiagnostic ? createHash('sha256') : null;
     let timedOut = false;
     let spawnError = null;
     let stdinError = null;
@@ -116,15 +166,18 @@ export function runStreamingProcess(entry, {
 
     child.stdout.on('data', (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stdoutHash?.update(buffer);
+      if (captureProcessDiagnostic) claudeTotalBytes += buffer.length;
       if (codexParser) {
         codexParser.write(buffer);
         return;
       }
-      claudeTotalBytes += buffer.length;
+      if (!captureProcessDiagnostic) claudeTotalBytes += buffer.length;
       claudeBytes = appendBounded(claudeChunks, buffer, claudeBytes, STREAM_LIMITS.claudeOutputBytes);
     });
     child.stderr.on('data', (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stderrHash?.update(buffer);
       stderrTotalBytes += buffer.length;
       stderrBytes = appendBounded(stderrChunks, buffer, stderrBytes, STREAM_LIMITS.stderrBytes);
     });
@@ -139,48 +192,65 @@ export function runStreamingProcess(entry, {
       settled = true;
       if (timer) clearTimeout(timer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
-      const diagnostic = (result) => withDiagnostic(
+      const streams = captureProcessDiagnostic ? {
+        stderr: {
+          sha256: stderrHash.digest('hex'),
+          byte_count: stderrTotalBytes,
+          truncated: stderrTotalBytes > STREAM_LIMITS.stderrBytes,
+        },
+        stdout: {
+          sha256: stdoutHash.digest('hex'),
+          byte_count: claudeTotalBytes,
+          truncated: !codexParser && claudeTotalBytes > STREAM_LIMITS.claudeOutputBytes,
+        },
+      } : null;
+      const diagnostic = (result, reasonCode, processPhase) => withDiagnostic(
         result,
         stderrChunks,
         stderrTotalBytes > STREAM_LIMITS.stderrBytes,
+        streams == null ? null : { reason_code: reasonCode, process_phase: processPhase, ...streams },
       );
+      const success = (result) => streams == null ? diagnostic(result) : { ...result, process_streams: streams };
 
       if (spawnError) {
-        resolve(diagnostic({ ok: false, reason: `spawn-error: ${spawnError?.message || spawnError}` }));
+        resolve(diagnostic(
+          { ok: false, reason: `spawn-error: ${spawnError?.message || spawnError}` },
+          'child-spawn-failed', 'child-spawn',
+        ));
         return;
       }
       if (timedOut) {
-        resolve(diagnostic({ ok: false, reason: 'timeout' }));
+        resolve(diagnostic({ ok: false, reason: 'timeout' }, 'child-timeout', 'child-execution'));
         return;
       }
       if (code !== 0) {
-        resolve(diagnostic({ ok: false, reason: `exit-${code}` }));
+        resolve(diagnostic({ ok: false, reason: `exit-${code}` }, 'child-nonzero-exit', 'child-execution'));
         return;
       }
       if (stdinError || !stdinDelivered) {
-        resolve(diagnostic({ ok: false, reason: 'stdin-error' }));
+        resolve(diagnostic({ ok: false, reason: 'stdin-error' }, 'child-stdin-failed', 'child-stdin'));
         return;
       }
 
       if (codexParser) {
         const parsed = codexParser.end();
-        resolve(diagnostic(parsed.ok
-          ? {
-              ok: true,
-              usage: parsed.usage,
-              ...(Buffer.isBuffer(parsed.finalMessage) ? { finalMessage: parsed.finalMessage } : {}),
-            }
-          : parsed));
+        resolve(parsed.ok ? success(
+          {
+            ok: true,
+            usage: parsed.usage,
+            ...(Buffer.isBuffer(parsed.finalMessage) ? { finalMessage: parsed.finalMessage } : {}),
+          }
+        ) : diagnostic(parsed, 'child-protocol-invalid', 'child-protocol'));
         return;
       }
       if (claudeTotalBytes > STREAM_LIMITS.claudeOutputBytes) {
-        resolve(diagnostic({ ok: false, reason: 'claude-output-overflow' }));
+        resolve(diagnostic({ ok: false, reason: 'claude-output-overflow' }, 'child-output-overflow', 'child-protocol'));
         return;
       }
       const usage = parseClaudeUsage(Buffer.concat(claudeChunks, claudeBytes));
-      resolve(diagnostic(usage == null
-        ? { ok: false, reason: 'unmeasurable-fail-closed' }
-        : { ok: true, usage }));
+      resolve(usage == null
+        ? diagnostic({ ok: false, reason: 'unmeasurable-fail-closed' }, 'usage-unmeasurable', 'usage-parse')
+        : success({ ok: true, usage }));
     });
 
     try {
@@ -208,6 +278,7 @@ function workerEntry(entry) {
     shell: entry?.shell ?? false,
     usageOutputKind: entry?.usageOutputKind ?? 'claude-json',
     captureFinalMessage: entry?.captureFinalMessage === true,
+    captureProcessDiagnostic: entry?.captureProcessDiagnostic === true,
     stdin,
   };
 }
@@ -235,6 +306,8 @@ function decodeWorkerResult(stdout, usageReceiptDescriptor = null) {
     'usageReceipt',
     'stderr',
     'stderrTruncated',
+    'process_diagnostic',
+    'process_streams',
     'finalMessageBase64',
   ]);
   if (result == null || typeof result !== 'object' || Array.isArray(result)
@@ -243,18 +316,28 @@ function decodeWorkerResult(stdout, usageReceiptDescriptor = null) {
     || (Object.hasOwn(result, 'stderr')
       && (typeof result.stderr !== 'string'
         || Buffer.byteLength(result.stderr, 'utf8') > STREAM_LIMITS.stderrBytes))
-    || (Object.hasOwn(result, 'stderrTruncated') && typeof result.stderrTruncated !== 'boolean')) {
+    || (Object.hasOwn(result, 'stderrTruncated') && typeof result.stderrTruncated !== 'boolean')
+    || (Object.hasOwn(result, 'process_diagnostic')
+      && !validCheckerProcessDiagnostic(result.process_diagnostic))
+    || (Object.hasOwn(result, 'process_streams')
+      && (result.process_streams == null || typeof result.process_streams !== 'object'
+        || Array.isArray(result.process_streams)
+        || Object.keys(result.process_streams).sort().join(',') !== 'stderr,stdout'
+        || !validProcessStreamMetadata(result.process_streams.stderr)
+        || !validProcessStreamMetadata(result.process_streams.stdout)))) {
     return { ok: false, reason: 'worker-protocol-invalid' };
   }
   if (result.ok === false) {
     if (typeof result.reason !== 'string' || Object.hasOwn(result, 'usage')
-      || Object.hasOwn(result, 'usageReceipt') || Object.hasOwn(result, 'finalMessageBase64')) {
+      || Object.hasOwn(result, 'usageReceipt') || Object.hasOwn(result, 'finalMessageBase64')
+      || Object.hasOwn(result, 'process_streams')) {
       return { ok: false, reason: 'worker-protocol-invalid' };
     }
     return result;
   }
   if (Object.hasOwn(result, 'reason') || result.usage == null || typeof result.usage !== 'object'
     || Array.isArray(result.usage)
+    || Object.hasOwn(result, 'process_diagnostic')
     || (!Number.isFinite(result.usage.num_turns) && !Number.isFinite(result.usage.tokens))) {
     return { ok: false, reason: 'worker-protocol-invalid' };
   }
@@ -299,14 +382,27 @@ export function runStreamingProcessSync(entry, {
   spawnSyncImpl = spawnSync,
   usageReceipt = null,
 } = {}) {
-  if (!validTimeout(timeoutMs)) return { ok: false, reason: 'invalid-timeout' };
+  const captureProcessDiagnostic = entry?.captureProcessDiagnostic === true;
+  const fail = (result, reasonCode, processPhase, streams = null) => captureProcessDiagnostic
+    ? {
+        ...result,
+        process_diagnostic: {
+          reason_code: reasonCode,
+          process_phase: processPhase,
+          ...(streams ?? { stderr: emptyStreamMetadata(), stdout: emptyStreamMetadata() }),
+        },
+      }
+    : result;
+  if (!validTimeout(timeoutMs)) return fail(
+    { ok: false, reason: 'invalid-timeout' }, 'process-config-invalid', 'request',
+  );
   let normalizedUsageReceipt = null;
   if (usageReceipt != null) {
     try {
       if (entry?.usageOutputKind !== 'codex-jsonl') throw new Error('usage receipt requires Codex JSONL');
       normalizedUsageReceipt = validateProcessUsageReceiptDescriptor(usageReceipt);
     } catch {
-      return { ok: false, reason: 'usage-receipt-write-failed' };
+      return fail({ ok: false, reason: 'usage-receipt-write-failed' }, 'usage-receipt-write-failed', 'receipt-write');
     }
   }
   let request;
@@ -318,10 +414,10 @@ export function runStreamingProcessSync(entry, {
       ...(normalizedUsageReceipt == null ? {} : { usageReceipt: normalizedUsageReceipt }),
     });
   } catch {
-    return { ok: false, reason: 'worker-request-invalid' };
+    return fail({ ok: false, reason: 'worker-request-invalid' }, 'worker-request-invalid', 'request');
   }
   if (Buffer.byteLength(request, 'utf8') > WORKER_REQUEST_BYTES) {
-    return { ok: false, reason: 'worker-request-overflow' };
+    return fail({ ok: false, reason: 'worker-request-overflow' }, 'worker-request-overflow', 'request');
   }
 
   const workerTimeoutMs = timeoutMs + WORKER_TIMEOUT_GRACE_MS;
@@ -335,18 +431,26 @@ export function runStreamingProcessSync(entry, {
       shell: false,
     });
   } catch (error) {
-    return { ok: false, reason: `worker-spawn-error: ${error?.message || error}` };
+    return fail({ ok: false, reason: `worker-spawn-error: ${error?.message || error}` }, 'worker-spawn-failed', 'worker-spawn');
   }
 
+  const workerStreams = {
+    stderr: bufferMetadata(out.stderr || '', false),
+    stdout: bufferMetadata(out.stdout || '', out.error?.code === 'ENOBUFS'),
+  };
   if (out.error) {
-    if (out.error.code === 'ETIMEDOUT') return { ok: false, reason: 'timeout' };
-    if (out.error.code === 'ENOBUFS') return { ok: false, reason: 'worker-result-overflow' };
-    return { ok: false, reason: `worker-spawn-error: ${out.error?.message || out.error}` };
+    if (out.error.code === 'ETIMEDOUT') return fail({ ok: false, reason: 'timeout' }, 'worker-timeout', 'worker-transport', workerStreams);
+    if (out.error.code === 'ENOBUFS') return fail({ ok: false, reason: 'worker-result-overflow' }, 'worker-result-overflow', 'worker-transport', workerStreams);
+    return fail({ ok: false, reason: `worker-spawn-error: ${out.error?.message || out.error}` }, 'worker-spawn-failed', 'worker-spawn', workerStreams);
   }
-  if (out.signal != null) return { ok: false, reason: 'worker-terminated' };
-  if (out.status !== 0) return { ok: false, reason: `worker-exit-${out.status}` };
+  if (out.signal != null) return fail({ ok: false, reason: 'worker-terminated' }, 'worker-terminated', 'worker-transport', workerStreams);
+  if (out.status !== 0) return fail({ ok: false, reason: `worker-exit-${out.status}` }, 'worker-nonzero-exit', 'worker-transport', workerStreams);
   if (Buffer.byteLength(out.stdout || '', 'utf8') > WORKER_RESULT_BYTES) {
-    return { ok: false, reason: 'worker-result-overflow' };
+    return fail({ ok: false, reason: 'worker-result-overflow' }, 'worker-result-overflow', 'worker-transport', workerStreams);
   }
-  return decodeWorkerResult(out.stdout || '', normalizedUsageReceipt);
+  const decoded = decodeWorkerResult(out.stdout || '', normalizedUsageReceipt);
+  if (captureProcessDiagnostic && decoded?.ok === false && !validCheckerProcessDiagnostic(decoded.process_diagnostic)) {
+    return fail({ ok: false, reason: 'worker-protocol-invalid' }, 'worker-protocol-invalid', 'worker-transport', workerStreams);
+  }
+  return decoded;
 }

@@ -43,6 +43,59 @@ function portableRel(value, prefix = null) {
 
 const REVIEW_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+export const CHECKER_PROCESS_REASON_CODES = Object.freeze([
+  'process-config-invalid',
+  'child-spawn-failed',
+  'child-timeout',
+  'child-nonzero-exit',
+  'child-stdin-failed',
+  'child-output-overflow',
+  'child-protocol-invalid',
+  'usage-unmeasurable',
+  'usage-receipt-write-failed',
+  'worker-request-invalid',
+  'worker-request-overflow',
+  'worker-spawn-failed',
+  'worker-timeout',
+  'worker-result-overflow',
+  'worker-terminated',
+  'worker-nonzero-exit',
+  'worker-protocol-invalid',
+  'checker-worker-invalid',
+  'checker-usage-invalid',
+  'checker-final-message-invalid',
+  'checker-process-error',
+  'diagnostic-invalid',
+]);
+export const CHECKER_PROCESS_PHASES = Object.freeze([
+  'request',
+  'worker-spawn',
+  'worker-transport',
+  'child-spawn',
+  'child-execution',
+  'child-stdin',
+  'child-protocol',
+  'usage-parse',
+  'receipt-write',
+  'checker-adapter',
+  'final-message',
+]);
+
+export function validProcessStreamMetadata(value) {
+  return exactObject(value, ['sha256', 'byte_count', 'truncated'])
+    && SHA256.test(value.sha256 || '')
+    && Number.isSafeInteger(value.byte_count)
+    && value.byte_count >= 0
+    && typeof value.truncated === 'boolean';
+}
+
+export function validCheckerProcessDiagnostic(value) {
+  return exactObject(value, ['reason_code', 'process_phase', 'stderr'], ['stdout'])
+    && CHECKER_PROCESS_REASON_CODES.includes(value.reason_code)
+    && CHECKER_PROCESS_PHASES.includes(value.process_phase)
+    && validProcessStreamMetadata(value.stderr)
+    && (!Object.hasOwn(value, 'stdout') || validProcessStreamMetadata(value.stdout));
+}
 const FROZEN_REVIEW_CLAIM_KEYS = Object.freeze([
   'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
   'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
@@ -359,6 +412,10 @@ function validateEpisodeV040(ep, errors) {
   const expectedRequestRel = typeof ep.id === 'string' ? `episodes/${ep.id}/request.md` : null;
   if (!portableRel(ep.request_rel, 'episodes/') || ep.request_rel !== expectedRequestRel) {
     errors.push('episodes[].request_rel must exactly match episodes/<id>/request.md');
+  }
+  if (Object.hasOwn(ep, 'checker_process_diagnostic')
+    && !validCheckerProcessDiagnostic(ep.checker_process_diagnostic)) {
+    errors.push('episodes[].checker_process_diagnostic must be an exact closed secret-safe process diagnostic');
   }
   const invalidated = ep.invalidated_review_claims;
   if (invalidated === undefined) return;

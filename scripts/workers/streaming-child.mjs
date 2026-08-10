@@ -42,6 +42,7 @@ function decodeEntry(value) {
     shell: value.shell,
     usageOutputKind: value.usageOutputKind,
     captureFinalMessage: value.captureFinalMessage === true,
+    captureProcessDiagnostic: value.captureProcessDiagnostic === true,
     stdin: decodedStdin,
   };
 }
@@ -68,7 +69,17 @@ try {
       const receipt = writeProcessUsageReceipt(usageReceipt, result.usage);
       result = { ...result, usageReceipt: receipt };
     } catch {
-      result = { ok: false, reason: 'usage-receipt-write-failed' };
+      result = {
+        ok: false,
+        reason: 'usage-receipt-write-failed',
+        ...(result.process_streams == null ? {} : {
+          process_diagnostic: {
+            reason_code: 'usage-receipt-write-failed',
+            process_phase: 'receipt-write',
+            ...result.process_streams,
+          },
+        }),
+      };
     }
   }
 } catch (error) {

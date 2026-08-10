@@ -57,6 +57,7 @@ import {
 import { emitHandoff } from './handoff.mjs';
 import { nextAction } from './next-action.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
+import { validCheckerProcessDiagnostic } from './schema.mjs';
 import {
   locateCapturedImportedReviewArtifact,
   verifyCapturedImportedReviewProof,
@@ -452,6 +453,38 @@ function captureExactRecoveredCheckerBlock(projectRoot, runId, { checkerEpisodeI
     if (String(error?.message || error).startsWith('LOCK_BUSY:')) return null;
     return false;
   }
+}
+
+const EMPTY_STREAM_SHA256 = createHash('sha256').update(Buffer.alloc(0)).digest('hex');
+
+function closedCheckerProcessDiagnostic(
+  value,
+  fallbackReasonCode = 'diagnostic-invalid',
+  fallbackPhase = 'checker-adapter',
+) {
+  if (validCheckerProcessDiagnostic(value)) return structuredClone(value);
+  return {
+    reason_code: fallbackReasonCode,
+    process_phase: fallbackPhase,
+    stderr: { sha256: EMPTY_STREAM_SHA256, byte_count: 0, truncated: false },
+    stdout: { sha256: EMPTY_STREAM_SHA256, byte_count: 0, truncated: false },
+  };
+}
+
+function normalizedCheckerFailureDiagnostic(result) {
+  if (validCheckerProcessDiagnostic(result?.process_diagnostic)) {
+    return structuredClone(result.process_diagnostic);
+  }
+  if (result?.reason === 'checker-worker-invalid') {
+    return closedCheckerProcessDiagnostic(null, 'checker-worker-invalid');
+  }
+  if (result?.reason === 'checker-usage-invalid') {
+    return closedCheckerProcessDiagnostic(null, 'checker-usage-invalid');
+  }
+  if (result?.reason === 'checker-final-message-invalid') {
+    return closedCheckerProcessDiagnostic(null, 'checker-final-message-invalid', 'final-message');
+  }
+  return closedCheckerProcessDiagnostic(null);
 }
 
 function routeCompletedChecker({
@@ -852,12 +885,13 @@ function driveIndependentChecker({
       checkerEpisodeId: pending.id, attemptId: null,
     };
   }
-  const blockClaim = (reason) => {
+  const blockClaim = (reason, processDiagnostic = undefined) => {
     try {
       blockReviewFn(projectRoot, runId, {
         episodeId: pending.id,
         attemptId: claimed.attemptId,
         reason,
+        ...(processDiagnostic === undefined ? {} : { processDiagnostic }),
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
       });
       return {
@@ -873,8 +907,8 @@ function driveIndependentChecker({
       throw error;
     }
   };
-  const settleMeasuredFailure = (reason, usage, usageReceipt = null) => {
-    const blocked = blockClaim(reason);
+  const settleMeasuredFailure = (reason, usage, usageReceipt = null, processDiagnostic = undefined) => {
+    const blocked = blockClaim(reason, processDiagnostic);
     let pauseOutcome = null;
     if (blocked.action === 'checker-stranded') {
       pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
@@ -1008,7 +1042,11 @@ function driveIndependentChecker({
       usageReceipt: checkerUsageReceiptDescriptor,
     });
   } catch {
-    checkerResult = { ok: false, reason: 'checker-process-error' };
+    checkerResult = {
+      ok: false,
+      reason: 'checker-process-error',
+      process_diagnostic: closedCheckerProcessDiagnostic(null, 'checker-process-error'),
+    };
   }
   if (checkerResult?.reason === 'checker-final-message-invalid'
     && isMeasuredOneTurnUsage(checkerResult.usage)) {
@@ -1016,6 +1054,7 @@ function driveIndependentChecker({
       'checker-process-failed',
       checkerResult.usage,
       checkerResult.usageReceipt ?? null,
+      normalizedCheckerFailureDiagnostic(checkerResult),
     );
   }
   if (!checkerResult || checkerResult.ok !== true
@@ -1023,7 +1062,10 @@ function driveIndependentChecker({
     || !Buffer.isBuffer(checkerResult.finalMessage)
     || checkerResult.finalMessage.length === 0
     || checkerResult.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
-    return blockClaim('checker-process-failed');
+    return blockClaim(
+      'checker-process-failed',
+      normalizedCheckerFailureDiagnostic(checkerResult),
+    );
   }
   if (!identityFresh()) {
     return settleMeasuredFailure(
