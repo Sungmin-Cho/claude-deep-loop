@@ -766,6 +766,61 @@ test('SLICE-010 new lease verbs classify omitted, bare, and empty fence options 
   }
 });
 
+test('SLICE-010 new lease verbs reject every duplicate fence option ordering as usage exit 2', () => {
+  const cases = [
+    {
+      label: 'owner bare then valid',
+      fenceArgs: ['--owner', '--owner', 'CLIACTIVATIONOWNER', '--generation', '2'],
+    },
+    {
+      label: 'owner valid then bare',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--owner', '--generation', '2'],
+    },
+    {
+      label: 'owner empty then valid',
+      fenceArgs: ['--owner=', '--owner', 'CLIACTIVATIONOWNER', '--generation', '2'],
+    },
+    {
+      label: 'owner valid then empty',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--owner=', '--generation', '2'],
+    },
+    {
+      label: 'owner valid then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--owner', 'OTHEROWNER', '--generation', '2'],
+    },
+    {
+      label: 'generation bare then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '--generation', '2'],
+    },
+    {
+      label: 'generation valid then bare',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '2', '--generation'],
+    },
+    {
+      label: 'generation invalid then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '0', '--generation', '2'],
+    },
+    {
+      label: 'generation valid then invalid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '2', '--generation', '0'],
+    },
+    {
+      label: 'generation valid then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '2', '--generation', '3'],
+    },
+  ];
+  for (const verb of ['activate', 'reap']) {
+    for (const { label, fenceArgs } of cases) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, fenceArgs);
+      assert.equal(result.status, 2, `${verb} ${label}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /USAGE: --(owner|generation)/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, `${verb} ${label}`);
+    }
+  }
+});
+
 test('SLICE-010 new lease verbs classify malformed generations as invalid-value exit 1', () => {
   for (const verb of ['activate', 'reap']) {
     for (const generation of ['0', '-1', '1.5', 'abc', '9007199254740992']) {

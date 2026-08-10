@@ -236,7 +236,13 @@ function strArg(f, name) {
   if (typeof v !== 'string' || v.length === 0) { error('INVALID_' + name.toUpperCase().replace(/-/g, '_') + ': must be a non-empty string'); process.exit(3); }
   return v;
 }
-function parseNewLeaseFenceArgs(f) {
+function parseNewLeaseFenceArgs(f, argv) {
+  if (flagOccurrences(argv, 'owner') !== 1) {
+    return { ok: false, code: 2, message: 'USAGE: --owner must appear exactly once' };
+  }
+  if (flagOccurrences(argv, 'generation') !== 1) {
+    return { ok: false, code: 2, message: 'USAGE: --generation must appear exactly once' };
+  }
   const owner = f.owner;
   if (typeof owner !== 'string' || owner.length === 0) {
     return { ok: false, code: 2, message: 'USAGE: --owner <run_id> is required' };
@@ -888,7 +894,7 @@ const handlers = {
       )) ? 3 : 0;
     }
     if (verb === 'activate') {
-      const fence = parseNewLeaseFenceArgs(f);
+      const fence = parseNewLeaseFenceArgs(f, rest);
       if (!fence.ok) { error(fence.message); return fence.code; }
       const { owner, generation } = fence;
       const runtime = reqStr(f, 'runtime');
@@ -932,7 +938,7 @@ const handlers = {
         error('USAGE: lease reap does not accept --now');
         return 2;
       }
-      const fence = parseNewLeaseFenceArgs(f);
+      const fence = parseNewLeaseFenceArgs(f, rest);
       if (!fence.ok) { error(fence.message); return fence.code; }
       const { owner, generation } = fence;
       try {
