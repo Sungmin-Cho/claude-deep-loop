@@ -3,7 +3,7 @@
 This tracked overlay resolves the pinned seed into the current execution surface. The seed remains immutable; this file owns post-design export deltas and the strengthened machine/human boundary.
 
 - Seed SHA-256: `6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13`
-- Reviewed design SHA-256: `14a62655b601f9b8278d7106e22d52c162e7d952303be765ffa07e57719ea2ee`
+- Reviewed design SHA-256: `7d989eb688dfc92f6d68a588685c181e908071ef2bef55b28e3460980f8209e4`
 - W1: every E2–E5/E7/E8 declaration body or initializer fails when `writeState`, `appendEvent`, or `appendAnchored` is directly called **or directly referenced**.
 - W2: the W1 domain is the closed set E2, E3, E4, E5, E7, E8; no E subclass may be silently omitted.
 - Machine boundary: guards 1–4, rule-B canonicalization, bidirectional/disjoint partition, direct/transitive call reachability, same-mutation-lock dominance, closed reason enum, and classification/reason/recalculation consistency.
@@ -13,8 +13,8 @@ This tracked overlay resolves the pinned seed into the current execution surface
 {
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "design_sha256": "14a62655b601f9b8278d7106e22d52c162e7d952303be765ffa07e57719ea2ee",
-  "expected_counts": { "L": 28, "B": 7, "X": 32, "E2": 114, "E3": 12, "E4": 16, "E5": 1, "E7": 73, "E8": 23 },
+  "design_sha256": "7d989eb688dfc92f6d68a588685c181e908071ef2bef55b28e3460980f8209e4",
+  "expected_counts": { "L": 28, "B": 7, "X": 32, "E2": 116, "E3": 12, "E4": 16, "E5": 1, "E7": 73, "E8": 26 },
   "base_x_reasons": {
     "safety-downgrade": ["budget.mjs#settleTerminalCodexMakerCost"],
     "boot-observation": ["detect-terminal.mjs#detectAndPersist", "initrun.mjs#initRun"],
@@ -31,7 +31,12 @@ This tracked overlay resolves the pinned seed into the current execution surface
     { "id": "lease.mjs#reapLease", "classification": "X", "reason": "enforcement-origin" },
     { "id": "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed", "classification": "E4", "reason": "non-run-state-durable-write" },
     { "id": "review-import.mjs#locateCapturedImportedReviewArtifact", "classification": "E2", "reason": "no-run-state-write" },
-    { "id": "review-import.mjs#verifyCapturedImportedReviewProof", "classification": "E2", "reason": "no-run-state-write" }
+    { "id": "review-import.mjs#verifyCapturedImportedReviewProof", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "schema.mjs#CHECKER_PROCESS_PHASES", "classification": "E8", "reason": "non-callable-value" },
+    { "id": "schema.mjs#CHECKER_PROCESS_REASON_CODES", "classification": "E8", "reason": "non-callable-value" },
+    { "id": "schema.mjs#CHECKER_PROCESS_REASON_PHASES", "classification": "E8", "reason": "non-callable-value" },
+    { "id": "schema.mjs#validCheckerProcessDiagnostic", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "schema.mjs#validProcessStreamMetadata", "classification": "E2", "reason": "no-run-state-write" }
   ]
 }
 <!-- F26-LIVE-JSON-END -->

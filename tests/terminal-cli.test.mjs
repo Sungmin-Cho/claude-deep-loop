@@ -747,6 +747,78 @@ test('SLICE-004 CLI lease activate records --now and returns activated', () => {
   assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
 });
 
+test('SLICE-004 CLI expired activation is structured exit zero and mutation-free', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliExpiredToken_01',
+    '--now', '1900-01-01T00:00:00.000Z',
+  ]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: false, reason: 'activation-deadline-expired',
+  });
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI malformed nonnull activation deadline is exit one and mutation-free', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = 'not-an-iso-deadline';
+  const raw = JSON.stringify(data, null, 2);
+  const dir = runDir(f.root, f.runId);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliMalformedToken_01',
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ACTIVATION_DEADLINE_INVALID/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 expired activate versus reap CLI race serializes to reap-only expiry', async () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  const activateArgs = [
+    'lease', 'activate', '--owner', f.owner, '--generation', String(f.gen),
+    '--runtime', 'claude', '--attempt-id', f.attemptId,
+    '--activation-token', 'CliExpiredRaceToken_01', '--run-id', f.runId,
+  ];
+  const reapArgs = [
+    'lease', 'reap', '--owner', f.owner, '--generation', String(f.gen), '--run-id', f.runId,
+  ];
+  let [activation, expiry] = await Promise.all([
+    runAsync(f.root, activateArgs),
+    runAsync(f.root, reapArgs),
+  ]);
+  if (activation.status === 1 && /LOCK_BUSY/.test(activation.stderr)) {
+    activation = await runAsync(f.root, activateArgs);
+  }
+  if (expiry.status === 1 && /LOCK_BUSY/.test(expiry.stderr)) {
+    expiry = await runAsync(f.root, reapArgs);
+  }
+  assert.equal(activation.status, 0, activation.stdout + activation.stderr);
+  assert.ok([
+    'activation-deadline-expired',
+    'RUN_PAUSED',
+  ].includes(JSON.parse(activation.stdout).reason), activation.stdout);
+  assert.equal(expiry.status, 0, expiry.stdout + expiry.stderr);
+  assert.deepEqual(JSON.parse(expiry.stdout), {
+    ok: true, reason: 'activation-expired', transition: 'preserve-pause',
+  });
+  const events = readLines(f.root, f.runId);
+  assert.equal(events.filter(event => event.type === 'lease-activated').length, 0);
+  assert.equal(events.filter(event => event.type === 'activation-expired').length, 1);
+  assert.equal(readState(f.root, f.runId).data.status, 'paused');
+});
+
 test('SLICE-007 CLI lease reap settles an expired pending acquisition', () => {
   const f = seedActivationCli();
   const { data } = readState(f.root, f.runId);

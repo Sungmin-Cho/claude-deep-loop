@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "design_sha256": "14a62655b601f9b8278d7106e22d52c162e7d952303be765ffa07e57719ea2ee",
+  "design_sha256": "7d989eb688dfc92f6d68a588685c181e908071ef2bef55b28e3460980f8209e4",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "5054fa87f7661c79d30dfd67ced12444c430e3b20d2648b521bc6dcc9d6d8e9a",
-  "candidate_ids_sha256": "c48a7360366623b0c86d810475ea4fd3677ac8b54d4c77d55165eb8f2037d7dc",
+  "live_classification_sha256": "aa7cbd9fb1ca7f596e4c6d7f21f0744c3d745edd63b4ff30c52fbd8f2738b3d4",
+  "candidate_ids_sha256": "f6ee50e3944725b7a33fa6ca88f36dba4c18bab490c8f478079da72484a702c1",
   "candidate_ids": [
     "adapters.mjs#checkerDescriptor",
     "adapters.mjs#guardTierProtocol",
@@ -245,8 +245,13 @@
     "runtime.mjs#runtimeFence",
     "runtime.mjs#sessionRuntime",
     "runtime.mjs#validateSessionRuntime",
+    "schema.mjs#CHECKER_PROCESS_PHASES",
+    "schema.mjs#CHECKER_PROCESS_REASON_CODES",
+    "schema.mjs#CHECKER_PROCESS_REASON_PHASES",
     "schema.mjs#LAUNCHER_KINDS",
     "schema.mjs#loadSchema",
+    "schema.mjs#validCheckerProcessDiagnostic",
+    "schema.mjs#validProcessStreamMetadata",
     "schema.mjs#validate",
     "session-profile.mjs#EFFORT_LEVELS",
     "session-profile.mjs#setSessionProfile",
@@ -1138,7 +1143,7 @@
             "codex-checker.mjs#buildCodexCheckerPrompt"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:203"
+            "scripts/lib/codex-checker.mjs:216"
           ]
         }
       ]
@@ -1156,7 +1161,7 @@
             "codex-checker.mjs#importReviewViaCli"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:274"
+            "scripts/lib/codex-checker.mjs:310"
           ]
         }
       ]
@@ -1174,7 +1179,7 @@
             "codex-checker.mjs#inspectCheckerFileIdentity"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:43"
+            "scripts/lib/codex-checker.mjs:56"
           ]
         }
       ]
@@ -1192,7 +1197,7 @@
             "codex-checker.mjs#resolveTrustedCheckerSkill"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:151"
+            "scripts/lib/codex-checker.mjs:164"
           ]
         }
       ]
@@ -1210,7 +1215,7 @@
             "codex-checker.mjs#runIndependentCodexChecker"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:219"
+            "scripts/lib/codex-checker.mjs:232"
           ]
         }
       ]
@@ -1228,7 +1233,7 @@
             "codex-checker.mjs#sameCheckerIdentity"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:92"
+            "scripts/lib/codex-checker.mjs:105"
           ]
         }
       ]
@@ -1795,10 +1800,10 @@
           ],
           "coordinates": [
             "scripts/hooks-impl/drive-headless.mjs:8",
-            "scripts/lib/headless-host.mjs:1915",
-            "scripts/lib/headless-host.mjs:1901",
-            "scripts/lib/headless-host.mjs:1298",
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
           ]
         },
         {
@@ -1813,10 +1818,10 @@
           ],
           "coordinates": [
             "scripts/hooks-impl/drive-headless.mjs:8",
-            "scripts/lib/headless-host.mjs:1915",
-            "scripts/lib/headless-host.mjs:1901",
-            "scripts/lib/headless-host.mjs:1298",
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
           ]
         }
       ]
@@ -2226,7 +2231,7 @@
           "coordinates": [
             "scripts/lib/handoff.mjs:466",
             "scripts/lib/handoff.mjs:322",
-            "scripts/lib/lease.mjs:736"
+            "scripts/lib/lease.mjs:747"
           ]
         }
       ]
@@ -2244,7 +2249,7 @@
             "headless-host.mjs#acquireHeadlessHostLock"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:188"
+            "scripts/lib/headless-host.mjs:189"
           ]
         }
       ]
@@ -2266,10 +2271,10 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:1915",
-            "scripts/lib/headless-host.mjs:1901",
-            "scripts/lib/headless-host.mjs:1298",
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
           ]
         },
         {
@@ -2282,10 +2287,10 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:1915",
-            "scripts/lib/headless-host.mjs:1901",
-            "scripts/lib/headless-host.mjs:1298",
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
           ]
         }
       ]
@@ -2306,9 +2311,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:1901",
-            "scripts/lib/headless-host.mjs:1298",
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
           ]
         },
         {
@@ -2320,9 +2325,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:1901",
-            "scripts/lib/headless-host.mjs:1298",
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
           ]
         }
       ]
@@ -2973,7 +2978,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:555"
+            "scripts/lib/lease.mjs:566"
           ]
         },
         {
@@ -2983,7 +2988,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:555"
+            "scripts/lib/lease.mjs:566"
           ]
         }
       ]
@@ -3002,7 +3007,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:781"
+            "scripts/lib/lease.mjs:792"
           ]
         },
         {
@@ -3012,7 +3017,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:781"
+            "scripts/lib/lease.mjs:792"
           ]
         }
       ]
@@ -3085,7 +3090,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:638"
+            "scripts/lib/lease.mjs:649"
           ]
         },
         {
@@ -3095,7 +3100,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:638"
+            "scripts/lib/lease.mjs:649"
           ]
         }
       ]
@@ -3114,7 +3119,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:673"
+            "scripts/lib/lease.mjs:684"
           ]
         }
       ]
@@ -3133,7 +3138,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:736"
+            "scripts/lib/lease.mjs:747"
           ]
         }
       ]
@@ -3152,7 +3157,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:812"
+            "scripts/lib/lease.mjs:823"
           ]
         }
       ]
@@ -3171,7 +3176,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:864"
+            "scripts/lib/lease.mjs:875"
           ]
         },
         {
@@ -3181,7 +3186,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:864"
+            "scripts/lib/lease.mjs:875"
           ]
         }
       ]
@@ -3370,7 +3375,7 @@
             "scripts/hooks-impl/precompact-handoff.mjs:178",
             "scripts/lib/handoff.mjs:466",
             "scripts/lib/handoff.mjs:322",
-            "scripts/lib/lease.mjs:736"
+            "scripts/lib/lease.mjs:747"
           ]
         }
       ]
@@ -3395,7 +3400,7 @@
             "scripts/hooks-impl/precompact-handoff.mjs:178",
             "scripts/lib/handoff.mjs:466",
             "scripts/lib/handoff.mjs:322",
-            "scripts/lib/lease.mjs:736"
+            "scripts/lib/lease.mjs:747"
           ]
         }
       ]
@@ -4495,7 +4500,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/review.mjs:156"
           ]
         },
         {
@@ -4505,7 +4510,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:150"
+            "scripts/lib/review.mjs:156"
           ]
         }
       ]
@@ -4555,7 +4560,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:441",
+            "scripts/lib/review.mjs:449",
             "scripts/lib/episode.mjs:148",
             "scripts/lib/episode.mjs:80"
           ]
@@ -4569,7 +4574,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:441",
+            "scripts/lib/review.mjs:449",
             "scripts/lib/episode.mjs:148",
             "scripts/lib/episode.mjs:80"
           ]
@@ -4589,7 +4594,7 @@
             "review.mjs#epOrder"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:207"
+            "scripts/lib/review.mjs:215"
           ]
         }
       ]
@@ -4627,8 +4632,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:715",
-            "scripts/lib/review.mjs:553"
+            "scripts/lib/review.mjs:723",
+            "scripts/lib/review.mjs:561"
           ]
         },
         {
@@ -4639,8 +4644,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:715",
-            "scripts/lib/review.mjs:553"
+            "scripts/lib/review.mjs:723",
+            "scripts/lib/review.mjs:561"
           ]
         }
       ]
@@ -4658,7 +4663,7 @@
             "review.mjs#makerReviewed"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:308"
+            "scripts/lib/review.mjs:316"
           ]
         }
       ]
@@ -4676,7 +4681,7 @@
             "review.mjs#parseVerdict"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:296"
+            "scripts/lib/review.mjs:304"
           ]
         }
       ]
@@ -4696,8 +4701,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:679",
-            "scripts/lib/review.mjs:553"
+            "scripts/lib/review.mjs:687",
+            "scripts/lib/review.mjs:561"
           ]
         },
         {
@@ -4708,8 +4713,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:679",
-            "scripts/lib/review.mjs:553"
+            "scripts/lib/review.mjs:687",
+            "scripts/lib/review.mjs:561"
           ]
         }
       ]
@@ -4727,7 +4732,7 @@
             "review.mjs#rejectionResolved"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:228"
+            "scripts/lib/review.mjs:236"
           ]
         }
       ]
@@ -4745,7 +4750,7 @@
             "review.mjs#resolveReviewer"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:258"
+            "scripts/lib/review.mjs:266"
           ]
         }
       ]
@@ -4763,7 +4768,7 @@
             "review.mjs#revalidateIndependentReviewClaim"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:173"
+            "scripts/lib/review.mjs:181"
           ]
         }
       ]
@@ -4781,7 +4786,7 @@
             "review.mjs#unsatisfiedReviewPoints"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:731"
+            "scripts/lib/review.mjs:739"
           ]
         }
       ]
@@ -5181,6 +5186,54 @@
       ]
     },
     {
+      "id": "schema.mjs#CHECKER_PROCESS_PHASES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#CHECKER_PROCESS_PHASES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#CHECKER_PROCESS_REASON_CODES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#CHECKER_PROCESS_REASON_CODES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#CHECKER_PROCESS_REASON_PHASES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#CHECKER_PROCESS_REASON_PHASES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
       "id": "schema.mjs#LAUNCHER_KINDS",
       "classification": "E8",
       "write_reachability": "does-not-reach",
@@ -5215,6 +5268,42 @@
       ]
     },
     {
+      "id": "schema.mjs#validCheckerProcessDiagnostic",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#validCheckerProcessDiagnostic"
+          ],
+          "coordinates": [
+            "scripts/lib/schema.mjs:85"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#validProcessStreamMetadata",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#validProcessStreamMetadata"
+          ],
+          "coordinates": [
+            "scripts/lib/schema.mjs:77"
+          ]
+        }
+      ]
+    },
+    {
       "id": "schema.mjs#validate",
       "classification": "E7",
       "write_reachability": "does-not-reach",
@@ -5227,7 +5316,7 @@
             "schema.mjs#validate"
           ],
           "coordinates": [
-            "scripts/lib/schema.mjs:531"
+            "scripts/lib/schema.mjs:581"
           ]
         }
       ]
@@ -6104,7 +6193,7 @@
             "streaming-process.mjs#runStreamingProcess"
           ],
           "coordinates": [
-            "scripts/lib/streaming-process.mjs:53"
+            "scripts/lib/streaming-process.mjs:85"
           ]
         }
       ]
@@ -6122,7 +6211,7 @@
             "streaming-process.mjs#runStreamingProcessSync"
           ],
           "coordinates": [
-            "scripts/lib/streaming-process.mjs:297"
+            "scripts/lib/streaming-process.mjs:380"
           ]
         }
       ]

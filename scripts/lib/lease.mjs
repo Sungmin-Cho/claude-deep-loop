@@ -533,7 +533,18 @@ export function activateLease(root, runId, {
       throw activateHalt({ ok: false, reason: 'not-activation-pending' });
     }
 
-    const lockedNow = lockedTime(now, clock, 'lease activation');
+    const deadlineAtMs = Date.parse(lease.activation_deadline_at);
+    if (!Number.isSafeInteger(deadlineAtMs)
+      || new Date(deadlineAtMs).toISOString() !== lease.activation_deadline_at) {
+      throw new Error('ACTIVATION_DEADLINE_INVALID');
+    }
+    const safetyNow = lockedSafetyTime(clock, 'lease activation deadline');
+    if (safetyNow >= deadlineAtMs) {
+      throw activateHalt({ ok: false, reason: 'activation-deadline-expired' });
+    }
+    const lockedNow = now === undefined
+      ? safetyNow
+      : lockedTime(now, clock, 'lease activation');
     Object.assign(receiptData, {
       owner_run_id: owner,
       generation,

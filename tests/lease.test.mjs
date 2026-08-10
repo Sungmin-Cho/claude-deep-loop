@@ -45,6 +45,7 @@ function writeHashValidState(root, runId, data) {
 function pendingLease(root, runId, {
   owner = 'SLICE006PENDINGOWNER',
   attemptId = 'SLICE006ATTEMPT01',
+  clock = () => Date.parse('2026-08-09T00:00:00.000Z'),
 } = {}) {
   assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
     ok: true, reason: 'released',
@@ -54,7 +55,7 @@ function pendingLease(root, runId, {
     expectGeneration: 1,
     runtime: 'claude',
     attemptId,
-    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+    clock,
   });
   assert.equal(acquired.proceed, true);
   assert.notEqual(readState(root, runId).data.session_chain.lease.activation_deadline_at, null);
@@ -69,6 +70,7 @@ function activatePending(root, runId, pending, activationToken = 'SLICE006ACTIVA
     attemptId: pending.attemptId,
     activationToken,
     now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
   });
   assert.deepEqual(activated, { ok: true, reason: 'activated' });
   return activated;
@@ -296,6 +298,7 @@ test('SLICE-006 CLI lease release exits zero with structured pending denial, the
   const pending = pendingLease(root, runId, {
     owner: 'SLICE006CLIPENDINGOWNER',
     attemptId: 'SLICE006CLIATTEMPT01',
+    clock: Date.now,
   });
   const releaseArgs = [
     'lease', 'release', '--run-id', runId,
@@ -901,6 +904,7 @@ for (const [label, attemptId] of [
 const ACTIVATION_ATTEMPT = 'ACTIVATIONATTEMPT01';
 const ACTIVATION_TOKEN = 'ActivationToken_01';
 const ACTIVATED_AT = Date.parse('2026-08-06T06:07:08.000Z');
+const ACTIVATION_DEADLINE = '2026-08-06T06:15:00.000Z';
 
 function seedActivationPending(runtime = 'claude') {
   const fixture = seed(runtime);
@@ -935,6 +939,7 @@ function activate(fixture, overrides = {}) {
     attemptId: ACTIVATION_ATTEMPT,
     activationToken: ACTIVATION_TOKEN,
     now: ACTIVATED_AT,
+    clock: () => Date.parse(ACTIVATION_DEADLINE) - 1,
     ...overrides,
   });
 }
@@ -1045,6 +1050,53 @@ test('SLICE-004 first activation commits the exact seven-key receipt and clears 
   assert.equal(current.activation_deadline_at, null);
 });
 
+test('SLICE-004 first activation uses the safety clock while public future now remains receipt-only', () => {
+  const f = seedActivationPending();
+  const publicFuture = Date.parse('2999-01-01T00:00:00.000Z');
+  assert.deepEqual(activate(f, {
+    now: publicFuture,
+    clock: () => Date.parse(ACTIVATION_DEADLINE) - 1,
+  }), { ok: true, reason: 'activated' });
+  assert.equal(
+    readState(f.root, f.runId).data.session_chain.lease.activation.activated_at,
+    '2999-01-01T00:00:00.000Z',
+  );
+});
+
+for (const [label, safetyNow] of [
+  ['equal', Date.parse(ACTIVATION_DEADLINE)],
+  ['after', Date.parse(ACTIVATION_DEADLINE) + 1],
+]) {
+  test(`SLICE-004 activation ${label} to the deadline is rejected so reap alone settles expiry`, () => {
+    const f = seedActivationPending();
+    const before = activationDurableBytes(f.root, f.runId);
+    assert.deepEqual(activate(f, {
+      now: Date.parse('2000-01-01T00:00:00.000Z'),
+      clock: () => safetyNow,
+    }), { ok: false, reason: 'activation-deadline-expired' });
+    assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+    assert.equal(readState(f.root, f.runId).data.session_chain.lease.activation_deadline_at,
+      ACTIVATION_DEADLINE);
+    assert.deepEqual(reapLease(f.root, f.runId, {
+      owner: f.owner,
+      generation: f.generation,
+      clock: () => safetyNow,
+    }), { ok: true, reason: 'activation-expired', transition: 'preserve-pause' });
+    assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 0);
+    assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'activation-expired').length, 1);
+  });
+}
+
+test('SLICE-004 malformed nonnull activation deadline fails closed without laundering', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = 'not-an-iso-deadline';
+  writeHashValidState(f.root, f.runId, data);
+  const before = activationDurableBytes(f.root, f.runId);
+  assert.throws(() => activate(f), /ACTIVATION_DEADLINE_INVALID/);
+  assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
 test('SLICE-004 activation event data is strictly equal to the committed receipt', () => {
   const f = seedActivationPending();
   activate(f);
@@ -1079,7 +1131,10 @@ test('SLICE-004 same token is idempotent and appends no second event', () => {
   const f = seedActivationPending();
   activate(f);
   const before = activationDurableBytes(f.root, f.runId);
-  assert.deepEqual(activate(f, { now: ACTIVATED_AT + 10_000 }), {
+  assert.deepEqual(activate(f, {
+    now: ACTIVATED_AT + 10_000,
+    clock: () => Date.parse(ACTIVATION_DEADLINE) + 1,
+  }), {
     ok: true, reason: 'already-activated',
   });
   assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
@@ -1165,6 +1220,14 @@ test('SLICE-004 first consume rejects a null deadline as not activation pending'
   assert.deepEqual(activate(f), { ok: false, reason: 'not-activation-pending' });
 });
 
+test('SLICE-004 first consume rejects a missing legacy deadline as not activation pending', () => {
+  const f = seedActivationPending();
+  const { data } = readState(f.root, f.runId);
+  delete data.session_chain.lease.activation_deadline_at;
+  writeState(f.root, f.runId, data);
+  assert.deepEqual(activate(f), { ok: false, reason: 'not-activation-pending' });
+});
+
 test('SLICE-004 existing same-token activation bypasses later phase checks', () => {
   const f = seedActivationPending();
   activate(f);
@@ -1204,7 +1267,7 @@ test('SLICE-004 activation makes same-attempt acquire fall through to already-ow
   });
 });
 
-const REAP_DEADLINE = '2026-08-06T06:15:00.000Z';
+const REAP_DEADLINE = ACTIVATION_DEADLINE;
 const REAP_DECIDED = '2026-08-06T06:15:01.000Z';
 
 function seedReapPending(overrides = {}) {
