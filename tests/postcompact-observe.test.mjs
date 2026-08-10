@@ -229,7 +229,7 @@ test('PostCompact validates the bounded common payload and canonical contained r
   assert.equal(spawns, 0);
 });
 
-test('PostCompact main accepts exactly 4096 UTF-8 bytes and rejects oversize or malformed UTF-8', () => {
+test('PostCompact main bounds the full host payload separately from its 4096-byte trusted projection', () => {
   assert.equal(existsSync(ADAPTER), true);
   const fixture = seed('claude');
   const payload = {
@@ -240,7 +240,7 @@ test('PostCompact main accepts exactly 4096 UTF-8 bytes and rejects oversize or 
   };
   const exact = runNode([ADAPTER], {
     cwd: fixture.root,
-    input: jsonAtExactBytes(payload, 4096),
+    input: jsonAtExactBytes(payload, 262144),
   });
   assert.equal(exact.status, 0, exact.stderr);
   assert.equal(exact.stdout, '');
@@ -249,7 +249,7 @@ test('PostCompact main accepts exactly 4096 UTF-8 bytes and rejects oversize or 
 
   const oversize = runNode([ADAPTER], {
     cwd: fixture.root,
-    input: jsonAtExactBytes(payload, 4097),
+    input: jsonAtExactBytes(payload, 262145),
   });
   assert.equal(oversize.status, 0);
   assert.equal(oversize.stdout, '');

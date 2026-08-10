@@ -1093,7 +1093,7 @@ test('compact restore directly dispatches exactly one qualified continue tick af
     'prepared SessionStart must not fabricate restored provenance');
   assert.match(preparedBranch, /prepared-fallback/i,
     'prepared SessionStart must carry an invocation-local one-tick readvice suppression marker');
-  assert.match(restore, /Direct dispatch boundary[\s\S]{0,2400}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
+  assert.match(restore, /Direct dispatch boundary[\s\S]{0,4000}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
   assert.match(restore, /same model turn/i);
   assert.doesNotMatch(restore, /On success, continue[\s\S]{0,120}(?:invokes|print)/i,
     'a print-only or deferred continuation is not a dispatch');
@@ -1106,6 +1106,21 @@ test('compact restore directly dispatches exactly one qualified continue tick af
     'direct-human success must carry explicit non-SessionStart provenance');
   assert.match(restore, /direct-human[\s\S]{0,900}never fabricate `injected_by:"sessionstart"`/i,
     'direct-human success must explicitly forbid fabricated SessionStart provenance');
+  assert.match(restore,
+    /four and only four top-level keys[\s\S]{0,500}"marker"[\s\S]{0,120}"version"[\s\S]{0,120}"injected_by"[\s\S]{0,120}"capsule"/i,
+    'restore must spell the canonical wrapper shape before dispatch');
+  assert.match(restore,
+    /complete serialized wrapper[\s\S]{0,360}(?:never|must not)[\s\S]{0,240}(?:fresh public descriptor|inner `capsule`)/i,
+    'restore must forbid dispatching the flat inspect descriptor or inner capsule');
+  assert.match(restore,
+    /nested `capsule`[\s\S]{0,1200}`kind`[\s\S]{0,120}`deep-loop-compact-capsule`[\s\S]{0,240}`run_id`[\s\S]{0,120}`<run_id>`[\s\S]{0,800}`restore_command`[\s\S]{0,180}`next_command`/i,
+    'restore must spell the literal and renamed fields instead of copying the inspect descriptor');
+  assert.match(restore,
+    /(?:must not|never)[^\n]*(?:copy|spread)[^\n]*(?:checkpoint_rel|cycle)/i,
+    'restore must explicitly exclude inspect-only fields from the nested capsule');
+  assert.match(restore,
+    /Skill\(\{\s*skill:\s*"deep-loop:deep-loop-continue",\s*args:\s*"<canonical_restored_wire_json>"\s*\}\)/,
+    'Claude dispatch must pass the complete canonical wire as Skill args');
 
   const fallbackBody = restore.slice(fallback);
   for (const field of [
@@ -1120,6 +1135,16 @@ test('compact restore directly dispatches exactly one qualified continue tick af
     'failed prepared affinity proof must preserve-pause');
 
   const continueBody = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  const invocation = continueBody.slice(
+    continueBody.indexOf('## Invocation mode'),
+    continueBody.indexOf('## 개요'),
+  );
+  assert.match(invocation,
+    /exactly three mutually exclusive forms[\s\S]{0,500}no\s+arguments[\s\S]{0,300}`prepared-fallback`[\s\S]{0,400}canonical\s+restored wrapper JSON string/i,
+    'invocation mode must admit all three mutually exclusive continue inputs');
+  assert.match(invocation,
+    /canonical\s+restored wrapper[\s\S]{0,360}Stage A[\s\S]{0,300}(?:before|prior to)[\s\S]{0,220}(?:reject|rejection)/i,
+    'the wrapper must route to Stage A before generic argument rejection');
   assert.match(continueBody, /prepared-fallback[\s\S]{0,1000}advice[\s\S]{0,160}compact/i,
     'continue must recognize the exact prepared fallback marker and its compact advice');
   assert.match(continueBody, /prepared-fallback[\s\S]{0,1600}(?:ignore|suppress|consume)[\s\S]{0,240}(?:one tick|exactly once)/i,
@@ -1140,6 +1165,8 @@ test('continue validates SessionStart and direct-human restored capsules against
   assert.match(gate, /JSON\.parse/);
   assert.match(gate, /exact (?:top-level )?key/i);
   assert.match(gate, /deep-loop-compact-capsule-v1/);
+  assert.match(gate, /canonical restored wire JSON[\s\S]{0,240}single string argument/i,
+    'continue must explicitly admit the canonical wrapper as its one dispatch argument');
   assert.match(gate, /phase[^\n]*restored/);
   assert.match(gate, /injected_by[\s\S]{0,240}sessionstart[\s\S]{0,240}direct-human-skill/i);
   assert.match(gate, /direct-human-skill[\s\S]{0,400}human-attested[\s\S]{0,240}direct-human-skill/i,

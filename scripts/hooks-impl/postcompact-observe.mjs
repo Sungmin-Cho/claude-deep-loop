@@ -17,6 +17,7 @@ import { detectMain } from '../lib/detect-main.mjs';
 import { sessionRuntime } from '../lib/runtime.mjs';
 
 export const MAX_POSTCOMPACT_INPUT_BYTES = 4096;
+export const MAX_POSTCOMPACT_HOST_INPUT_BYTES = 256 * 1024;
 export const MAX_POSTCOMPACT_RUN_ENTRIES = 256;
 export const MAX_POSTCOMPACT_CHECKPOINT_ENTRIES = 256;
 export const MAX_POSTCOMPACT_LOOP_BYTES = 1024 * 1024;
@@ -314,7 +315,7 @@ export function runPostCompactObserve(input = {}, {
 
 export async function main() {
   try {
-    const raw = await readBoundedText(process.stdin, { maxBytes: MAX_POSTCOMPACT_INPUT_BYTES });
+    const raw = await readBoundedText(process.stdin, { maxBytes: MAX_POSTCOMPACT_HOST_INPUT_BYTES });
     const input = JSON.parse(raw);
     const result = runPostCompactObserve(input);
     if (!result.ok) throw new Error('adapter-failed');

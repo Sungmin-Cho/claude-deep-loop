@@ -20,11 +20,15 @@ user-invocable: true
 
 ## Invocation mode
 
-The normal invocation has no arguments. One invocation-local internal mode,
-`prepared-fallback`, is accepted only when the trusted SessionStart `prepared`
-branch of `deep-loop-compact restore` dispatches this skill in the same model
-turn. It grants no restore authority, carries no capsule, and never changes
-durable state by itself. Reject any other argument or conflicting mode.
+Accept exactly three mutually exclusive forms: the normal invocation with no
+arguments; the literal invocation-local internal mode `prepared-fallback`; or
+exactly one canonical restored wrapper JSON string supplied by
+`deep-loop-compact restore` in the same model turn. Route the canonical
+restored wrapper directly to Stage A of §0.25 before generic argument rejection.
+The `prepared-fallback` form is accepted only when the trusted SessionStart
+`prepared` branch dispatches it. It grants no restore authority, carries no
+capsule, and never changes durable state by itself. Reject every other argument,
+multiple form, or conflicting mode.
 
 For `prepared-fallback`, §1 still reads `next-action --json` exactly once. If
 the returned action has `advice:"compact"`, ignore only that advice and its
@@ -58,6 +62,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 direct-human compact restore dispatch가 restored compact capsule wire를
 공급했다면, 어떤 mutating CLI보다 먼저 이
 gate를 실행한다. Stage A는 §0의 lease 명령보다도 먼저 순수 입력만 검사한다.
+같은-turn compact restore dispatch에서는 canonical restored wire JSON 전체를
+exactly one single string argument로 받는다. 이 wrapper argument는 정상적인
+인자 없는 invocation의 예외이며, flat inspect descriptor나 inner capsule은
+유효한 wire가 아니다.
 wire가 2048 UTF-8 bytes를 초과하거나 missing, truncated, malformed, oversized
 JSON이면 `/deep-loop-status`를 안내하고 즉시 stop한다. `JSON.parse` 후 다음
 exact top-level key set만 허용한다:

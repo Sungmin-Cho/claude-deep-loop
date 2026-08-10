@@ -150,11 +150,35 @@ never fabricate `injected_by:"sessionstart"`. Its `restore_command` is the
 fresh restored descriptor's `next_command` (`null`), and it carries no routing
 advice.
 
+Before dispatch, serialize four and only four top-level keys in this exact
+order: `{"marker":"deep-loop-compact-capsule-v1","version":1,"injected_by":"<sessionstart|direct-human-skill>","capsule":{...}}`.
+The nested `capsule` object contains only the exact fields required by the
+continue skill's restored capsule gate. Pass the complete serialized wrapper
+verbatim. Never pass the fresh public descriptor, the committed restore result,
+or the inner `capsule` object by itself. Do not spread descriptor fields beside
+`injected_by`; `phase` and every checkpoint identity field belong inside the
+nested `capsule` value.
+
+Construct the nested `capsule` field by field with this exact key set and no
+others: `kind`, `phase`, `run_id`, `checkpoint_key`, `context_sha256`,
+`pre_restore_loop_hash`, `owner_run_id`, `generation`, `runtime`,
+`workstream_id`, `episode_id`, `provider_evidence`, `admission`,
+`restore_event`, `restore_command`. Set `kind` to the literal
+`deep-loop-compact-capsule`, `phase` to the literal `restored`, and `run_id` to
+the logical `<run_id>`. Copy each same-named checkpoint identity field from the
+validated canonical SessionStart capsule or fresh restored descriptor as
+applicable. Use the committed kernel result's exact `provider_evidence`,
+`admission`, and `restore_event`. Set `restore_command` to the validated
+descriptor's `next_command` (which is `null` after restore); this is a deliberate
+rename, not a spread. Never copy or spread inspect-only `checkpoint_rel`,
+`cycle`, `trigger`, `ok`, `reason`, `requires_model_turn`, `replay`, or
+`next_command` into the nested object.
+
 Directly invoke the existing runtime-qualified continue skill exactly once in
 this same model turn and same owner session, passing the applicable canonical
 restored capsule as input:
 
-- Claude: invoke `/deep-loop-continue` exactly once.
+- Claude: invoke `Skill({ skill: "deep-loop:deep-loop-continue", args: "<canonical_restored_wire_json>" })` exactly once.
 - Codex: invoke `$deep-loop:deep-loop-continue` exactly once.
 
 This is an actual skill dispatch, not a printed command or a request for a later
