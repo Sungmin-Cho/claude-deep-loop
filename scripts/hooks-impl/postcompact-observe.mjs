@@ -171,6 +171,9 @@ function observationRequest(root, cwd, resolveContextFn = resolveRunContext) {
     root,
     cwd: canonicalCwd,
     purpose: 'hook-checkpoint',
+    vectorOptions: {
+      maxBytesByRel: { 'loop.json': MAX_POSTCOMPACT_LOOP_BYTES },
+    },
   });
   if (!selected?.ok || selected.kind !== 'selected') return null;
   const loop = selected.snapshot?.data;

@@ -16,6 +16,7 @@ import { emitCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { resolveRunContext } from '../scripts/lib/run-context.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 
@@ -410,6 +411,45 @@ test('PostCompact bounds run inventory, loop bytes, checkpoint entries, and obse
   }, { spawnSyncImpl, expectedRoot: checkpointFixture.root });
   assert.deepEqual(tooManyCheckpoints, { ok: false, action: 'ignored', reason: 'observation-unavailable' });
   assert.equal(calls, 1, 'oversized checkpoint inventory must fail before spawn');
+});
+
+test('PostCompact enforces the loop bound inside the verified selection capture', async () => {
+  const fixture = seed('claude');
+  const adapter = await loadAdapter();
+  const loopPath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  let spawns = 0;
+  let grew = false;
+
+  const result = adapter.runPostCompactObserve({
+    cwd: fixture.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, {
+    expectedRoot: fixture.root,
+    resolveContextFn(options) {
+      const original = readFileSync(loopPath);
+      const oversized = Buffer.concat([
+        original,
+        Buffer.alloc(adapter.MAX_POSTCOMPACT_LOOP_BYTES + 1 - original.length, 0x20),
+      ]);
+      writeFileSync(loopPath, oversized);
+      writeFileSync(join(runDir(fixture.root, fixture.runId), '.loop.hash'), contentHash(oversized));
+      grew = true;
+      return resolveRunContext(options);
+    },
+    spawnSyncImpl: () => {
+      spawns += 1;
+      return { status: 0, signal: null, error: undefined };
+    },
+  });
+
+  assert.equal(grew, true, 'the race seam must grow loop.json after the prefilter');
+  assert.deepEqual(result, {
+    ok: false,
+    action: 'ignored',
+    reason: 'observation-unavailable',
+  });
+  assert.equal(spawns, 0);
 });
 
 test('PostCompact bootstrap stays shell-free and adapter imports no mutation facade', () => {

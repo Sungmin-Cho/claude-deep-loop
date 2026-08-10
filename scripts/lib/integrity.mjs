@@ -1085,6 +1085,22 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
   const maxEntries = integerLimit('maxEntries', VERIFIED_VECTOR_DEFAULTS.maxEntries);
   const maxBytes = integerLimit('maxBytes', VERIFIED_VECTOR_DEFAULTS.maxBytes);
   const maxDepth = integerLimit('maxDepth', VERIFIED_VECTOR_DEFAULTS.maxDepth);
+  const maxBytesByRel = new Map();
+  if (limits.maxBytesByRel !== undefined) {
+    if (limits.maxBytesByRel === null
+      || typeof limits.maxBytesByRel !== 'object'
+      || Array.isArray(limits.maxBytesByRel)) {
+      throw integrityInvalidError('verified vector relative byte limits');
+    }
+    for (const [rel, value] of Object.entries(limits.maxBytesByRel)) {
+      if (normalizePortableRelativePath(rel) !== rel
+        || !Number.isSafeInteger(value)
+        || value < 0) {
+        throw integrityInvalidError('verified vector relative byte limits');
+      }
+      maxBytesByRel.set(rel, value);
+    }
+  }
   const nowFn = typeof options.nowFn === 'function' ? options.nowFn : () => Date.now();
   const lstatFn = typeof options.lstatFn === 'function' ? options.lstatFn : lstatSync;
   const opendirFn = typeof options.opendirFn === 'function' ? options.opendirFn : opendirSync;
@@ -1183,7 +1199,11 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
       })();
       const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
       const declaredSize = Number(stat.size);
-      if (!Number.isSafeInteger(declaredSize) || declaredSize < 0 || totalBytes + declaredSize > maxBytes) {
+      const relativeMaxBytes = maxBytesByRel.get(rel) ?? maxBytes;
+      if (!Number.isSafeInteger(declaredSize)
+        || declaredSize < 0
+        || declaredSize > relativeMaxBytes
+        || totalBytes + declaredSize > maxBytes) {
         throw integrityInvalidError('verified vector bytes');
       }
       let bytes;
