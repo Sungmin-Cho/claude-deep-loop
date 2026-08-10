@@ -236,6 +236,24 @@ function strArg(f, name) {
   if (typeof v !== 'string' || v.length === 0) { error('INVALID_' + name.toUpperCase().replace(/-/g, '_') + ': must be a non-empty string'); process.exit(3); }
   return v;
 }
+function parseNewLeaseFenceArgs(f) {
+  const owner = f.owner;
+  if (typeof owner !== 'string' || owner.length === 0) {
+    return { ok: false, code: 2, message: 'USAGE: --owner <run_id> is required' };
+  }
+  const rawGeneration = f.generation;
+  if (typeof rawGeneration !== 'string' || rawGeneration.length === 0) {
+    return { ok: false, code: 2, message: 'USAGE: --generation <positive integer> is required' };
+  }
+  if (!/^[1-9]\d*$/.test(rawGeneration)) {
+    return { ok: false, code: 1, message: 'INVALID_GENERATION: must be a positive safe integer' };
+  }
+  const generation = Number(rawGeneration);
+  if (!Number.isSafeInteger(generation)) {
+    return { ok: false, code: 1, message: 'INVALID_GENERATION: must be a positive safe integer' };
+  }
+  return { ok: true, owner, generation };
+}
 function classifyKernelError(e) {
   const message = String(e?.message || e);
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
@@ -870,8 +888,9 @@ const handlers = {
       )) ? 3 : 0;
     }
     if (verb === 'activate') {
-      const owner = strArg(f, 'owner');
-      const generation = intArg(f, 'generation');
+      const fence = parseNewLeaseFenceArgs(f);
+      if (!fence.ok) { error(fence.message); return fence.code; }
+      const { owner, generation } = fence;
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
       const attemptId = reqStr(f, 'attempt-id');
@@ -913,14 +932,15 @@ const handlers = {
         error('USAGE: lease reap does not accept --now');
         return 2;
       }
-      const owner = strArg(f, 'owner');
-      const generation = intArg(f, 'generation');
+      const fence = parseNewLeaseFenceArgs(f);
+      if (!fence.ok) { error(fence.message); return fence.code; }
+      const { owner, generation } = fence;
       try {
         json(reapLease(root, runId, { owner, generation }));
         return 0;
       } catch (e) {
         const message = String(e?.message || e);
-        if (message.startsWith('LEASE_FENCED') || message.startsWith('RUN_TERMINAL')) {
+        if (message.startsWith('LEASE_FENCED')) {
           error(message);
           return 3;
         }

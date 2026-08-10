@@ -733,6 +733,73 @@ function reapCli(f, extra = [], owner = f.owner, generation = f.gen) {
   ]);
 }
 
+function activationVerbCli(f, verb, fenceArgs) {
+  const verbArgs = verb === 'activate'
+    ? [
+      '--runtime', 'claude', '--attempt-id', f.attemptId,
+      '--activation-token', 'CliTaxonomyToken_01',
+    ]
+    : [];
+  return run(f.root, [
+    'lease', verb, ...fenceArgs, ...verbArgs, '--run-id', f.runId,
+  ]);
+}
+
+test('SLICE-010 new lease verbs classify omitted, bare, and empty fence options as usage exit 2', () => {
+  const cases = [
+    { label: 'owner omitted', fenceArgs: ['--generation', '2'], field: 'owner' },
+    { label: 'owner bare', fenceArgs: ['--owner', '--generation', '2'], field: 'owner' },
+    { label: 'owner empty', fenceArgs: ['--owner=', '--generation', '2'], field: 'owner' },
+    { label: 'generation omitted', fenceArgs: ['--owner', 'CLIACTIVATIONOWNER'], field: 'generation' },
+    { label: 'generation bare', fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation'], field: 'generation' },
+    { label: 'generation empty', fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation='], field: 'generation' },
+  ];
+  for (const verb of ['activate', 'reap']) {
+    for (const { label, fenceArgs, field } of cases) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, fenceArgs);
+      assert.equal(result.status, 2, `${verb} ${label}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, new RegExp(`USAGE: --${field}`));
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, `${verb} ${label}`);
+    }
+  }
+});
+
+test('SLICE-010 new lease verbs classify malformed generations as invalid-value exit 1', () => {
+  for (const verb of ['activate', 'reap']) {
+    for (const generation of ['0', '-1', '1.5', 'abc', '9007199254740992']) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, [
+        '--owner', f.owner, '--generation', generation,
+      ]);
+      assert.equal(result.status, 1,
+        `${verb} generation=${generation}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /INVALID_GENERATION/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before,
+        `${verb} generation=${generation}`);
+    }
+  }
+});
+
+test('SLICE-010 new lease verbs reserve exit 3 for valid-shaped stale fences', () => {
+  for (const verb of ['activate', 'reap']) {
+    for (const fenceArgs of [
+      ['--owner', 'STALEOWNER', '--generation', '2'],
+      ['--owner', 'CLIACTIVATIONOWNER', '--generation', '999'],
+    ]) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, fenceArgs);
+      assert.equal(result.status, 3, `${verb} ${fenceArgs.join(' ')}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /LEASE_FENCED: (owner|generation)-mismatch/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before,
+        `${verb} ${fenceArgs.join(' ')}`);
+    }
+  }
+});
+
 test('SLICE-004 CLI lease activate records --now and returns activated', () => {
   const f = seedActivationCli();
   const result = activateCli(f, [
@@ -850,14 +917,14 @@ test('SLICE-007 CLI lease reap maps stale owner fences to exit 3 without mutatio
   assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
 });
 
-test('SLICE-007 CLI lease reap maps terminal state to exit 3 after the fresh fence', () => {
+test('SLICE-010 CLI lease reap maps terminal state to invalid-state exit 1 after the fresh fence', () => {
   const f = seedActivationCli();
   const { data } = readState(f.root, f.runId);
   data.status = 'completed';
   writeState(f.root, f.runId, data);
   const before = terminalDurableBytes(f.root, f.runId);
   const result = reapCli(f);
-  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /RUN_TERMINAL/);
   assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
 });
