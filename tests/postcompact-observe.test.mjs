@@ -103,6 +103,39 @@ test('PostCompact resolves a unique cwd-bound run and fails closed on project-wi
   assert.equal(calls.length, 1, 'ambiguous project-wide PostCompact must not spawn');
 });
 
+test('PostCompact fails closed when a cwd-bound run is corrupt instead of observing another active run', async () => {
+  const first = seed('claude', { label: 'corrupt-first' });
+  const second = seed('claude', {
+    root: first.root,
+    label: 'valid-second',
+    now: '2026-08-05T00:01:00.000Z',
+  });
+  writeFileSync(join(runDir(first.root, first.runId), 'loop.json'), '{');
+
+  const { runPostCompactObserve } = await loadAdapter();
+  let spawns = 0;
+  const result = runPostCompactObserve({
+    cwd: first.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, {
+    expectedRoot: first.root,
+    spawnSyncImpl: () => {
+      spawns += 1;
+      return { status: 0, signal: null, error: undefined };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    action: 'ignored',
+    reason: 'observation-unavailable',
+  });
+  assert.equal(spawns, 0);
+  assert.equal(existsSync(observationPath(second)), false,
+    'a valid concurrent run must not receive false compaction evidence');
+});
+
 async function loadAdapter() {
   return import(`${pathToFileURL(ADAPTER).href}?test=${Date.now()}-${Math.random()}`);
 }

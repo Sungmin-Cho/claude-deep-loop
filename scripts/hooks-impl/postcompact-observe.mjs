@@ -1,12 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import {
-  closeSync,
   existsSync,
-  fstatSync,
   lstatSync,
-  openSync,
   opendirSync,
-  readSync,
   realpathSync,
   statSync,
 } from 'node:fs';
@@ -14,6 +10,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
+import { resolveRunContext } from '../lib/run-context.mjs';
 import { sessionRuntime } from '../lib/runtime.mjs';
 
 export const MAX_POSTCOMPACT_INPUT_BYTES = 4096;
@@ -69,29 +66,6 @@ function boundedDirectoryNames(path, maxEntries) {
     return null;
   } finally {
     try { directory?.closeSync(); } catch { /* best effort */ }
-  }
-}
-
-function readBoundedExactRegular(path, maxBytes) {
-  if (!exactRegularFile(path)) return null;
-  let descriptor;
-  try {
-    descriptor = openSync(path, 'r');
-    const stat = fstatSync(descriptor, { bigint: true });
-    if (!stat.isFile() || stat.size < 1n || stat.size > BigInt(maxBytes)) return null;
-    const expected = Number(stat.size);
-    const bytes = Buffer.allocUnsafe(expected + 1);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
-      if (count === 0) break;
-      offset += count;
-    }
-    return offset === expected ? bytes.subarray(0, offset) : null;
-  } catch {
-    return null;
-  } finally {
-    try { if (descriptor !== undefined) closeSync(descriptor); } catch { /* best effort */ }
   }
 }
 
@@ -170,27 +144,29 @@ function newestCheckpoint(runPath) {
   return candidates.length === 0 ? null : `checkpoints/${candidates[0].name}`;
 }
 
-function runObservationCandidate(root, runId, canonicalCwd) {
-  const runPath = join(root, '.deep-loop', 'runs', runId);
-  if (canonicalExactDirectory(runPath) !== runPath) return null;
-  const loopPath = join(runPath, 'loop.json');
-  const loopBytes = readBoundedExactRegular(loopPath, MAX_POSTCOMPACT_LOOP_BYTES);
-  if (loopBytes === null) return null;
-  let loop;
-  try { loop = JSON.parse(loopBytes.toString('utf8')); } catch { return null; }
-  if (loop?.run_id !== runId || loop?.status !== 'running') return null;
-  let storedRoot;
-  try { storedRoot = realpathSync(loop?.project?.root); } catch { return null; }
-  if (storedRoot !== root) return null;
+function observationRequest(root, cwd, resolveContextFn = resolveRunContext) {
+  const canonicalCwd = canonicalExactDirectory(cwd);
+  if (canonicalCwd === null) return null;
+  const runsPath = join(root, '.deep-loop', 'runs');
+  if (canonicalExactDirectory(runsPath) !== runsPath
+    || boundedDirectoryNames(runsPath, MAX_POSTCOMPACT_RUN_ENTRIES) === null) return null;
+  const selected = resolveContextFn({
+    root,
+    cwd: canonicalCwd,
+    purpose: 'hook-checkpoint',
+  });
+  if (!selected?.ok || selected.kind !== 'selected') return null;
+  const loop = selected.snapshot?.data;
+  if (!loop || loop.run_id !== selected.runId || loop.status !== 'running') return null;
 
-  const lease = loop?.session_chain?.lease;
+  const lease = loop.session_chain?.lease;
   const owner = lease?.owner_run_id;
   const generation = lease?.generation;
   if (!safeCurrentRunId(owner)
     || !Number.isSafeInteger(generation)
     || generation < 1
     || lease?.state !== 'active') return null;
-  const ownerSession = Array.isArray(loop?.session_chain?.sessions)
+  const ownerSession = Array.isArray(loop.session_chain?.sessions)
     ? loop.session_chain.sessions.find(session => session?.run_id === owner)
     : null;
   const scope = ownerSession?.scope;
@@ -200,57 +176,27 @@ function runObservationCandidate(root, runId, canonicalCwd) {
     || scope.terminal_event !== null
     || scope.closed_at !== null
     || scope.superseded_at !== null) return null;
-  const workstream = Array.isArray(loop?.workstreams)
+  const workstream = Array.isArray(loop.workstreams)
     ? loop.workstreams.find(item => item?.id === scope.workstream_id)
     : null;
-  const episode = Array.isArray(loop?.episodes)
+  const episode = Array.isArray(loop.episodes)
     ? loop.episodes.find(item => item?.id === loop.current_episode)
     : null;
   if (!workstream
     || ['ready', 'merged', 'abandoned'].includes(workstream.status)
-    || episode?.workstream_id !== scope.workstream_id
-    || typeof workstream.worktree !== 'string') return null;
-  const worktreePath = resolve(root, workstream.worktree);
-  const canonicalWorktree = canonicalExactDirectory(worktreePath);
-  if (canonicalWorktree === null) return null;
-  const rootRelative = relative(root, canonicalWorktree);
-  if (!rootRelative || rootRelative.startsWith('..') || rootRelative.split(sep).includes('..')) return null;
-  const cwdRelative = relative(canonicalWorktree, canonicalCwd);
-  const cwdBound = cwdRelative === ''
-    || (!cwdRelative.startsWith('..') && !cwdRelative.split(sep).includes('..'));
+    || episode?.workstream_id !== scope.workstream_id) return null;
+  if (selected.source === 'worktree' && selected.matchedWorktree !== workstream.worktree) return null;
+
   let runtime;
   try { runtime = sessionRuntime(loop); } catch { return null; }
-  const checkpointRel = newestCheckpoint(runPath);
-  return {
-    runId,
+  const checkpointRel = newestCheckpoint(join(root, '.deep-loop', 'runs', selected.runId));
+  return checkpointRel === null ? null : {
+    runId: selected.runId,
     owner,
     generation,
     runtime,
     checkpointRel,
-    cwdBound,
   };
-}
-
-function observationRequest(root, cwd) {
-  const canonicalCwd = canonicalExactDirectory(cwd);
-  if (canonicalCwd === null) return null;
-  const runsPath = join(root, '.deep-loop', 'runs');
-  if (canonicalExactDirectory(runsPath) !== runsPath) return null;
-  const entries = boundedDirectoryNames(runsPath, MAX_POSTCOMPACT_RUN_ENTRIES);
-  if (entries === null) return null;
-  const names = entries.filter(safeCurrentRunId).sort();
-  const candidates = names
-    .map(runId => runObservationCandidate(root, runId, canonicalCwd))
-    .filter(Boolean);
-  const cwdBound = candidates.filter(candidate => candidate.cwdBound);
-  const selected = cwdBound.length === 1
-    ? cwdBound[0]
-    : cwdBound.length === 0 && candidates.length === 1
-      ? candidates[0]
-      : null;
-  if (selected === null || selected.checkpointRel === null) return null;
-  const { cwdBound: _cwdBound, ...request } = selected;
-  return request;
 }
 
 function trustedBody(input, root) {
@@ -276,12 +222,13 @@ function trustedBody(input, root) {
 export function runPostCompactObserve(input = {}, {
   spawnSyncImpl = spawnSync,
   expectedRoot,
+  resolveContextFn = resolveRunContext,
 } = {}) {
   const root = resolvePostCompactProjectRoot(input?.cwd, { expectedRoot });
   if (root === null) return { ok: false, action: 'ignored', reason: 'host-context-invalid' };
   const body = trustedBody(input, root);
   if (body === null) return { ok: false, action: 'ignored', reason: 'host-context-invalid' };
-  const request = observationRequest(root, input.cwd);
+  const request = observationRequest(root, input.cwd, resolveContextFn);
   if (request === null) return { ok: false, action: 'ignored', reason: 'observation-unavailable' };
   const argv = [
     CLI,
