@@ -65,7 +65,7 @@ jobs:
             Object.freeze({ root: 'recipes', witnesses: Object.freeze(['recipes/automation/github-actions-loop.yml', 'recipes/hillclimb-ledger.json', 'recipes/triage-and-discovery.json']) }),
             Object.freeze({ root: 'hooks', witnesses: Object.freeze(['hooks/hooks.json']) }),
           ]);
-          const POSITIVE_17_RECORD_DIGEST = 'f0a6680ee6b1c6d62c449b92d12ee6ab29462daabab094ae9dba124bda16a18c';
+          const POSITIVE_17_RECORD_DIGEST = 'cf8c3a3b9aabf7653b13c48f2942c85e6504764e60b2a9513571e4605ccf5c32';
           const MAX = Object.freeze({ files: 4096, directories: 4096, pathBytes: 4096,
             totalPathBytes: 16 * 1024 * 1024, fileBytes: 16 * 1024 * 1024,
             totalContentBytes: 256 * 1024 * 1024, framedBytes: 512 * 1024 * 1024 });

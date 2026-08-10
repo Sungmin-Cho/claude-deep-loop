@@ -691,6 +691,8 @@ test('artifact helpers reject state, event, lock, and transaction namespace targ
     'event-log.jsonl',
     '.lock/protected.bin',
     'transactions/protected.bin',
+    'compact-restore-intents/protected.bin',
+    'Compact-Restore-Intents/protected.bin',
     'LOOP.JSON',
     '.LOCK/protected.bin',
     'TRANSACTIONS/protected.bin',
@@ -1175,6 +1177,17 @@ test('transaction journal remains artifact-only and independent from state/integ
   assert.doesNotMatch(source, /join\([^\n]*(?:loop\.json|\.loop\.hash)/);
 });
 
+test('compact restore journal is isolated from generic publication reconciliation', () => {
+  const source = readFileSync(
+    fileURLToPath(new URL('../scripts/lib/compact-restore-intent.mjs', import.meta.url)),
+    'utf8',
+  );
+  assert.doesNotMatch(source, /from\s+['"]\.\/(?:state|integrity|transaction-journal)\.mjs['"]/);
+  assert.doesNotMatch(source, /\b(?:appendEvent|appendAnchored|writeState)\s*\(/);
+  assert.match(source, /compact-restore-intents/);
+  assert.doesNotMatch(source, /['"]transactions['"]/);
+});
+
 function anchoredSeed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-tx-anchored-'));
   const { runId } = initRun(root, {
@@ -1212,6 +1225,22 @@ function publishOnce(root, runId, operationId, { faultAt = () => {} } = {}) {
     },
   );
 }
+
+test('generic anchored publication validates and blocks a live isolated compact intent', () => {
+  const { root, runId, dir } = anchoredSeed();
+  const privateDir = join(dir, 'compact-restore-intents');
+  mkdirSync(privateDir);
+  const privatePath = join(privateDir, '01KZ7H4M000000000000000000.prepared.json');
+  writeFileSync(privatePath, 'private-intent-bytes');
+  assert.throws(
+    () => publishOnce(root, runId, 'generic-beside-compact-intent'),
+    /COMPACT_RESTORE_INTENT_INVALID/,
+  );
+  assert.equal(readFileSync(privatePath, 'utf8'), 'private-intent-bytes');
+  const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
+  assert.deepEqual(snapshot.data.discovered_items, []);
+  assert.equal(snapshot.logLines.filter(event => event.type === 'anchored-test').length, 0);
+});
 
 test('publication-mode appendAnchored replays artifacts, exact events, candidate loop, hash, and commit in order', () => {
   assert.equal(typeof stateApi.captureReconciledRunSnapshot, 'function');

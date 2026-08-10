@@ -182,6 +182,9 @@ test('user docs publish the compatibility, authorization, recovery, and WAL cont
     assert.match(source, /WAL[\s\S]{0,240}fail-stop|fail-stop[\s\S]{0,240}WAL/i);
     for (const artifact of [
       'checkpoints/<checkpoint-key>-compact.json',
+      'checkpoints/<checkpoint-key>-compact-observation.json',
+      'checkpoints/<checkpoint-key>-compact-prune.json',
+      'compact-restore-intents/<operation-id>.prepared.json',
       'transactions/<operation-id>/prepared.json',
       'transactions/<operation-id>/committed.json',
       'recoveries/<child-run-id>-affinity-recovery.json',
@@ -189,6 +192,22 @@ test('user docs publish the compatibility, authorization, recovery, and WAL cont
       'terminal/launch-command.txt',
       'terminal/launch-command.meta.json',
     ]) assert.ok(source.includes(artifact), `${path} missing ${artifact}`);
+  }
+});
+
+test('compatibility docs publish trusted PostCompact ingress and fail-closed compact liveness', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /PostCompact[\s\S]{0,300}(?:(?:bounded|4096)[\s\S]{0,180}checkpoint observe|checkpoint observe[\s\S]{0,180}(?:bounded|4096))/i,
+      `${path} must describe bounded public observation ingress`);
+    assert.match(source, /observation receipt[\s\S]{0,260}(?:corroborat|증명|입증)[\s\S]{0,260}(?:never|not|않|절대)[\s\S]{0,140}(?:mismatch|불일치)/i,
+      `${path} must not describe a receipt as a mismatch override`);
+    assert.match(source, /prepared[\s\S]{0,220}(?:never|not|않|절대)[\s\S]{0,160}(?:automatic|auto-restore|자동 복원)/i,
+      `${path} must not describe prepared state as automatic restore authority`);
+    assert.match(source, /unattended[\s\S]{0,260}open[^\n]{0,80}Workstream[\s\S]{0,260}(?:normal action|정상 action)[\s\S]{0,200}(?:no compact advice|compact advice[^\n]{0,40}(?:없|않))[\s\S]{0,200}(?:no[^\n]{0,40}handoff|handoff[^\n]{0,40}(?:없|않))/i,
+      `${path} must publish unattended mid-Workstream suppression`);
+    assert.match(source, /terminal[\s\S]{0,180}checkpoint (?:observe|restore)[\s\S]{0,180}(?:reject|거부)/i,
+      `${path} must publish terminal CLI rejection`);
   }
 });
 
@@ -318,6 +337,9 @@ test('deep-suite patch declares node-only runtime and current durable artifacts 
     '.deep-loop/runs/<run-id>/preflight/accounting/<cache-key>.json',
     '.deep-loop/runs/<run-id>/preflight/process-receipts/<receipt>.json',
     '.deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact.json',
+    '.deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact-observation.json',
+    '.deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact-prune.json',
+    '.deep-loop/runs/<run-id>/compact-restore-intents/<operation-id>.prepared.json',
     '.deep-loop/runs/<run-id>/transactions/<operation-id>/prepared.json',
     '.deep-loop/runs/<run-id>/transactions/<operation-id>/committed.json',
     '.deep-loop/runs/<run-id>/recoveries/<child-run-id>-affinity-recovery.json',
@@ -325,7 +347,7 @@ test('deep-suite patch declares node-only runtime and current durable artifacts 
     '.deep-loop/runs/<run-id>/terminal/launch-command.txt',
     '.deep-loop/runs/<run-id>/terminal/launch-command.meta.json',
   ]) assert.ok(source.includes(artifact), `integration patch missing ${artifact}`);
-  assert.match(source, /"hooks_active":\s*\["PreCompact",\s*"SessionStart"\]/);
+  assert.match(source, /"hooks_active":\s*\["PreCompact",\s*"PostCompact",\s*"SessionStart"\]/);
   assert.ok(source.includes('"x-session-start-sources":["compact"]'),
     'integration patch must include the exact schema-valid SessionStart compact source sidecar');
   assert.match(source, /PreCompact[\s\S]{0,180}workstream-session[\s\S]{0,180}open affinity[\s\S]{0,120}checkpoint[\s\S]{0,160}closed boundary[\s\S]{0,120}no-affinity/i,
@@ -342,16 +364,22 @@ test('deep-suite patch declares node-only runtime and current durable artifacts 
   assert.match(source, /marketplace[\s\S]{0,200}sync[\s\S]{0,200}(?:proposal-only|별도 승인)/i);
 });
 
-test('live-surface docs name the shell-free PreCompact implementation and never the deleted Bash wrapper', () => {
+test('live-surface docs name all three shell-free compact hook implementations and never the deleted Bash wrapper', () => {
   const staleWrapperReferences = [];
   const missingImplementationReferences = [];
   for (const path of LIVE_SURFACE_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');
     if (source.includes('hooks/scripts/precompact-handoff.sh')) staleWrapperReferences.push(path);
-    const namesImplementation = path === 'hooks/hooks.json'
-      ? source.includes("'scripts','hooks-impl','precompact-handoff.mjs'")
-      : source.includes('scripts/hooks-impl/precompact-handoff.mjs');
-    if (!namesImplementation) missingImplementationReferences.push(path);
+    for (const implementation of [
+      'precompact-handoff.mjs',
+      'postcompact-observe.mjs',
+      'sessionstart-restore.mjs',
+    ]) {
+      const namesImplementation = path === 'hooks/hooks.json'
+        ? source.includes(`'scripts','hooks-impl','${implementation}'`)
+        : source.includes(`scripts/hooks-impl/${implementation}`);
+      if (!namesImplementation) missingImplementationReferences.push(`${path}:${implementation}`);
+    }
   }
   assert.deepEqual({ staleWrapperReferences, missingImplementationReferences }, {
     staleWrapperReferences: [],

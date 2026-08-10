@@ -27,6 +27,18 @@ function seed(runtime = 'claude') {
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
+function historicalCursor(owner) {
+  return {
+    checkpoint_key: 'a'.repeat(64), context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64), owner_run_id: owner, generation: 1,
+    runtime: 'codex', workstream_id: 'ws-history', episode_id: 'ep-history',
+    baseline_turns: 7, restored_at: '2026-06-24T00:00:00.000Z', cycle: 1,
+    restore_event: { seq: 1, checksum: 'd'.repeat(64) },
+    admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+}
+
 const POSIX_PLATFORM = 'linux';
 const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
 function buildPosixLaunchCommand(options) {
@@ -637,6 +649,7 @@ test('emitHandoff: approved native Windows Codex uses injected deep-loop root an
   const deepLoopRoot = 'C:\\Injected Deep Loop';
   const { data } = readState(root, runId);
   data.autonomy.runtime_executable_approval = codex;
+  data.session_chain.sessions.find(session => session.run_id === runId).compact_cursor = historicalCursor(runId);
   writeState(root, runId, data);
 
   let emitted;
@@ -664,6 +677,11 @@ test('emitHandoff: approved native Windows Codex uses injected deep-loop root an
   const children = after.session_chain.sessions.filter(session => session.run_id !== runId);
   assert.equal(children.length, 1);
   assert.equal(children[0].run_id, emitted.childRunId);
+  assert.equal(Object.hasOwn(children[0], 'compact_cursor'), false);
+  assert.deepEqual(
+    after.session_chain.sessions.find(session => session.run_id === runId).compact_cursor,
+    historicalCursor(runId),
+  );
 
   const entries = buildLaunchCommand({
     runtime: 'codex', platform: 'win32', root: targetRoot, parentRunId: runId,

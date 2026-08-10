@@ -9,13 +9,15 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { contentHash, unwrap } from './envelope.mjs';
+import { contentHash, ulid, unwrap } from './envelope.mjs';
 import {
   parseHashVerifiedStateBytes,
   runDir,
   readState,
+  writeCompactRestoreState,
   writeState,
   withLock,
   withReadLock,
@@ -43,8 +45,167 @@ import {
   matchingStableFileIdentity,
   normalizePortableRelativePath,
 } from './fs-safe.mjs';
+import {
+  normalizeProviderEvidence,
+  providerEvidenceProjection,
+  readStableRegular,
+  validateCompactPruneBytes,
+  validateStrictBytes,
+  validateStrictSelf,
+} from './checkpoint-validation.mjs';
+import {
+  compactRestoreRequestBinding,
+  compactRestoreRequestBindingDigest,
+  findCompactRestoreIntentLocked,
+  readCompactObservationProofLocked,
+  removeCompactRestoreIntentLocked,
+  writeCompactRestoreIntentLocked,
+} from './compact-restore-intent.mjs';
+import { leaseCheck } from './lease.mjs';
+import { nextAction } from './next-action.mjs';
+import { sessionRuntime, validateSessionRuntime } from './runtime.mjs';
+import { isOpenScope, ownerSession } from './session-scope.mjs';
 
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
+const COMPACT_PRUNE_FILE = /^([0-9a-f]{64})-compact-prune\.json$/;
+
+function assertNoCompactRestoreIntentLocked(root, runId, guard) {
+  const canonicalRunDir = (realpathSync.native || realpathSync)(runDir(root, runId));
+  if (findCompactRestoreIntentLocked(canonicalRunDir, runId, guard)) {
+    throw new Error('COMPACT_RESTORE_INTENT_PENDING');
+  }
+}
+
+function compactRestoreIntentCandidateLocked(root, runId, guard) {
+  const canonicalRunDir = (realpathSync.native || realpathSync)(runDir(root, runId));
+  guard.assertOwned(canonicalRunDir);
+  const dir = join(canonicalRunDir, 'compact-restore-intents');
+  if (!existsSync(dir)) return false;
+  let stat;
+  try { stat = lstatSync(dir); } catch { return true; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return true;
+  let candidate;
+  try { candidate = readdirSync(dir).some(name => name.endsWith('.prepared.json')); }
+  catch { return true; }
+  guard.assertOwned(canonicalRunDir);
+  return candidate;
+}
+
+function compactCheckpointDirectory(root, runId) {
+  const dir = join(runDir(root, runId), 'checkpoints');
+  if (!existsSync(dir)) return null;
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink() || !stat.isDirectory()
+    || realpathSync(dir) !== realpathSync(join(runDir(root, runId), 'checkpoints'))) {
+    throw new Error('CHECKPOINT_PATH_INVALID');
+  }
+  return dir;
+}
+
+function captureCompactPruneArtifact(path, { optional = false } = {}) {
+  try {
+    const { bytes, identity } = readStableRegular(path, 'COMPACT_PRUNE_INVALID');
+    return { bytes, identity, sha256: contentHash(bytes) };
+  } catch (error) {
+    if (optional && error?.message === 'CHECKPOINT_NOT_FOUND') return null;
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+}
+
+function assertCompactPruneArtifactUnchanged(path, captured) {
+  if (captured === null) {
+    if (existsSync(path)) throw new Error('COMPACT_PRUNE_INVALID');
+    return;
+  }
+  let current;
+  try { current = readStableRegular(path, 'COMPACT_PRUNE_INVALID'); }
+  catch { throw new Error('COMPACT_PRUNE_INVALID'); }
+  if (!matchingStableFileIdentity(captured.identity, current.identity)
+    || contentHash(current.bytes) !== captured.sha256) {
+    throw new Error('COMPACT_PRUNE_INVALID');
+  }
+}
+
+export function reconcileCompactPruneTombstonesLocked(
+  root,
+  runId,
+  guard,
+  { checkpointKey, faultAt = () => {} } = {},
+) {
+  const dir = compactCheckpointDirectory(root, runId);
+  if (dir === null) return false;
+  let reconciled = false;
+  for (const name of readdirSync(dir).sort()) {
+    const match = name.match(COMPACT_PRUNE_FILE);
+    if (!match || (checkpointKey !== undefined && match[1] !== checkpointKey)) continue;
+    guard.assertOwned(runDir(root, runId));
+    const key = match[1];
+    const tombstonePath = join(dir, name);
+    const checkpointPath = join(dir, `${key}-compact.json`);
+    const observationPath = join(dir, `${key}-compact-observation.json`);
+    let capturedTombstone;
+    let capturedCheckpoint;
+    let capturedObservation;
+    let payload;
+    try {
+      capturedTombstone = captureCompactPruneArtifact(tombstonePath);
+      payload = validateCompactPruneBytes(capturedTombstone.bytes, { runId, key });
+      capturedCheckpoint = captureCompactPruneArtifact(checkpointPath, { optional: true });
+      if (capturedCheckpoint !== null) {
+        const checkpointBytes = capturedCheckpoint.bytes;
+        if (payload.checkpoint_sha256 === null
+          || capturedCheckpoint.sha256 !== payload.checkpoint_sha256) {
+          throw new Error('COMPACT_PRUNE_INVALID');
+        }
+        let checkpoint;
+        try { checkpoint = JSON.parse(checkpointBytes.toString('utf8')); }
+        catch { checkpoint = null; }
+        if (checkpoint === null) {
+          if (payload.context_sha256 !== null) throw new Error('COMPACT_PRUNE_INVALID');
+        } else {
+          let context;
+          try { context = validateStrictSelf(checkpoint, { runId, key }); }
+          catch {
+            if (payload.context_sha256 !== null) throw new Error('COMPACT_PRUNE_INVALID');
+            context = null;
+          }
+          if (context !== null && checkpoint.payload.context_sha256 !== payload.context_sha256) {
+            throw new Error('COMPACT_PRUNE_INVALID');
+          }
+        }
+      }
+      capturedObservation = captureCompactPruneArtifact(observationPath, { optional: true });
+      if (capturedObservation !== null) {
+        if (payload.receipt_sha256 === null
+          || capturedObservation.sha256 !== payload.receipt_sha256) {
+          throw new Error('COMPACT_PRUNE_INVALID');
+        }
+      }
+    } catch (error) {
+      if (error?.message === 'COMPACT_PRUNE_INVALID') throw error;
+      throw new Error('COMPACT_PRUNE_INVALID');
+    }
+    if (typeof faultAt === 'function') faultAt('prune:reconcile-validated');
+    guard.renew();
+    assertCompactPruneArtifactUnchanged(tombstonePath, capturedTombstone);
+    assertCompactPruneArtifactUnchanged(checkpointPath, capturedCheckpoint);
+    assertCompactPruneArtifactUnchanged(observationPath, capturedObservation);
+    for (const [path, captured] of [
+      [observationPath, capturedObservation],
+      [checkpointPath, capturedCheckpoint],
+      [tombstonePath, capturedTombstone],
+    ]) {
+      if (captured === null) continue;
+      assertCompactPruneArtifactUnchanged(path, captured);
+      rmSync(path, { force: true });
+      flushDirectory(dir);
+    }
+    guard.renew();
+    reconciled = true;
+  }
+  return reconciled;
+}
+
 const DIAGNOSTIC_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const ORPHAN_ENTRY = /^\.orphan-([A-Za-z0-9][A-Za-z0-9._-]{0,127})-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 const TRANSACTION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -189,6 +350,50 @@ function deepFreeze(value) {
 
 function transactionError(message) {
   return new Error(`TRANSACTION_RECONCILIATION_REQUIRED: ${message}`);
+}
+
+function classifyGenericPublicationJournalLocked(root, runId, guard) {
+  const base = runDir(root, runId);
+  const transactions = join(base, 'transactions');
+  guard.assertOwned(base);
+  let stat;
+  try {
+    stat = lstatSync(transactions, { bigint: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      guard.renew(base);
+      return 'absent';
+    }
+    throw transactionError('generic publication journal unreadable');
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw transactionError('generic publication journal path');
+  }
+  const before = captureStableFileIdentity(transactions, { lstatFn: () => stat });
+  let canonicalBase;
+  let canonicalTransactions;
+  let entries;
+  let after;
+  try {
+    canonicalBase = (realpathSync.native || realpathSync)(base);
+    canonicalTransactions = (realpathSync.native || realpathSync)(transactions);
+    entries = readdirSync(transactions);
+    after = captureStableFileIdentity(transactions);
+  } catch {
+    throw transactionError('generic publication journal unreadable');
+  }
+  guard.renew(base);
+  if (resolve(canonicalTransactions) !== resolve(join(canonicalBase, 'transactions'))
+    || !matchingStableFileIdentity(before, after)) {
+    throw transactionError('generic publication journal identity');
+  }
+  return entries.length === 0 ? 'empty' : 'unresolved';
+}
+
+function assertNoUnresolvedGenericPublicationLocked(root, runId, guard) {
+  if (classifyGenericPublicationJournalLocked(root, runId, guard) === 'unresolved') {
+    throw transactionError('generic publication pending during compact restore');
+  }
 }
 
 function integrityInvalidError(message) {
@@ -880,6 +1085,22 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
   const maxEntries = integerLimit('maxEntries', VERIFIED_VECTOR_DEFAULTS.maxEntries);
   const maxBytes = integerLimit('maxBytes', VERIFIED_VECTOR_DEFAULTS.maxBytes);
   const maxDepth = integerLimit('maxDepth', VERIFIED_VECTOR_DEFAULTS.maxDepth);
+  const maxBytesByRel = new Map();
+  if (limits.maxBytesByRel !== undefined) {
+    if (limits.maxBytesByRel === null
+      || typeof limits.maxBytesByRel !== 'object'
+      || Array.isArray(limits.maxBytesByRel)) {
+      throw integrityInvalidError('verified vector relative byte limits');
+    }
+    for (const [rel, value] of Object.entries(limits.maxBytesByRel)) {
+      if (normalizePortableRelativePath(rel) !== rel
+        || !Number.isSafeInteger(value)
+        || value < 0) {
+        throw integrityInvalidError('verified vector relative byte limits');
+      }
+      maxBytesByRel.set(rel, value);
+    }
+  }
   const nowFn = typeof options.nowFn === 'function' ? options.nowFn : () => Date.now();
   const lstatFn = typeof options.lstatFn === 'function' ? options.lstatFn : lstatSync;
   const opendirFn = typeof options.opendirFn === 'function' ? options.opendirFn : opendirSync;
@@ -978,7 +1199,11 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
       })();
       const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
       const declaredSize = Number(stat.size);
-      if (!Number.isSafeInteger(declaredSize) || declaredSize < 0 || totalBytes + declaredSize > maxBytes) {
+      const relativeMaxBytes = maxBytesByRel.get(rel) ?? maxBytes;
+      if (!Number.isSafeInteger(declaredSize)
+        || declaredSize < 0
+        || declaredSize > relativeMaxBytes
+        || totalBytes + declaredSize > maxBytes) {
         throw integrityInvalidError('verified vector bytes');
       }
       let bytes;
@@ -1711,14 +1936,632 @@ export function withReconciledRootRecoveryLock(candidateRoot, runId, callback, o
 
 export function withReconciledMutationLock(root, runId, callback, options = {}) {
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
+  const { authorize, ...reconcileOptions } = options;
+  if (authorize !== undefined && typeof authorize !== 'function') {
+    throw new Error('MUTATION_AUTHORIZER_INVALID');
+  }
   return withLock(root, runId, guard => {
-    reconcileAnchoredPublicationLocked(root, runId, guard, options);
+    if (authorize && compactRestoreIntentCandidateLocked(root, runId, guard)) {
+      const raw = readRawRun(root, runId);
+      const authorized = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: false,
+      });
+      assertProjectRootBinding(root, authorized.data);
+      authorize(guard, { data: structuredClone(authorized.data) });
+    }
+    assertNoCompactRestoreIntentLocked(root, runId, guard);
+    reconcileAnchoredPublicationLocked(root, runId, guard, reconcileOptions);
     const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    if (authorize) authorize(guard, { ...snapshot, data: structuredClone(snapshot.data) });
     if (existsSync(join(runDir(root, runId), 'transactions'))) {
       retireCommittedPublicationLocked(runDir(root, runId), guard);
     }
     return callback(guard, snapshot);
   }, options.lockOptions);
+}
+
+function validatedFenceRequest(fence, runtime) {
+  if (!fence || typeof fence !== 'object' || Array.isArray(fence)
+    || typeof fence.owner !== 'string'
+    || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation)
+    || fence.generation < 1) {
+    throw new Error('FENCE_REQUIRED: owner and positive generation');
+  }
+  return { fence, runtime: validateSessionRuntime(runtime) };
+}
+
+export function assertEstablishedFence(loop, fence, runtime) {
+  const validated = validatedFenceRequest(fence, runtime);
+  const assertedRuntime = validated.runtime;
+  if (sessionRuntime(loop) !== assertedRuntime) throw new Error('RUNTIME_FENCED: runtime mismatch');
+  const checked = leaseCheck(loop, {
+    owner: validated.fence.owner,
+    generation: validated.fence.generation,
+    runtime: assertedRuntime,
+  });
+  if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
+  return assertedRuntime;
+}
+
+function assertPreparedPublicationFence(manifest, fence, runtime) {
+  const validated = validatedFenceRequest(fence, runtime);
+  if (manifest.runtime !== validated.runtime) throw new Error('RUNTIME_FENCED: runtime mismatch');
+  if (manifest.expect.owner !== validated.fence.owner) {
+    throw new Error('LEASE_FENCED: owner-mismatch');
+  }
+  if (manifest.expect.generation !== validated.fence.generation) {
+    throw new Error('LEASE_FENCED: generation-mismatch');
+  }
+  return validated.runtime;
+}
+
+export function withFencedReconciledMutationLock(root, runId, callback, {
+  fence,
+  runtime,
+  ...options
+} = {}) {
+  if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
+  return withLock(root, runId, guard => {
+    const prepared = findPreparedPublicationLocked(runDir(root, runId), guard);
+    if (prepared) {
+      assertPreparedPublicationFence(prepared.manifest, fence, runtime);
+    } else {
+      const raw = readRawRun(root, runId);
+      const current = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: false,
+      });
+      assertEstablishedFence(current.data, fence, runtime);
+    }
+    assertNoCompactRestoreIntentLocked(root, runId, guard);
+    reconcileAnchoredPublicationLocked(root, runId, guard, options);
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    assertEstablishedFence(snapshot.data, fence, runtime);
+    if (existsSync(join(runDir(root, runId), 'transactions'))) {
+      retireCommittedPublicationLocked(runDir(root, runId), guard);
+    }
+    return callback(guard, snapshot);
+  }, options.lockOptions);
+}
+
+export function withVerifiedReadLock(root, runId, callback, options = {}) {
+  if (typeof callback !== 'function') throw new Error('READ_CALLBACK_REQUIRED');
+  return withLock(root, runId, guard => {
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    return callback(guard, snapshot);
+  }, options.lockOptions);
+}
+
+const RESTORE_EVENT_DATA_KEYS = Object.freeze([
+  'operation_id', 'checkpoint_key', 'context_sha256', 'pre_restore_loop_hash',
+  'owner_run_id', 'generation', 'runtime', 'workstream_id', 'episode_id',
+  'baseline_turns', 'cycle', 'admission', 'provider_evidence',
+]);
+const RESTORE_FAULTS = new Set([
+  'restore:intent-written', 'event:appended', 'state:written', 'restore:intent-cleanup',
+]);
+const RESTORE_TERMINAL_WORKSTREAM = new Set(['ready', 'merged', 'abandoned']);
+
+function exactOrderedKeys(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
+}
+
+function restoreAffinity(loop) {
+  const session = ownerSession(loop);
+  const scope = session.scope;
+  if (!isOpenScope(scope) || scope.closed_at !== null || scope.superseded_at !== null
+    || !Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1
+    || typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0) {
+    throw new Error('CHECKPOINT_AFFINITY_INVALID: owner scope is not open and bound');
+  }
+  const workstream = (loop.workstreams || []).find(item => item?.id === scope.workstream_id);
+  const episode = (loop.episodes || []).find(item => item?.id === loop.current_episode);
+  if (!workstream || RESTORE_TERMINAL_WORKSTREAM.has(workstream.status)
+    || !episode || episode.workstream_id !== scope.workstream_id) {
+    throw new Error('CHECKPOINT_AFFINITY_INVALID: current Workstream or episode mismatch');
+  }
+  const artifacts = [...new Set([
+    ...(Array.isArray(episode.expected_artifacts) ? episode.expected_artifacts : []),
+    ...(Array.isArray(episode.artifacts) ? episode.artifacts : []),
+  ])].sort();
+  if (artifacts.length > 256) throw new Error('CHECKPOINT_AFFINITY_INVALID: artifact set too large');
+  return { session, scope, workstream, episode, artifacts };
+}
+
+function restoreArtifact(root, rel) {
+  const normalized = normalizePortableRelativePath(rel);
+  if (normalized === null || normalized !== rel) {
+    throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${String(rel)}`);
+  }
+  let current = root;
+  const parts = normalized.split('/');
+  for (let index = 0; index < parts.length; index += 1) {
+    current = join(current, parts[index]);
+    if (!existsSync(current)) return { rel: normalized, state: 'absent', sha256: null, size: null };
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink()) throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
+    if (index < parts.length - 1) {
+      if (!stat.isDirectory()) throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
+      continue;
+    }
+    if (!stat.isFile() || stat.size > 1024 * 1024) {
+      throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
+    }
+    const before = captureStableFileIdentity(current);
+    const bytes = readFileSync(current);
+    const after = captureStableFileIdentity(current);
+    if (!matchingStableFileIdentity(before, after) || bytes.length !== stat.size) {
+      throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
+    }
+    return { rel: normalized, state: 'present', sha256: contentHash(bytes), size: bytes.length };
+  }
+  throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
+}
+
+function expectedRestoreContext(root, runId, loop, hash, recordedEvidence, generatedAt) {
+  const { scope, workstream, episode, artifacts } = restoreAffinity(loop);
+  return {
+    run_id: runId,
+    owner_run_id: loop.session_chain.lease.owner_run_id,
+    generation: loop.session_chain.lease.generation,
+    project_root_digest: projectRootDigest(loop.project.root),
+    project_binding_generation: loop.project.binding_generation,
+    runtime: sessionRuntime(loop),
+    loop_hash: hash,
+    scope: structuredClone(scope),
+    workstream: structuredClone(workstream),
+    current_episode: structuredClone(episode),
+    artifacts: artifacts.map(rel => restoreArtifact(root, rel)),
+    next_action: nextAction(loop, { now: Date.parse(generatedAt), unattended: false }),
+    provider_evidence: structuredClone(recordedEvidence),
+  };
+}
+
+function strictRestoreFile(root, runId, request) {
+  const dir = join(runDir(root, runId), 'checkpoints');
+  let stat;
+  try { stat = lstatSync(dir); } catch { throw new Error('CHECKPOINT_NOT_FOUND'); }
+  if (stat.isSymbolicLink() || !stat.isDirectory()
+    || realpathSync(dir) !== realpathSync(join(runDir(root, runId), 'checkpoints'))) {
+    throw new Error('CHECKPOINT_PATH_INVALID');
+  }
+  const path = join(dir, `${request.checkpointKey}-compact.json`);
+  if (resolve(path) !== resolve(runDir(root, runId), ...request.checkpointRel.split('/'))) {
+    throw new Error('CHECKPOINT_REL_INVALID');
+  }
+  const { bytes } = readStableRegular(path);
+  if (bytes.length === 0 || bytes.length > 256 * 1024) throw new Error('CHECKPOINT_INVALID');
+  let envelope;
+  try { envelope = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  const context = validateStrictSelf(envelope, { runId, key: request.checkpointKey });
+  return { bytes, envelope, context };
+}
+
+function assertRestoreFence(loop, request) {
+  const runtime = validateSessionRuntime(request.runtime);
+  if (sessionRuntime(loop) !== runtime) throw new Error('RUNTIME_FENCED: runtime mismatch');
+  const checked = leaseCheck(loop, {
+    owner: request.fence.owner,
+    generation: request.fence.generation,
+    runtime,
+  });
+  if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
+  return runtime;
+}
+
+function assertCheckpointRestoreIdentity(root, loop, request, context, affinity) {
+  if (loop.autonomy?.continuation_policy !== 'workstream-session'
+    || context.run_id !== request.runId
+    || context.owner_run_id !== request.fence.owner
+    || context.generation !== request.fence.generation
+    || context.runtime !== request.runtime
+    || context.project_root_digest !== projectRootDigest(loop.project.root)
+    || context.project_binding_generation !== loop.project.binding_generation
+    || context.scope?.workstream_id !== affinity.workstream.id
+    || context.workstream?.id !== affinity.workstream.id
+    || context.current_episode?.id !== affinity.episode.id) {
+    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
+  }
+  assertProjectRootBinding(root, loop);
+}
+
+function validateRestoreAdmission(runDirectory, request, context, affinity, loop, guard) {
+  const base = {
+    checkpoint_key: request.checkpointKey,
+    context_sha256: request.contextSha256,
+    owner_run_id: request.fence.owner,
+    generation: request.fence.generation,
+    runtime: request.runtime,
+    workstream_id: affinity.workstream.id,
+    episode_id: affinity.episode.id,
+  };
+  let proof;
+  let admission;
+  let providerEvidence;
+  if (request.admission === 'postcompact-observation') {
+    if (!['sessionstart', 'external-controller'].includes(request.source)
+      || request.confirmManualCompact !== false) {
+      throw new Error('CHECKPOINT_ADMISSION_INVALID');
+    }
+    const receipt = readCompactObservationProofLocked(
+      runDirectory,
+      request.runId,
+      request.checkpointRel,
+      base,
+      guard,
+    );
+    if (receipt.payload.provider_evidence.recorded !== (context.provider_evidence !== null)) {
+      throw new Error('CHECKPOINT_RECEIPT_INVALID');
+    }
+    proof = {
+      checkpoint_key: receipt.payload.checkpoint_key,
+      context_sha256: receipt.payload.context_sha256,
+      owner_run_id: receipt.payload.owner_run_id,
+      generation: receipt.payload.generation,
+      runtime: receipt.payload.runtime,
+      workstream_id: receipt.payload.workstream_id,
+      episode_id: receipt.payload.episode_id,
+      receipt_sha256: receipt.digest,
+    };
+    admission = {
+      kind: 'postcompact-observation',
+      source: request.source,
+      receipt_trigger: receipt.payload.trigger,
+    };
+    providerEvidence = structuredClone(receipt.payload.provider_evidence);
+  } else if (request.admission === 'human-attested') {
+    if (request.source !== 'direct-human-skill'
+      || request.confirmManualCompact !== true
+      || request.headless === true
+      || loop.autonomy?.spawn_style === 'headless') {
+      throw new Error('CHECKPOINT_MANUAL_ATTESTATION_REQUIRED');
+    }
+    proof = { direct_human_skill: true, non_headless: true, confirmed: true };
+    admission = {
+      kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null,
+    };
+    providerEvidence = providerEvidenceProjection(
+      context.provider_evidence,
+      normalizeProviderEvidence(undefined),
+    );
+  } else {
+    throw new Error('CHECKPOINT_ADMISSION_INVALID');
+  }
+  const requestBinding = compactRestoreRequestBinding({
+    ...base,
+    admission_kind: request.admission,
+    source: request.source,
+    confirm_manual_compact: request.confirmManualCompact,
+    proof,
+  });
+  return {
+    admission,
+    providerEvidence,
+    requestBinding,
+    requestBindingSha256: compactRestoreRequestBindingDigest(requestBinding),
+  };
+}
+
+function restoreDescriptor(request, cursor, disposition) {
+  return {
+    ok: true,
+    disposition,
+    phase: 'restored',
+    checkpoint_rel: request.checkpointRel,
+    checkpoint_key: cursor.checkpoint_key,
+    owner_run_id: cursor.owner_run_id,
+    generation: cursor.generation,
+    runtime: cursor.runtime,
+    workstream_id: cursor.workstream_id,
+    episode_id: cursor.episode_id,
+    baseline_turns: cursor.baseline_turns,
+    cycle: cursor.cycle,
+    restore_event: structuredClone(cursor.restore_event),
+    admission: structuredClone(cursor.admission),
+    provider_evidence: structuredClone(cursor.provider_evidence),
+    next_command: null,
+    requires_model_turn: false,
+    replay: disposition === 'replayed' ? 'exact' : 'not-applicable',
+  };
+}
+
+function cursorFromIntent(payload) {
+  return {
+    checkpoint_key: payload.checkpoint_key,
+    context_sha256: payload.context_sha256,
+    pre_restore_loop_hash: payload.pre_restore_loop_hash,
+    owner_run_id: payload.owner_run_id,
+    generation: payload.generation,
+    runtime: payload.runtime,
+    workstream_id: payload.workstream_id,
+    episode_id: payload.episode_id,
+    baseline_turns: payload.baseline_turns,
+    restored_at: payload.timestamp,
+    cycle: payload.cycle,
+    restore_event: {
+      seq: payload.planned_event.seq,
+      checksum: payload.planned_event.checksum,
+    },
+    admission: structuredClone(payload.admission),
+    provider_evidence: structuredClone(payload.provider_evidence),
+  };
+}
+
+function cursorMatchesIntent(cursor, payload) {
+  return JSON.stringify(cursor) === JSON.stringify(cursorFromIntent(payload));
+}
+
+function restoreCandidateFromIntent(loop, payload) {
+  const candidate = structuredClone(loop);
+  const session = ownerSession(candidate);
+  session.compact_cursor = cursorFromIntent(payload);
+  candidate.event_log_head = structuredClone(session.compact_cursor.restore_event);
+  candidate.updated_at = payload.timestamp;
+  return candidate;
+}
+
+function classifyHashFirstRestorePartial(root, runId, raw, intent) {
+  // The compact-only pair is published hash-first. A retained intent is the sole
+  // authority for interpreting that otherwise-invalid pair: the loop must still
+  // be its exact predecessor and the anchor must name the exact derived candidate.
+  if (!intent || raw.hashBytes === null
+    || contentHash(raw.loopBytes) !== intent.payload.pre_loop_hash) return null;
+  let parsed;
+  try {
+    parsed = parseHashVerifiedStateBytes(
+      root,
+      runId,
+      raw.loopBytes,
+      Buffer.from(intent.payload.pre_loop_hash),
+      { requireSchema: true },
+    );
+  } catch {
+    return null;
+  }
+  const candidate = restoreCandidateFromIntent(parsed.data, intent.payload);
+  const checked = validate(candidate);
+  if (!checked.ok) return null;
+  const candidateBytes = Buffer.from(JSON.stringify(candidate, null, 2));
+  const candidateHash = contentHash(candidateBytes);
+  if (raw.hashBytes.toString('utf8') !== candidateHash) return null;
+  return Object.freeze({ parsed });
+}
+
+function exactCursorReplay(loop, lines, context, request) {
+  const session = ownerSession(loop);
+  const cursor = session.compact_cursor;
+  if (!cursor
+    || cursor.checkpoint_key !== request.checkpointKey
+    || cursor.context_sha256 !== request.contextSha256
+    || cursor.pre_restore_loop_hash !== context.loop_hash
+    || cursor.owner_run_id !== request.fence.owner
+    || cursor.generation !== request.fence.generation
+    || cursor.runtime !== request.runtime
+    || cursor.workstream_id !== context.workstream.id
+    || cursor.episode_id !== context.current_episode.id) return null;
+  if (JSON.stringify(loop.event_log_head) !== JSON.stringify(cursor.restore_event)) return null;
+  const event = lines[cursor.restore_event.seq - 1];
+  if (!event || event.type !== 'compact-restored'
+    || event.ts !== cursor.restored_at
+    || event.checksum !== cursor.restore_event.checksum
+    || !exactOrderedKeys(event.data, RESTORE_EVENT_DATA_KEYS)
+    || JSON.stringify(event.data) !== JSON.stringify({
+      operation_id: event.data.operation_id,
+      checkpoint_key: cursor.checkpoint_key,
+      context_sha256: cursor.context_sha256,
+      pre_restore_loop_hash: cursor.pre_restore_loop_hash,
+      owner_run_id: cursor.owner_run_id,
+      generation: cursor.generation,
+      runtime: cursor.runtime,
+      workstream_id: cursor.workstream_id,
+      episode_id: cursor.episode_id,
+      baseline_turns: cursor.baseline_turns,
+      cycle: cursor.cycle,
+      admission: cursor.admission,
+      provider_evidence: cursor.provider_evidence,
+    })) return null;
+  return cursor;
+}
+
+function classifyRestoreLog(raw, loop, intent) {
+  const parsed = parseExactLogBytes(raw.logBytes);
+  const payload = intent.payload;
+  const preSeq = payload.pre_event_log_head.seq;
+  if (parsed.lines.length < preSeq || parsed.lines.length > preSeq + 1
+    || JSON.stringify(headOfLines(parsed.lines.slice(0, preSeq)))
+      !== JSON.stringify(payload.pre_event_log_head)) {
+    throw new Error('LOG_TAMPERED: compact restore predecessor');
+  }
+  const appended = parsed.lines.length === preSeq + 1;
+  if (appended && !parsed.lineBytes[preSeq].equals(Buffer.from(payload.planned_event_line))) {
+    throw new Error('LOG_TAMPERED: compact restore suffix');
+  }
+  const predecessorLoop = contentHash(raw.loopBytes) === payload.pre_loop_hash
+    && JSON.stringify(loop.event_log_head) === JSON.stringify(payload.pre_event_log_head);
+  const storedHash = raw.hashBytes?.toString('utf8') ?? '';
+  const predecessor = predecessorLoop && storedHash === payload.pre_loop_hash;
+  const hashFirstPartial = predecessorLoop
+    && storedHash === contentHash(Buffer.from(JSON.stringify(
+      restoreCandidateFromIntent(loop, payload),
+      null,
+      2,
+    )));
+  const candidate = cursorMatchesIntent(ownerSession(loop).compact_cursor, payload)
+    && JSON.stringify(loop.event_log_head) === JSON.stringify({
+      seq: payload.planned_event.seq, checksum: payload.planned_event.checksum,
+    });
+  if ((!predecessor && !hashFirstPartial && !candidate) || (candidate && !appended)) {
+    throw new Error('LOG_TAMPERED: compact restore state');
+  }
+  return { parsed, appended, predecessor, hashFirstPartial, candidate };
+}
+
+function reconcileRestoreIntent(root, request, guard, loop, raw, intent, faultAt) {
+  const classified = classifyRestoreLog(raw, loop, intent);
+  const payload = intent.payload;
+  if (!classified.appended) {
+    appendDurableLine(logPath(root, request.runId), Buffer.from(payload.planned_event_line), guard, () => {}, 0);
+    faultAt('event:appended');
+  }
+  if (classified.predecessor || classified.hashFirstPartial) {
+    const candidate = restoreCandidateFromIntent(loop, payload);
+    writeCompactRestoreState(root, request.runId, candidate, payload.timestamp);
+    guard.renew();
+    faultAt('state:written');
+  }
+  const committedRaw = readRawRun(root, request.runId);
+  const committed = snapshotRaw(root, request.runId, committedRaw);
+  if (!cursorMatchesIntent(ownerSession(committed.data).compact_cursor, payload)
+    || !Buffer.from(committed.logBytes).subarray(-Buffer.byteLength(payload.planned_event_line))
+      .equals(Buffer.from(payload.planned_event_line))) {
+    throw new Error('LOG_TAMPERED: compact restore commit validation');
+  }
+  removeCompactRestoreIntentLocked(intent, guard, { faultAt });
+  return {
+    loop: committed.data,
+    disposition: classified.candidate ? 'replayed' : 'committed',
+  };
+}
+
+function commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
+  now = Date.now(),
+  faultAt = () => {},
+} = {}) {
+  const request = { ...normalizedRequest, runId };
+  return withLock(root, runId, guard => {
+    const raw = readRawRun(root, runId);
+    let parsed;
+    let retained;
+    try {
+      parsed = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: true,
+      });
+    } catch (error) {
+      if (!String(error?.message || error).startsWith('STATE_TAMPERED:')) throw error;
+      retained = findCompactRestoreIntentLocked(runDir(root, runId), runId, guard);
+      const partial = classifyHashFirstRestorePartial(root, runId, raw, retained);
+      if (!partial) throw error;
+      parsed = partial.parsed;
+    }
+    const loop = parsed.data;
+    assertProjectRootBinding(root, loop);
+    assertRestoreFence(loop, request);
+    const affinity = restoreAffinity(loop);
+    if (reconcileCompactPruneTombstonesLocked(root, runId, guard, {
+      checkpointKey: request.checkpointKey,
+    })) {
+      throw new Error('CHECKPOINT_INELIGIBLE');
+    }
+    const strict = strictRestoreFile(root, runId, request);
+    request.contextSha256 = strict.envelope.payload.context_sha256;
+    assertCheckpointRestoreIdentity(root, loop, request, strict.context, affinity);
+    const proof = validateRestoreAdmission(
+      runDir(root, runId), request, strict.context, affinity, loop, guard,
+    );
+    retained ??= findCompactRestoreIntentLocked(runDir(root, runId), runId, guard);
+    if (retained) {
+      if (retained.payload.request_binding_sha256 !== proof.requestBindingSha256
+        || JSON.stringify(retained.payload.request_binding) !== JSON.stringify(proof.requestBinding)) {
+        throw new Error('CHECKPOINT_RESTORE_REQUEST_MISMATCH');
+      }
+      assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
+      const recovered = reconcileRestoreIntent(root, request, guard, loop, raw, retained, faultAt);
+      return restoreDescriptor(request, ownerSession(recovered.loop).compact_cursor, recovered.disposition);
+    }
+
+    const log = parseExactLogBytes(raw.logBytes);
+    const head = verifyHeadLines(log.lines, loop.event_log_head);
+    if (!head.ok) throw new Error(`LOG_TAMPERED: ${head.errors.join('; ')}`);
+    const baselineTurns = affinity.session.turns;
+    const replay = exactCursorReplay(loop, log.lines, strict.context, request);
+    if (replay) {
+      assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
+      return restoreDescriptor(request, replay, 'replayed');
+    }
+
+    validateStrictBytes(strict.bytes, {
+      runId,
+      key: request.checkpointKey,
+      expectedContext: (context, generatedAt) => expectedRestoreContext(
+        root, runId, loop, parsed.hash, context.provider_evidence, generatedAt,
+      ),
+      hostSessionEvidence: undefined,
+      freshNextAction: () => nextAction(loop, { now, unattended: false }),
+    });
+    assertNoUnresolvedGenericPublicationLocked(root, runId, guard);
+    const timestamp = operationTimestamp(now);
+    const operationId = ulid(Date.parse(timestamp));
+    const cycle = affinity.session.compact_cursor ? affinity.session.compact_cursor.cycle + 1 : 1;
+    const data = {
+      operation_id: operationId,
+      checkpoint_key: request.checkpointKey,
+      context_sha256: request.contextSha256,
+      pre_restore_loop_hash: strict.context.loop_hash,
+      owner_run_id: request.fence.owner,
+      generation: request.fence.generation,
+      runtime: request.runtime,
+      workstream_id: affinity.workstream.id,
+      episode_id: affinity.episode.id,
+      baseline_turns: baselineTurns,
+      cycle,
+      admission: proof.admission,
+      provider_evidence: proof.providerEvidence,
+    };
+    const event = nextEvent(log.lines, { type: 'compact-restored', data, now: timestamp });
+    const plannedEventLine = `${JSON.stringify(event)}\n`;
+    const payload = {
+      operation_id: operationId,
+      pre_event_log_head: structuredClone(loop.event_log_head),
+      pre_loop_hash: parsed.hash,
+      checkpoint_key: request.checkpointKey,
+      context_sha256: request.contextSha256,
+      pre_restore_loop_hash: strict.context.loop_hash,
+      owner_run_id: request.fence.owner,
+      generation: request.fence.generation,
+      runtime: request.runtime,
+      workstream_id: affinity.workstream.id,
+      episode_id: affinity.episode.id,
+      baseline_turns: baselineTurns,
+      cycle,
+      admission: proof.admission,
+      provider_evidence: proof.providerEvidence,
+      request_binding: proof.requestBinding,
+      request_binding_sha256: proof.requestBindingSha256,
+      timestamp,
+      planned_event_line: plannedEventLine,
+      planned_event_sha256: contentHash(plannedEventLine),
+      planned_event: {
+        seq: event.seq, type: event.type, data: event.data, checksum: event.checksum,
+      },
+    };
+    const intent = writeCompactRestoreIntentLocked(runDir(root, runId), runId, payload, guard, { faultAt });
+    const recovered = reconcileRestoreIntent(root, request, guard, loop, raw, intent, faultAt);
+    return restoreDescriptor(request, ownerSession(recovered.loop).compact_cursor, recovered.disposition);
+  });
+}
+
+export function commitOrReplayCompactRestore(root, runId, normalizedRequest, options = {}) {
+  return commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, { now: options.now });
+}
+
+export function __testCommitOrReplayCompactRestore(
+  root,
+  runId,
+  normalizedRequest,
+  { now = Date.now(), faultAt: requestedFault } = {},
+) {
+  if (!RESTORE_FAULTS.has(requestedFault)) throw new Error('TEST_FAULT_INVALID');
+  let armed = true;
+  return commitOrReplayCompactRestoreInternal(root, runId, normalizedRequest, {
+    now,
+    faultAt(label) {
+      if (armed && label === requestedFault) {
+        armed = false;
+        throw new Error(`TEST_FAULT:${label}`);
+      }
+    },
+  });
 }
 
 export function appendEvent(root, runId, { type, data, now }) {
@@ -1794,6 +2637,30 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
   return withLock(root, runId, guard => {
     const rootRecovery = opts.rootRecovery === true;
     const publication = opts.publication ? materializePublication(opts.publication) : null;
+    if (compactRestoreIntentCandidateLocked(root, runId, guard)) {
+      const raw = readRawRun(root, runId);
+      const authorized = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
+        requireSchema: false,
+      });
+      const authorizationLoop = structuredClone(authorized.data);
+      if (rootRecovery) {
+        const binding = classifyProjectRootBinding(root, authorizationLoop.project?.root);
+        if (binding.mismatch_class === 'fenced') {
+          throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
+        }
+        if (binding.mismatch_class !== 'unresolvable') {
+          throw new Error('PROJECT_ROOT_REBIND_NOT_ALLOWED: project root already matches');
+        }
+      } else {
+        assertProjectRootBinding(root, authorizationLoop);
+      }
+      if (preCheck) preCheck(authorizationLoop, { guard });
+      if (!rootRecovery
+        && (authorizationLoop.status === 'completed' || authorizationLoop.status === 'stopped')) {
+        throw new Error('RUN_TERMINAL: append');
+      }
+      assertNoCompactRestoreIntentLocked(root, runId, guard);
+    }
     reconcileAnchoredPublicationLocked(root, runId, guard, {
       faultAt: publication?.faultAt,
       forceUnlinkReplacement: publication?.forceUnlinkReplacement,

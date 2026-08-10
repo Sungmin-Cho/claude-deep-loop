@@ -284,6 +284,25 @@ export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = 
   atomicWriteFn(hashPath(root, runId), contentHash(raw));
 }
 
+// Narrow fixed-timestamp writer for the integrity-owned compact restore transaction.
+// No general caller may bypass writeState's wall clock: this shape exists solely so the
+// compact-restored event, cursor, and loop.updated_at share one canonical timestamp.
+export function writeCompactRestoreState(root, runId, data, timestamp, {
+  atomicWriteFn = atomicWrite,
+} = {}) {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime()) || date.toISOString() !== timestamp) {
+    throw new Error('INVALID_NOW: compact restore timestamp');
+  }
+  assertProjectRootBinding(root, data);
+  data.updated_at = timestamp;
+  const v = validate(data);
+  if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
+  const raw = JSON.stringify(data, null, 2);
+  atomicWriteFn(hashPath(root, runId), contentHash(raw));
+  atomicWriteFn(loopPath(root, runId), raw);
+}
+
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 function setPath(obj, path, value) {
   const keys = path.split('.'); const last = keys.pop();

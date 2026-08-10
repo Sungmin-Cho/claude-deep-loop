@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { error } from './lib/log.mjs';
@@ -72,7 +72,7 @@ import {
   diagnoseLauncherExecutable,
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
-import { sessionRuntime } from './lib/runtime.mjs';
+import { sessionRuntime, validateSessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import { resolveRunPath } from './lib/path-resolve.mjs';
 import {
@@ -83,9 +83,9 @@ import {
 } from './lib/runtime-descriptor.mjs';
 import {
   emitCompactCheckpoint,
+  inspectCompactCheckpoint,
+  observeCompactCheckpoint,
   restoreCompactCheckpoint,
-  captureVerifiedCheckpointSet,
-  selectVerifiedCheckpointDescriptor,
 } from './lib/checkpoint.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -328,7 +328,7 @@ function projectRunResolution(result) {
 export const MUTATING_ROUTE_INVENTORY = Object.freeze([
   'root recovery acquire', 'root rebind', 'root recover',
   'runtime-executable approve', 'launcher-executable approve',
-  'checkpoint emit', 'checkpoint restore', 'lease acquire', 'lease release',
+  'checkpoint emit', 'checkpoint observe', 'checkpoint restore', 'lease acquire', 'lease release',
   'workstream new', 'workstream set', 'workstream terminal',
   'episode new', 'episode record', 'episode abandon',
   'review dispatch', 'review record', 'review import',
@@ -766,21 +766,45 @@ const handlers = {
     const allowed = {
       emit: new Set(['project-root', 'run-id', 'now', 'owner', 'generation', 'runtime']),
       inspect: new Set(['project-root', 'run-id', 'now', 'json']),
+      observe: new Set([
+        'project-root', 'run-id', 'now', 'checkpoint', 'trigger', 'owner', 'generation',
+        'runtime', 'trusted-postcompact-stdin', 'json',
+      ]),
       restore: new Set([
-        'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime', 'json',
+        'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime',
+        'admission', 'source', 'confirm-manual-compact', 'json',
       ]),
     };
-    if (!Object.hasOwn(allowed, verb) || !knownFlagVocabulary(rest, allowed[verb])) {
-      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+    if (!Object.hasOwn(allowed, verb)) {
+      error(`USAGE: checkpoint <emit|inspect|observe|restore> has invalid grammar`);
       return 2;
     }
-    if (verb !== 'inspect'
-      && (flagOccurrences(rest, 'owner') !== 1 || flagOccurrences(rest, 'generation') !== 1)) {
-      error(`LEASE_FENCED: checkpoint ${verb} requires exactly one owner and generation`);
-      return 3;
+    let parsedFence = null;
+    if (verb !== 'inspect') {
+      const preliminary = parseFlags(rest);
+      const owner = preliminary.owner;
+      const generation = preliminary.generation;
+      if (flagOccurrences(rest, 'owner') !== 1
+        || flagOccurrences(rest, 'generation') !== 1
+        || typeof owner !== 'string'
+        || owner.length === 0
+        || owner === '.'
+        || owner === '..'
+        || /[\0\r\n/\\]/.test(owner)
+        || typeof generation !== 'string'
+        || !/^[1-9]\d*$/.test(generation)
+        || !Number.isSafeInteger(Number(generation))) {
+        error(`LEASE_FENCED: checkpoint ${verb} requires a valid owner and positive generation`);
+        return 3;
+      }
+      parsedFence = { owner, generation: Number(generation) };
+    }
+    if (!knownFlagVocabulary(rest, allowed[verb])) {
+      error(`USAGE: checkpoint <emit|inspect|observe|restore> has invalid grammar`);
+      return 2;
     }
     if (!exactFlagGrammar(rest, allowed[verb])) {
-      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+      error(`USAGE: checkpoint <emit|inspect|observe|restore> has invalid grammar`);
       return 2;
     }
     const f = parseFlags(rest);
@@ -796,27 +820,18 @@ const handlers = {
 
     if (verb === 'inspect') {
       if (f.json !== true) { error('USAGE: checkpoint inspect requires --json'); return 2; }
-      const verified = captureVerifiedCheckpointSet({ root, runId, now: parseNow(f) });
-      if (!verified.ok) { json(verified); return 1; }
-      json(selectVerifiedCheckpointDescriptor(verified));
+      json(inspectCompactCheckpoint(root, runId, { now: parseNow(f) }));
       return 0;
     }
 
-    const owner = reqStr(f, 'owner');
-    if (!owner
-      || typeof f.generation !== 'string'
-      || !/^[1-9]\d*$/.test(f.generation)
-      || !Number.isSafeInteger(Number(f.generation))) {
-      error(`LEASE_FENCED: checkpoint ${verb} requires a valid owner and positive generation`);
-      return 3;
-    }
     const runtime = reqStr(f, 'runtime');
     if (!runtime) {
       error(`USAGE: checkpoint ${verb} requires --runtime RUNTIME`);
       return 2;
     }
+    validateSessionRuntime(runtime);
     const options = {
-      fence: { owner, generation: Number(f.generation) },
+      fence: parsedFence,
       runtime,
       now: parseNow(f),
     };
@@ -825,13 +840,120 @@ const handlers = {
       return 0;
     }
 
+    if (verb === 'observe') {
+      const requested = reqStr(f, 'checkpoint');
+      const trigger = reqStr(f, 'trigger');
+      if (!requested || !trigger || f.json !== true) {
+        error('USAGE: checkpoint observe requires --checkpoint REL, --trigger TRIGGER, and --json');
+        return 2;
+      }
+      if (!['manual', 'auto'].includes(trigger)
+        || !/^checkpoints\/[0-9a-f]{64}-compact\.json$/.test(requested)) {
+        error('CHECKPOINT_OBSERVE_VALUE_INVALID');
+        return 1;
+      }
+      if (Object.hasOwn(f, 'trusted-postcompact-stdin')
+        && f['trusted-postcompact-stdin'] !== true) {
+        error('USAGE: --trusted-postcompact-stdin is a value-less flag');
+        return 2;
+      }
+      if (f['trusted-postcompact-stdin'] !== true) {
+        error('OBSERVE_TRUSTED_INGRESS_REQUIRED');
+        return 1;
+      }
+      let body;
+      try {
+        const raw = await readBoundedText(process.stdin, { maxBytes: 4096 });
+        body = JSON.parse(raw);
+      } catch {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      const keys = body && typeof body === 'object' && !Array.isArray(body)
+        ? Object.keys(body)
+        : [];
+      if (!body
+        || !['hook_event_name', 'cwd', 'trigger'].every(key => keys.includes(key))
+        || keys.some(key => !['hook_event_name', 'cwd', 'trigger', 'session_id'].includes(key))
+        || body.hook_event_name !== 'PostCompact'
+        || body.trigger !== trigger
+        || typeof body.cwd !== 'string'
+        || body.cwd.length === 0) {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      let canonicalBodyCwd;
+      let exactBodyCwd;
+      let mappedBodyRoot;
+      let canonicalArgRoot;
+      try {
+        exactBodyCwd = realpathSync(body.cwd);
+        canonicalBodyCwd = canonicalProjectRoot(body.cwd);
+        mappedBodyRoot = canonicalProjectRoot(findRoot(canonicalBodyCwd));
+        canonicalArgRoot = canonicalProjectRoot(root);
+      } catch {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      if (resolve(body.cwd) !== body.cwd
+        || exactBodyCwd !== body.cwd
+        || mappedBodyRoot !== canonicalArgRoot) {
+        error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+        return 1;
+      }
+      let hostSessionEvidence;
+      if (Object.hasOwn(body, 'session_id')) {
+        if (typeof body.session_id !== 'string'
+          || body.session_id.length === 0
+          || body.session_id.length > 1024
+          || /[\0\r\n]/.test(body.session_id)) {
+          error('OBSERVE_TRUSTED_CONTEXT_INVALID');
+          return 1;
+        }
+        hostSessionEvidence = {
+          provider: runtime === 'claude' ? 'claude-code' : 'codex',
+          id: body.session_id,
+        };
+      }
+      json(observeCompactCheckpoint(root, runId, {
+        checkpointRel: requested,
+        trigger,
+        hostSessionEvidence,
+        ...options,
+      }));
+      return 0;
+    }
+
     const requested = reqStr(f, 'checkpoint');
-    if (!requested || f.json !== true) {
-      error('USAGE: checkpoint restore requires --checkpoint REL and --json');
+    const admission = reqStr(f, 'admission');
+    const source = reqStr(f, 'source');
+    if (!requested || !admission || !source || f.json !== true) {
+      error('USAGE: checkpoint restore requires --checkpoint REL, --admission KIND, --source SOURCE, and --json');
       return 2;
+    }
+    if (Object.hasOwn(f, 'confirm-manual-compact') && f['confirm-manual-compact'] !== true) {
+      error('USAGE: --confirm-manual-compact is a value-less flag');
+      return 2;
+    }
+    if (admission === 'human-attested' && f['confirm-manual-compact'] !== true) {
+      error('USAGE: human-attested restore requires --confirm-manual-compact');
+      return 2;
+    }
+    if (!/^checkpoints\/[0-9a-f]{64}-compact\.json$/.test(requested)
+      || !['postcompact-observation', 'human-attested'].includes(admission)
+      || !['sessionstart', 'external-controller', 'direct-human-skill'].includes(source)
+      || (admission === 'human-attested' && source !== 'direct-human-skill')
+      || (admission === 'postcompact-observation'
+        && !['sessionstart', 'external-controller'].includes(source))
+      || (admission === 'postcompact-observation' && f['confirm-manual-compact'] === true)) {
+      error('CHECKPOINT_RESTORE_VALUE_INVALID');
+      return 1;
     }
     json(restoreCompactCheckpoint(root, runId, {
       checkpointRel: requested,
+      admission,
+      source,
+      confirmManualCompact: f['confirm-manual-compact'] === true,
       ...options,
     }));
     return 0;
@@ -1861,9 +1983,9 @@ if (MUTATING_ROUTE_SET.has(routeKey) && !requireExactRunId(rest).ok) {
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
 // (integrity 등의 detect-and-fail-stop 모델을 넓은 catch로 삼키지 않는다).
 try {
-  process.exit(await fn(rest));
+  process.exitCode = await fn(rest);
 } catch (e) {
   const classified = classifyKernelError(e);
-  if (classified) { error(classified.message); process.exit(classified.code); }
-  throw e;
+  if (classified) { error(classified.message); process.exitCode = classified.code; }
+  else throw e;
 }

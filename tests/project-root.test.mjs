@@ -109,6 +109,18 @@ function relocationOptions(moved, overrides = {}) {
   };
 }
 
+function historicalCursor(owner, runtime, workstreamId = 'ws-history') {
+  return {
+    checkpoint_key: 'a'.repeat(64), context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64), owner_run_id: owner, generation: 1,
+    runtime, workstream_id: workstreamId, episode_id: 'ep-history', baseline_turns: 7,
+    restored_at: '2026-07-11T00:00:00.000Z', cycle: 1,
+    restore_event: { seq: 1, checksum: 'd'.repeat(64) },
+    admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+}
+
 function seedRelocationTopology(topology, runtime = 'claude', prefix = 'dl-root-topology-') {
   const parent = freshRoot(prefix);
   const originalRoot = join(parent, `old root 'quoted' ${runtime}`);
@@ -959,6 +971,16 @@ test('Task 13 relocation topology matrix rejects plain rebind and creates one fr
       const moved = seedRelocationTopology(topology, runtime, `dl-root-recovery-${runtime}-${topology}-`);
       const before = durableSnapshot(moved.candidateRoot, moved.runId);
       const beforeLoop = readStateForRootRecovery(moved.candidateRoot, moved.runId).data;
+      const cursorOwner = beforeLoop.session_chain.sessions.find(
+        session => session.run_id === beforeLoop.session_chain.lease.owner_run_id,
+      ) ?? beforeLoop.session_chain.sessions[0];
+      cursorOwner.compact_cursor = historicalCursor(
+        cursorOwner.run_id,
+        runtime,
+        cursorOwner.scope?.workstream_id ?? 'ws-history',
+      );
+      writeRecoveryFixture(moved.candidateRoot, moved.runId, beforeLoop);
+      const beforeWithCursor = durableSnapshot(moved.candidateRoot, moved.runId);
       const diagnosed = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
       assert.equal(diagnosed.action, 'relocation-recovery', `${runtime}/${topology}`);
       assert.equal(diagnosed.topology, topology);
@@ -967,7 +989,8 @@ test('Task 13 relocation topology matrix rejects plain rebind and creates one fr
         () => rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved)),
         /PROJECT_ROOT_RELOCATION_RECOVERY_REQUIRED/,
       );
-      assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), before);
+      assert.notDeepEqual(beforeWithCursor, before, 'characterization fixture must persist a source cursor');
+      assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), beforeWithCursor);
 
       const result = recoverRelocatedRoot(
         moved.candidateRoot,
@@ -979,6 +1002,7 @@ test('Task 13 relocation topology matrix rejects plain rebind and creates one fr
         session => !beforeLoop.session_chain.sessions.some(old => old.run_id === session.run_id),
       );
       assert.equal(replacements.length, 1, `${runtime}/${topology}`);
+      assert.equal(Object.hasOwn(replacements[0], 'compact_cursor'), false, `${runtime}/${topology}`);
       assert.notEqual(replacements[0].run_id, moved.childId);
       assert.equal(result.recovery_kind, recoveryKind);
       assert.equal(

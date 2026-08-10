@@ -1,17 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { runDir } from '../scripts/lib/state.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const MUTATING = new Set([
   'state patch', 'budget record', 'budget extend', 'episode new', 'episode record', 'episode abandon',
   'review dispatch', 'review record', 'review import', 'workstream new', 'workstream set',
-  'workstream terminal', 'checkpoint emit', 'lease acquire', 'lease release', 'comprehension ack',
+  'workstream terminal', 'checkpoint emit', 'checkpoint observe', 'checkpoint restore',
+  'lease acquire', 'lease release', 'comprehension ack',
   'breaker reset', 'finish',
 ]);
 const EXACT_READS = new Set([
@@ -65,7 +77,7 @@ test('all mutating routes reject missing, value-less, empty, and duplicate run-i
   const routes = [
     ['root', 'recovery', 'acquire'], ['root', 'rebind'], ['root', 'recover'],
     ['runtime-executable', 'approve'], ['launcher-executable', 'approve'],
-    ['checkpoint', 'emit'], ['checkpoint', 'restore'],
+    ['checkpoint', 'emit'], ['checkpoint', 'observe'], ['checkpoint', 'restore'],
     ['lease', 'acquire'], ['lease', 'release'],
     ['workstream', 'new'], ['workstream', 'set'], ['workstream', 'terminal'],
     ['episode', 'new'], ['episode', 'record'], ['episode', 'abandon'],
@@ -223,6 +235,21 @@ test('state get returns whole loop and a field path', () => {
   assert.equal(status, 'running');
   const missing = JSON.parse(run(root, ['state', 'get', '--field', 'nope.deep']));
   assert.equal(missing, null);
+});
+
+test('state get drains large JSON output before the CLI exits', () => {
+  const { root, runId } = seed();
+  const items = Array.from({ length: 2_000 }, (_, index) =>
+    `${String(index).padStart(4, '0')}-${'x'.repeat(64)}`);
+  appendAnchored(root, runId, {
+    type: 'cli-large-output-fixture',
+    data: { count: items.length },
+    now: '2026-06-24T00:00:01.000Z',
+  }, loop => { loop.discovered_items = items; });
+
+  const stdout = run(root, ['state', 'get']);
+  assert.ok(Buffer.byteLength(stdout, 'utf8') > 131_072);
+  assert.deepEqual(JSON.parse(stdout).discovered_items, items);
 });
 
 test('state patch writes whitelisted field with valid fence', () => {
@@ -406,6 +433,92 @@ function bindCheckpointAffinity(root, runId) {
   return { workstream, episode };
 }
 
+function checkpointDurableInventory(root, runId) {
+  const inventory = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name === '.lock') continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else inventory[rel] = readFileSync(path).toString('base64');
+    }
+  };
+  visit(runDir(root, runId));
+  return inventory;
+}
+
+function prepareCheckpointGenericPublication(root, runId, operationId) {
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    {
+      type: 'checkpoint-cli-generic-publication-test',
+      data: { operation_id: operationId },
+      now: '2026-06-24T00:00:01.500Z',
+    },
+    loop => { loop.discovered_items.push(operationId); },
+    undefined,
+    {
+      publication: {
+        kind: 'workstream-boundary',
+        operationId,
+        artifacts: [{
+          rel: `artifacts/${operationId}.txt`,
+          bytes: Buffer.from(`artifact:${operationId}`),
+        }],
+        topology: { operation_id: operationId, phase: 'prepared' },
+        faultAt(label) {
+          if (label === 'prepared:digest-verified') throw new Error('prepared publication');
+        },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+}
+
+for (const verb of ['emit', 'observe']) {
+  test(`public CLI ${verb} fences before generic publication and tombstone reconciliation`, () => {
+    const { root, runId } = seed();
+    bindCheckpointAffinity(root, runId);
+    let emitted;
+    let input;
+    if (verb === 'observe') {
+      emitted = JSON.parse(run(root, [
+        'checkpoint', 'emit', '--owner', runId, '--generation', '1', '--runtime', 'claude',
+      ]));
+      writeFileSync(join(
+        runDir(root, runId),
+        'checkpoints',
+        `${emitted.checkpoint_key}-compact-prune.json`,
+      ), '{}');
+      const containedCwd = join(realpathSync(root), '.claude', 'worktrees', 'checkpoint', 'src');
+      mkdirSync(containedCwd, { recursive: true });
+      input = JSON.stringify({
+        hook_event_name: 'PostCompact', cwd: containedCwd, trigger: 'manual',
+      });
+    }
+    prepareCheckpointGenericPublication(root, runId, `cli-${verb}-wrong-fence`);
+    const before = checkpointDurableInventory(root, runId);
+    const args = verb === 'emit'
+      ? ['checkpoint', 'emit']
+      : [
+          'checkpoint', 'observe', '--checkpoint', emitted.checkpoint_rel,
+          '--trigger', 'manual', '--trusted-postcompact-stdin', '--json',
+        ];
+    const result = runBoth(root, [
+      ...args,
+      '--owner', 'wrong-owner',
+      '--generation', '1',
+      '--runtime', 'claude',
+    ], { input });
+
+    assert.equal(result.code, 3, `${verb}: ${result.err}`);
+    assert.match(result.err, /LEASE_FENCED: owner-mismatch/);
+    assert.deepEqual(checkpointDurableInventory(root, runId), before, verb);
+  });
+}
+
 test('checkpoint emit, inspect, and restore expose the exact public grammar', () => {
   const { root, runId } = seed();
   bindCheckpointAffinity(root, runId);
@@ -424,7 +537,7 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
   assert.equal(emitted.out.includes(root), false);
 
   const inspected = runBoth(root, ['checkpoint', 'inspect', '--run-id', runId, '--json']);
-  assert.equal(inspected.code, 0, inspected.err);
+  assert.equal(inspected.code, 0, `${inspected.err}\n${inspected.out}`);
   assert.equal(JSON.parse(inspected.out).checkpoint_rel, checkpoint.checkpoint_rel);
 
   const restored = runBoth(root, [
@@ -434,16 +547,99 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
     '--json',
-  ]);
+  ], { env: { CLAUDE_CODE_ENTRYPOINT: 'cli' } });
   assert.equal(restored.code, 0, restored.err);
   const descriptor = JSON.parse(restored.out);
   assert.equal(descriptor.checkpoint_rel, checkpoint.checkpoint_rel);
   assert.equal(descriptor.owner_run_id, runId);
   assert.equal(descriptor.generation, 1);
   assert.equal(descriptor.runtime, 'claude');
-  assert.equal(descriptor.scope.workstream_id, checkpoint.workstream_id);
-  assert.equal(typeof descriptor.next_action.action.type, 'string');
+  assert.equal(descriptor.phase, 'restored');
+  assert.equal(descriptor.workstream_id, checkpoint.workstream_id);
+  assert.equal(descriptor.next_command, null);
+  assert.equal(descriptor.requires_model_turn, false);
+});
+
+test('checkpoint observe accepts only bounded trusted PostCompact stdin and inspect stays evidence-free', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  const emitted = JSON.parse(run(root, [
+    'checkpoint', 'emit', '--owner', runId, '--generation', '1', '--runtime', 'claude',
+  ]));
+  const observeArgs = [
+    'checkpoint', 'observe',
+    '--checkpoint', emitted.checkpoint_rel,
+    '--trigger', 'manual',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--json',
+  ];
+  assert.equal(runBoth(root, observeArgs).code, 1, 'trusted ingress is semantic, not grammar');
+  const containedCwd = join(realpathSync(root), '.claude', 'worktrees', 'checkpoint', 'src');
+  mkdirSync(containedCwd, { recursive: true });
+  const body = JSON.stringify({
+    hook_event_name: 'PostCompact', cwd: containedCwd, trigger: 'manual', session_id: 'cli-session',
+  });
+  const observed = runBoth(root, [...observeArgs, '--trusted-postcompact-stdin'], { input: body });
+  assert.equal(observed.code, 0, observed.err);
+  assert.deepEqual(JSON.parse(observed.out).provider_evidence, {
+    recorded: false, supplied: true, matched: false,
+  });
+  const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
+  assert.equal(inspected.code, 0, `${inspected.err}\n${inspected.out}`);
+  assert.deepEqual(JSON.parse(inspected.out).provider_evidence, {
+    recorded: false, supplied: true, matched: false,
+  });
+  assert.equal(inspected.out.includes('cli-session'), false);
+  assert.equal(inspected.out.includes('claude-code'), false);
+
+  for (const input of [
+    '{',
+    JSON.stringify({ hook_event_name: 'SessionStart', cwd: realpathSync(root), trigger: 'manual' }),
+    JSON.stringify({ hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'auto' }),
+    JSON.stringify({ hook_event_name: 'PostCompact', cwd: `${root}/..`, trigger: 'manual' }),
+    `${JSON.stringify({ hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'manual' })}${' '.repeat(4097)}`,
+  ]) {
+    assert.equal(
+      runBoth(root, [...observeArgs, '--trusted-postcompact-stdin'], { input }).code,
+      1,
+      input.slice(0, 80),
+    );
+  }
+});
+
+test('checkpoint mutators apply fence-first polarity before all other grammar', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  for (const verb of ['emit', 'observe', 'restore']) {
+    for (const malformedFence of [
+      [],
+      ['--owner', runId],
+      ['--generation', '1'],
+      ['--owner', runId, '--generation', '0'],
+      ['--owner', runId, '--generation', '01'],
+      ['--owner', runId, '--generation', '1', '--generation', '1'],
+    ]) {
+      assert.equal(
+        runBoth(root, ['checkpoint', verb, ...malformedFence, '--unknown']).code,
+        3,
+        `${verb}: ${malformedFence.join(' ')}`,
+      );
+    }
+    assert.equal(runBoth(root, [
+      'checkpoint', verb, '--owner', runId, '--generation', '1', '--fault', 'x',
+    ]).code, 2, `${verb}: production --fault`);
+  }
+  for (const args of [
+    ['checkpoint', 'inspect', '--owner', runId, '--json'],
+    ['checkpoint', 'inspect', '--json=true'],
+    ['checkpoint', 'inspect', '--json', '--json'],
+  ]) assert.equal(runBoth(root, args).code, 2, args.join(' '));
 });
 
 test('checkpoint public grammar distinguishes usage, fence, and invalid data exits', () => {
@@ -497,8 +693,79 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
     '--json',
   ]).code, 1);
+
+  const admissionCheckpoint = JSON.parse(run(root, [
+    'checkpoint', 'emit', '--owner', runId, '--generation', '1', '--runtime', 'claude',
+  ]));
+  const validRestorePrefix = [
+    'checkpoint', 'restore',
+    '--checkpoint', admissionCheckpoint.checkpoint_rel,
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ];
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--json',
+  ]).code, 2, 'manual confirmation is a required non-fence option');
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'invalid',
+    '--source', 'direct-human-skill',
+    '--json',
+  ]).code, 1);
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'postcompact-observation',
+    '--source', 'sessionstart',
+    '--confirm-manual-compact',
+    '--json',
+  ]).code, 1);
+  assert.equal(runBoth(root, [
+    ...validRestorePrefix,
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
+    '--fault', 'event:appended',
+    '--json',
+  ]).code, 2, 'production fault argv is unknown usage');
+});
+
+test('checkpoint restore ignores inherited test fault environment switches', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  const emitted = JSON.parse(run(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]));
+  const result = runBoth(root, [
+    'checkpoint', 'restore',
+    '--checkpoint', emitted.checkpoint_rel,
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--admission', 'human-attested',
+    '--source', 'direct-human-skill',
+    '--confirm-manual-compact',
+    '--json',
+  ], {
+    env: {
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      NODE_ENV: 'test',
+      DEEP_LOOP_TEST_FAULT: 'event:appended',
+    },
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(JSON.parse(result.out).disposition, 'committed');
 });
 
 test('checkpoint verbs reject explicit-empty and duplicate-empty project roots and run ids before fallback', () => {
@@ -634,8 +901,16 @@ test('review dispatch missing --point exits 2', () => {
 
 // ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
 import { rmSync } from 'node:fs';
-function runBoth(root, args) {
-  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); return { out: out.trim(), code: 0, err: '' }; }
+function runBoth(root, args, { env = process.env, input } = {}) {
+  const first = args[1] && !args[1].startsWith('--') ? args[1] : null;
+  const key = args[0] === 'finish' ? 'finish' : first ? `${args[0]} ${first}` : args[0];
+  let effective = args;
+  if ((MUTATING.has(key) || EXACT_READS.has(key))
+    && !args.some(arg => arg === '--run-id' || arg.startsWith('--run-id='))) {
+    const currentPath = join(root, '.deep-loop', 'current');
+    if (existsSync(currentPath)) effective = [...args, '--run-id', readFileSync(currentPath, 'utf8').trim()];
+  }
+  try { const out = execFileSync(process.execPath, [CLI, ...effective, '--project-root', root], { encoding: 'utf8', env, input }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
 }
 function runRaw(root, args) {
@@ -659,8 +934,8 @@ test('A1: dangling current does not authorize an exact read', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
   mkdirSync(join(root, '.deep-loop'), { recursive: true });
   writeFileSync(join(root, '.deep-loop', 'current'), '01JABCNOTAREALRUN\n');
-  const r = runBoth(root, ['state', 'get', '--field', 'status']);
-  assert.equal(r.code, 2);
+  const r = runResult(root, ['state', 'get', '--field', 'status']);
+  assert.equal(r.status, 2);
 });
 
 test('A1: partial state loss (run dir present, loop.json gone) → STATE_MISSING, exit≠0', () => {

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -35,7 +35,11 @@ function routedArgs(root, args) {
   return args.includes('--run-id') ? [...args, '--project-root', root] : [...args, '--project-root', root, '--run-id', fixtureRunId(root)];
 }
 
-const run = (root, args) => spawnSync(process.execPath, [CLI, ...routedArgs(root, args)], { encoding: 'utf8' });
+const run = (root, args, options = {}) => spawnSync(
+  process.execPath,
+  [CLI, ...routedArgs(root, args)],
+  { encoding: 'utf8', ...options },
+);
 
 function runAsync(root, args) {
   return new Promise((resolveRun, rejectRun) => {
@@ -114,6 +118,9 @@ const VERBS = (o, g) => [
   ['attended-launch', 'approve', '--style', 'visible', '--confirm'],
   ['handoff', 'emit'],
   ['checkpoint', 'emit', '--runtime', 'claude'],
+  ['checkpoint', 'restore', '--checkpoint', `checkpoints/${'a'.repeat(64)}-compact.json`,
+    '--runtime', 'claude', '--admission', 'human-attested', '--source', 'direct-human-skill',
+    '--confirm-manual-compact', '--json'],
   ['respawn'],
   ['session-profile', 'set', '--model', 'm'],
   ['detect-terminal'],
@@ -129,6 +136,41 @@ for (const status of ['completed', 'stopped']) {
       assert.equal(r.status, 3, `${args.join(' ')} → exit ${r.status}\nstderr: ${r.stderr}\nstdout: ${r.stdout}`);
       assert.match(r.stderr, /RUN_TERMINAL/, args.join(' '));
     }
+  });
+}
+
+for (const status of ['completed', 'stopped']) {
+  test(`checkpoint observe reaches the authoritative terminal fence on ${status} run`, () => {
+    const { root, runId, owner, gen } = seedTerminal(status);
+    const result = run(root, [
+      'checkpoint', 'observe',
+      '--checkpoint', `checkpoints/${'a'.repeat(64)}-compact.json`,
+      '--trigger', 'manual',
+      '--runtime', 'claude',
+      '--trusted-postcompact-stdin',
+      '--json',
+      '--owner', owner,
+      '--generation', String(gen),
+    ], {
+      input: JSON.stringify({ hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'manual' }),
+    });
+    assert.equal(result.status, 3, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /RUN_TERMINAL/);
+    assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim(), runId);
+  });
+
+  test(`checkpoint inspect remains read-only and reports non-resumable on ${status} run`, () => {
+    const { root } = seedTerminal(status);
+    const before = terminalDurableBytes(root, readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim());
+    const result = run(root, ['checkpoint', 'inspect', '--json']);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const descriptor = JSON.parse(result.stdout);
+    assert.equal(descriptor.phase, 'none');
+    assert.equal(descriptor.reason, 'run-not-resumable');
+    assert.deepEqual(
+      terminalDurableBytes(root, readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim()),
+      before,
+    );
   });
 }
 

@@ -365,6 +365,7 @@ export function resolveRunContext({
   cwd = null,
   purpose,
   lockOptions,
+  vectorOptions,
   nowFn,
   sleepFn,
   opendirFn,
@@ -389,7 +390,9 @@ export function resolveRunContext({
   if (identityRunId) {
     let captured;
     try {
-      captured = captureRunSnapshot(canonicalRoot, identityRunId, { lockOptions, nowFn, sleepFn });
+      captured = captureRunSnapshot(canonicalRoot, identityRunId, {
+        lockOptions, vectorOptions, nowFn, sleepFn,
+      });
     } catch (error) {
       return captureFailure(identityRunId, error);
     }
@@ -409,6 +412,7 @@ export function resolveRunContext({
       maxRunIds: 64,
       deadlineMs: 500,
       lockOptions,
+      vectorOptions,
       nowFn,
       sleepFn,
       opendirFn,

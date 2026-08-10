@@ -8,7 +8,11 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
-import { nextAction } from '../scripts/lib/next-action.mjs';
+import {
+  migratedPolicyCapOutcome,
+  nextAction,
+  workstreamSessionAdviceCadence,
+} from '../scripts/lib/next-action.mjs';
 import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -150,17 +154,96 @@ test('workstream-session open affinity routes only its Workstream and unbound ro
   assert.equal(selected.action.episode_id, '002-eligible');
 });
 
-test('workstream-session turn cap decorates the real action with compact advice and never rotates', () => {
+test('attended workstream-session turn cap decorates the real action with compact advice and never rotates', () => {
   const l = scopedRoutingLoop();
   l.episodes = [
     { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
   ];
   l.current_episode = '001-a';
   l.session_chain.sessions[0].turns = l.budget.per_session_turn_cap;
-  const action = nextAction(l, { now: NOW, unattended: true });
+  const action = nextAction(l, { now: NOW, unattended: false });
   assert.equal(action.action.type, 'dispatch_maker');
   assert.equal(action.action.advice, 'compact');
   assert.equal(action.action.advice_reason, 'per_session_turn_cap');
+});
+
+test('unattended workstream-session cap preserves the normal action without advice or handoff', () => {
+  for (const autoHandoff of [true, false]) {
+    const l = scopedRoutingLoop();
+    l.autonomy.auto_handoff = autoHandoff;
+    l.episodes = [
+      { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+    ];
+    l.current_episode = '001-a';
+    l.session_chain.sessions[0].turns = l.budget.per_session_turn_cap;
+
+    const action = nextAction(l, { now: NOW, unattended: true });
+    assert.equal(action.action.type, 'dispatch_maker', `auto_handoff=${autoHandoff}`);
+    assert.equal(Object.hasOwn(action.action, 'advice'), false, `auto_handoff=${autoHandoff}`);
+    assert.equal(Object.hasOwn(action.action, 'advice_reason'), false, `auto_handoff=${autoHandoff}`);
+  }
+});
+
+test('workstream and migrated cap outcomes are separated pure helpers', () => {
+  const attended = scopedRoutingLoop();
+  attended.session_chain.sessions[0].turns = attended.budget.per_session_turn_cap;
+  assert.deepEqual(workstreamSessionAdviceCadence(attended, { unattended: false }), {
+    advice: true,
+    reason: 'per_session_turn_cap',
+  });
+  assert.deepEqual(workstreamSessionAdviceCadence(attended, { unattended: true }), {
+    advice: false,
+    reason: null,
+  });
+
+  const legacy = migratedLegacyLoop('compact-in-place');
+  legacy.session_chain.sessions[0].turns = legacy.budget.per_session_turn_cap;
+  assert.deepEqual(migratedPolicyCapOutcome(legacy, { unattended: false }), {
+    advice: true,
+    handoff: false,
+  });
+  assert.deepEqual(migratedPolicyCapOutcome(legacy, { unattended: true }), {
+    advice: false,
+    handoff: true,
+  });
+});
+
+test('workstream-session compact advice subtracts matching cursor baseline', () => {
+  const l = scopedRoutingLoop();
+  l.episodes = [
+    { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+  ];
+  l.current_episode = '001-a';
+  l.session_chain.sessions[0].turns = 45;
+  l.session_chain.sessions[0].compact_cursor = {
+    checkpoint_key: 'a'.repeat(64),
+    context_sha256: 'b'.repeat(64),
+    pre_restore_loop_hash: 'c'.repeat(64),
+    owner_run_id: 'R',
+    generation: l.session_chain.lease.generation,
+    runtime: 'claude',
+    workstream_id: 'ws-a',
+    episode_id: '001-a',
+    baseline_turns: 40,
+    restored_at: '2026-06-24T00:00:01.000Z',
+    cycle: 1,
+    restore_event: { seq: 1, checksum: 'd'.repeat(64) },
+    admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
+    provider_evidence: { recorded: false, supplied: false, matched: false },
+  };
+
+  const beforeRelativeCap = nextAction(l, { now: NOW, unattended: false });
+  assert.equal(Object.hasOwn(beforeRelativeCap.action, 'advice'), false);
+
+  l.session_chain.sessions[0].turns = 80;
+  const atRelativeCap = nextAction(l, { now: NOW, unattended: false });
+  assert.equal(atRelativeCap.action.advice, 'compact');
+  assert.equal(atRelativeCap.action.advice_reason, 'per_session_turn_cap');
+
+  l.session_chain.sessions[0].turns = 45;
+  l.session_chain.lease.generation += 1;
+  const generationDrift = nextAction(l, { now: NOW, unattended: false });
+  assert.equal(generationDrift.action.advice, 'compact');
 });
 
 test('fresh run with no episodes → discover', () => {

@@ -32,7 +32,7 @@ const LOCK_OWNER_KEYS = [
 ];
 const ORPHAN_STALE_TTL_MS = 30_000;
 const RESERVED_ARTIFACT_FILES = new Set(['loop.json', '.loop.hash', 'event-log.jsonl']);
-const RESERVED_ARTIFACT_DIRECTORIES = new Set(['.lock', 'transactions']);
+const RESERVED_ARTIFACT_DIRECTORIES = new Set(['.lock', 'transactions', 'compact-restore-intents']);
 
 function transactionError(message) {
   return new Error(`TRANSACTION_INVALID: ${message}`);

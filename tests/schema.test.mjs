@@ -168,6 +168,54 @@ test('v0.4 schema requires root epoch, launch approval, takeover discriminator, 
   }
 });
 
+test('v0.4 schema validates the exact optional containing-session compact cursor', () => {
+  const valid = minimalValid();
+  valid.session_chain.lease.owner_run_id = 'R';
+  valid.session_chain.lease.generation = 2;
+  valid.session_chain.sessions = [{
+    run_id: 'R',
+    scope: { ...OPEN_WORKSTREAM_SCOPE },
+    compact_cursor: {
+      checkpoint_key: 'a'.repeat(64),
+      context_sha256: 'b'.repeat(64),
+      pre_restore_loop_hash: 'c'.repeat(64),
+      owner_run_id: 'R',
+      generation: 1,
+      runtime: 'claude',
+      workstream_id: 'ws-1',
+      episode_id: '001-maker',
+      baseline_turns: 53,
+      restored_at: '2026-07-23T00:00:00.000Z',
+      cycle: 2,
+      restore_event: { seq: 42, checksum: 'd'.repeat(64) },
+      admission: {
+        kind: 'postcompact-observation', source: 'sessionstart', receipt_trigger: 'auto',
+      },
+      provider_evidence: { recorded: true, supplied: false, matched: false },
+    },
+  }];
+  assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
+
+  const mutations = [
+    ['extra key', loop => { loop.session_chain.sessions[0].compact_cursor.extra = true; }],
+    ['wrong owner', loop => { loop.session_chain.sessions[0].compact_cursor.owner_run_id = 'OTHER'; }],
+    ['uppercase checkpoint hash', loop => { loop.session_chain.sessions[0].compact_cursor.checkpoint_key = 'A'.repeat(64); }],
+    ['unsafe baseline', loop => { loop.session_chain.sessions[0].compact_cursor.baseline_turns = -1; }],
+    ['zero cycle', loop => { loop.session_chain.sessions[0].compact_cursor.cycle = 0; }],
+    ['partial admission', loop => { delete loop.session_chain.sessions[0].compact_cursor.admission.source; }],
+    ['invalid evidence combination', loop => {
+      loop.session_chain.sessions[0].compact_cursor.provider_evidence = {
+        recorded: false, supplied: false, matched: true,
+      };
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const loop = structuredClone(valid);
+    mutate(loop);
+    assert.equal(validate(loop).ok, false, label);
+  }
+});
+
 test('v0.4 schema pins exact Workstream/legacy scopes and recovery-owned optional fields', () => {
   const checksum = 'a'.repeat(64);
   const valid = minimalValid();

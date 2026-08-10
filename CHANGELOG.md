@@ -5,6 +5,27 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.15.0] — 2026-08-10
+
+### Added
+
+- **`workstream-session` compact 연속 실행을 완결했다.** PreCompact가 strict checkpoint를 만들고,
+  신뢰된 PostCompact 관측 영수증과 SessionStart capsule을 거쳐 같은 대화에서 정확히 한 번
+  `/deep-loop-continue`로 복귀한다. 복원은 고정형 event/state 트랜잭션과 durable cursor로
+  커밋되며 crash retry는 동일 결과만 재생한다.
+- **검증된 다중-run 라우팅을 hook과 공개 CLI에 적용했다.** 명시적 run id, 유일한 cwd/worktree
+  귀속, 유일 active fallback 순으로만 선택하며, 동시 run의 ambiguity와 손상된 run 집합은
+  `.deep-loop/current`로 추측하지 않고 bounded diagnostic과 함께 fail closed한다.
+
+### Fixed
+
+- **compact checkpoint 보존·복구의 경쟁 창을 닫았다.** prune tombstone은 checkpoint/receipt의
+  identity와 digest를 삭제 직전 다시 검증하고, 손상 checkpoint의 허위 context digest를 신뢰하지
+  않는다. retained restore intent와 generic publication은 서로의 lock 경계를 침범하지 않는다.
+- **SessionStart/PostCompact 생존성과 출처 결합을 강화했다.** prepared capsule은 복원 권한으로
+  승격되지 않고 fresh-affinity fallback으로만 진행하며, canonical restored capsule만 mutation
+  경계에 도달한다. hook inventory, 입력 크기, child timeout도 고정 상한으로 제한한다.
+
 ## [1.14.0] — 2026-08-06
 
 ### Added

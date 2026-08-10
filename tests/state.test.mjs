@@ -486,6 +486,25 @@ test('writeState performs exactly the loop and hash atomic replacements', () => 
   assert.deepEqual(replacements.map(({ path }) => basename(path)), ['loop.json', '.loop.hash']);
 });
 
+test('writeCompactRestoreState publishes the candidate hash before loop with one exact timestamp', () => {
+  const { root, runId } = seed();
+  const data = readState(root, runId).data;
+  const timestamp = '2026-08-05T01:02:03.004Z';
+  const replacements = [];
+  assert.equal(typeof stateApi.writeCompactRestoreState, 'function');
+  stateApi.writeCompactRestoreState(root, runId, data, timestamp, {
+    atomicWriteFn(path, contents) { replacements.push({ path, contents: String(contents) }); },
+  });
+  assert.equal(data.updated_at, timestamp);
+  assert.deepEqual(replacements.map(({ path }) => basename(path)), ['.loop.hash', 'loop.json']);
+  assert.equal(JSON.parse(replacements[1].contents).updated_at, timestamp);
+  assert.equal(replacements[0].contents, contentHash(replacements[1].contents));
+  assert.throws(
+    () => stateApi.writeCompactRestoreState(root, runId, data, '2026-08-05T01:02:03Z'),
+    /INVALID_NOW/,
+  );
+});
+
 test('a live directory lock remains busy before the default stale TTL', () => {
   const { root, runId } = seed();
   const lock = join(runDir(root, runId), '.lock');

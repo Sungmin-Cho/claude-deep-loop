@@ -63,6 +63,7 @@ migrated compatibility policies only.
   greppable — `DEEP_LOOP_ROOT/tests/docs.test.mjs` checks these by literal, which is how a stale
   `.sh` wrapper reference was caught once:
   - `DEEP_LOOP_ROOT/scripts/hooks-impl/precompact-handoff.mjs` — PreCompact, emit-only.
+  - `DEEP_LOOP_ROOT/scripts/hooks-impl/postcompact-observe.mjs` — PostCompact, bounded CLI-observe-only.
   - `DEEP_LOOP_ROOT/scripts/hooks-impl/sessionstart-restore.mjs` — SessionStart (`compact` source), read-only.
   - `DEEP_LOOP_ROOT/scripts/hooks-impl/drive-headless.mjs` — measured headless driver.
   - `DEEP_LOOP_ROOT/hooks/hooks.json` holds their static shell-free Node bootstraps.
@@ -87,12 +88,15 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    only as an outside precondition. Exit codes: **3 = fence only**
    (`LEASE_FENCED`/`FENCE_REQUIRED`, including established owner/generation cases,
    plus `RUNTIME_FENCED` and `PROJECT_ROOT_FENCED`), **2 = missing options / usage /
-   unknown**, **1 = invalid values** (including `PROJECT_ROOT_UNRESOLVABLE`).
+   unknown**, **1 = invalid values** (including `PROJECT_ROOT_UNRESOLVABLE`). This
+   includes the public `checkpoint observe` ingress used by PostCompact.
 3. **Event + state change = a single anchored transaction.** Business mutations use
    `integrity.appendAnchored(...)`. The fixed-shape budget writers (`recordCost` and
    the host-internal terminal Codex maker settlement) mirror its
    verify→append→anchor→reconcile sequence under one lock and expose no
-   caller-selected event/mutation callback. No half-commits, and no other raw
+   caller-selected event/mutation callback. Compact restore intents, observation
+   receipts, and prune tombstones use their own fixed-shape locked publication and
+   reconciliation paths; none is a caller-selected state/event callback. No half-commits, and no other raw
    `appendEvent` writes. Integrity is **detect-and-fail-stop, not prevention** — the
    threat model is cooperative-but-fallible.
 4. **Terminal states are kernel-derived from proof only** — episode
@@ -127,10 +131,10 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    remain a valid snapshot that intentionally excludes the final process measurement.
 7. **`withLock` is non-reentrant** — never take a lock inside a locked callback.
    Kernel durable writes are confined to `<root>/.deep-loop/`; `/deep-loop-finish` may
-   delegate to deep-memory's and deep-wiki's own skills. PreCompact and SessionStart
-   glue stay **emit-only** and never spawn: PreCompact emits either a compact
-   checkpoint or a handoff according to policy/headless precedence, SessionStart emits
-   restore context only, and every exception is best-effort and non-blocking.
+   delegate to deep-memory's and deep-wiki's own skills. Compact hook glue never
+   spawns: PreCompact is emit-only, PostCompact invokes only the bounded public
+   `checkpoint observe` CLI, SessionStart emits restore context only, and every
+   exception is best-effort and non-blocking.
    **Worktree carve-out:** Execution-plane worktree creation is allowed **only** under
    `<root>/.claude/worktrees/` (or `.worktrees/`) — project-root-internal and
    gitignored. Root escape is forbidden, enforced by kernel `newWorkstream`
@@ -158,8 +162,8 @@ node --test tests/<x>.test.mjs   # single file
 - **Determinism:** time-sensitive code takes an injectable `now` (ms or ISO), and tests
   pass a fixed one. Never rely on `Date.now()` in a test that also seeds a fixed
   `created_at`.
-- **No external deps.** Durable state is JSON — there is no YAML parser. The PreCompact
-  and SessionStart bootstraps are static, shell-free Node.
+- **No external deps.** Durable state is JSON — there is no YAML parser. The PreCompact,
+  PostCompact, and SessionStart bootstraps are static, shell-free Node.
 - Add a failing test first, keep `npm test` green, one focused commit per change.
 
 ## Conventions

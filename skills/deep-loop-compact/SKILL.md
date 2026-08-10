@@ -66,7 +66,8 @@ session, or marks a Workstream terminal.
 Before any evidence-free checkpoint inspection, evaluate the trusted
 SessionStart host context. If trusted host context explicitly reports
 `provider-evidence-mismatch` or
-`checkpoint-unavailable-with-trusted-evidence`, do not retry without trusted evidence.
+`checkpoint-unavailable-with-trusted-evidence`, or carries the marker
+`deep-loop-compact-preserve-pause-only`, do not retry without trusted evidence.
 Do not inspect for a checkpoint. Freshly read the lease and owner-session
 runtime:
 
@@ -87,6 +88,13 @@ with another identity; state that ownership changed and print native host
 resume guidance. After a successful pause, print the same host resume
 guidance. Do not claim same-chat identity in either case.
 
+A trusted SessionStart `prepared` capsule has no PostCompact restore authority.
+Never invoke `checkpoint inspect` or `checkpoint restore` for this branch.
+Route it directly to the **Fresh-affinity fallback** below. Never construct a
+restored capsule or provider evidence from the prepared capsule, and never
+select `human-attested` for it. Retain only the invocation-local route marker
+`prepared-fallback`; it is not a capsule or durable authorization.
+
 For the successful same-owner restore path, freshly read
 `session_chain.lease` and `session_chain.sessions` as above. Inspect through
 the public reader even when trusted SessionStart context names a relative
@@ -96,23 +104,116 @@ checkpoint:
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint inspect --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-Use only the returned relative `<checkpoint_rel>`, then invoke the public
-fenced restore validator:
+Use only the returned relative `<checkpoint_rel>`. A trusted SessionStart
+`compacted` capsule invokes only the receipt-backed observation admission:
 
 ```text
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --admission postcompact-observation --source sessionstart --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-On success, continue in the same owner session. Claude invokes
-`/deep-loop-continue`; Codex invokes `$deep-loop:deep-loop-continue`.
+A direct human `restore` invocation, and only that invocation, uses the
+cooperative manual admission. It never consumes a receipt:
+
+```text
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --admission human-attested --source direct-human-skill --confirm-manual-compact --json --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+Automatic SessionStart, controller, retry, and fallback paths must never add
+`--confirm-manual-compact` or select `human-attested`. Direct-human restore
+must never select the observation admission.
+
+### Direct dispatch boundary
+
+If the SessionStart restore command returns a committed result or an exact
+replay, construct one restored compact capsule from the received canonical
+SessionStart capsule and the kernel result. Preserve `injected_by:"sessionstart"`,
+the exact top-level wire and immutable checkpoint fields, set `phase` to
+`restored`, and replace only `admission`, `provider_evidence`, and
+`restore_event` with the kernel result's original committed audit values. Do not
+capture or add routing advice.
+
+If the direct-human restore command succeeds, it has no received SessionStart
+capsule. Invoke the public `checkpoint inspect --json` reader above exactly once
+again after restore. Require `ok:true`, `phase:"restored"`, and exact equality
+of its `checkpoint_key`, `context_sha256`, `pre_restore_loop_hash`, owner,
+generation, runtime, Workstream, and episode identity with the pre-restore
+inspection, plus exact equality of every identity field also returned by the
+committed restore result.
+Require its `admission` to be exactly `kind:"human-attested"`,
+`source:"direct-human-skill"`, `receipt_trigger:null`; require its
+`restore_event` and `provider_evidence` to exactly equal the committed result.
+If any check fails, stop with `/deep-loop-status` guidance and do not dispatch.
+Otherwise construct the same exact canonical restored wire from this fresh
+public descriptor, but set `injected_by:"direct-human-skill"`. This explicitly
+identified hookless capsule is the only successful direct-human capsule form;
+never fabricate `injected_by:"sessionstart"`. Its `restore_command` is the
+fresh restored descriptor's `next_command` (`null`), and it carries no routing
+advice.
+
+Before dispatch, serialize four and only four top-level keys in this exact
+order: `{"marker":"deep-loop-compact-capsule-v1","version":1,"injected_by":"<sessionstart|direct-human-skill>","capsule":{...}}`.
+The nested `capsule` object contains only the exact fields required by the
+continue skill's restored capsule gate. Pass the complete serialized wrapper
+verbatim. Never pass the fresh public descriptor, the committed restore result,
+or the inner `capsule` object by itself. Do not spread descriptor fields beside
+`injected_by`; `phase` and every checkpoint identity field belong inside the
+nested `capsule` value.
+
+Construct the nested `capsule` field by field with this exact key set and no
+others: `kind`, `phase`, `run_id`, `checkpoint_key`, `context_sha256`,
+`pre_restore_loop_hash`, `owner_run_id`, `generation`, `runtime`,
+`workstream_id`, `episode_id`, `provider_evidence`, `admission`,
+`restore_event`, `restore_command`. Set `kind` to the literal
+`deep-loop-compact-capsule`, `phase` to the literal `restored`, and `run_id` to
+the logical `<run_id>`. Copy each same-named checkpoint identity field from the
+validated canonical SessionStart capsule or fresh restored descriptor as
+applicable. Use the committed kernel result's exact `provider_evidence`,
+`admission`, and `restore_event`. Set `restore_command` to the validated
+descriptor's `next_command` (which is `null` after restore); this is a deliberate
+rename, not a spread. Never copy or spread inspect-only `checkpoint_rel`,
+`cycle`, `trigger`, `ok`, `reason`, `requires_model_turn`, `replay`, or
+`next_command` into the nested object.
+
+Directly invoke the existing runtime-qualified continue skill exactly once in
+this same model turn and same owner session, passing the applicable canonical
+restored capsule as input:
+
+- Claude: invoke `Skill({ skill: "deep-loop:deep-loop-continue", args: "<canonical_restored_wire_json>" })` exactly once.
+- Codex: invoke `$deep-loop:deep-loop-continue` exactly once.
+
+This is an actual skill dispatch, not a printed command or a request for a later
+turn. Stop the compact skill after the invoked continue tick returns. Do not
+pre-read `next-action --json`; `deep-loop-continue` alone owns fresh routing.
+
+### Fresh-affinity fallback
 
 For a stale, corrupt, foreign, or missing checkpoint without a trusted
-evidence rejection, freshly re-read `session_chain.lease`,
-`session_chain.sessions`, the owner scope, current Workstream, and current
-episode. Those fresh values must prove the same owner, generation, and open
-bound Workstream affinity before state-derived continuation is allowed.
-Specifically require an open bound Workstream affinity in the same owner
-session. Then delegate to the same runtime-specific continue command above.
+evidence rejection, do not retry restore. Freshly re-read all four state views:
+The fresh proof must establish the same owner and open bound Workstream affinity
+before any capsule-free dispatch.
+
+```text
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.sessions --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field current_episode --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+Those fresh values must prove the same owner and generation, a containing owner
+session, an open, non-terminal bound Workstream, and a current episode belonging
+to that Workstream. Only with every proof present, directly invoke one
+runtime-qualified, capsule-free continue tick exactly once in the same model turn.
+This fallback must not construct a restored capsule or select `human-attested`.
+For the trusted `prepared` branch only, pass its invocation-local
+`prepared-fallback` mode so the continue skill performs the underlying action
+but consumes immediate cap readvice for exactly one tick:
+
+- Claude: invoke `/deep-loop-continue prepared-fallback` exactly once.
+- Codex: invoke `$deep-loop:deep-loop-continue prepared-fallback` exactly once.
+
+For every other stale, corrupt, foreign, or missing-checkpoint fallback, invoke
+the ordinary argument-free continue command exactly once. Never infer the
+prepared mode from checkpoint presence.
 Otherwise execute the public fenced preserve-pause mutation:
 
 ```text

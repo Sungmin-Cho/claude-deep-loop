@@ -7,9 +7,11 @@ to Claude Code lives here.
 
 ## Hook events
 
-`DEEP_LOOP_ROOT/hooks/hooks.json` binds to Claude Code's **PreCompact** and **SessionStart**
-events; Codex has no equivalent, so those two bootstraps run on this host only.
-Their emit-only contract is invariant 7 — it applies wherever the code runs, and
+`DEEP_LOOP_ROOT/hooks/hooks.json` binds Claude Code's **PreCompact**, **PostCompact**, and
+**SessionStart** events to `DEEP_LOOP_ROOT/scripts/hooks-impl/precompact-handoff.mjs`,
+`DEEP_LOOP_ROOT/scripts/hooks-impl/postcompact-observe.mjs`, and
+`DEEP_LOOP_ROOT/scripts/hooks-impl/sessionstart-restore.mjs`. Codex support remains host-version-dependent.
+Their bounded, non-spawning contract is invariant 7 — it applies wherever the code runs, and
 it is stated once, in `AGENTS.md`.
 
 ## Dispatch

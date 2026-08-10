@@ -77,10 +77,10 @@ function violatesBoundary(src) {
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
 // Task 8: insights emit 도 mutating (lease-fenced) — MUTATING_SUB/MUTATING_CMD 둘 다 확장.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|checkpoint\s+(?:emit|restore)|pause\b|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|checkpoint\s+(?:emit|observe|restore)|pause\b|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
 // Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
 // "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|checkpoint\s+(?:emit|restore)|pause|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|checkpoint\s+(?:emit|observe|restore)|pause|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\r\n?/g, '\n').replace(/\\\n\s*/g, ' ');
@@ -1086,7 +1086,8 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.ok(trustedStart >= 0 && trustedStart < inspectStart,
     'trusted evidence rejection must branch before checkpoint inspection');
   assert.match(restore, /checkpoint inspect --json/);
-  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--json/);
+  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--admission postcompact-observation[^\n]*--source sessionstart[^\n]*--json/);
+  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--admission human-attested[^\n]*--source direct-human-skill[^\n]*--confirm-manual-compact[^\n]*--json/);
   assert.match(restore, /\/deep-loop-continue/);
   assert.match(restore, /\$deep-loop:deep-loop-continue/);
   assert.match(restore, /same (?:owner )?session|동일 owner 세션/i);
@@ -1110,6 +1111,129 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+handoff emit/);
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+respawn/);
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+(?:finish|workstream terminal)/);
+});
+
+test('compact restore directly dispatches exactly one qualified continue tick after reason-keyed admission', () => {
+  const body = readFileSync(skillPath('deep-loop-compact'), 'utf8');
+  const restore = body.match(/## Restore([\s\S]*)/i)?.[1] ?? '';
+  const rejection = restore.indexOf('deep-loop-compact-preserve-pause-only');
+  const inspect = restore.indexOf('deep-loop.mjs" checkpoint inspect --json');
+  const prepared = restore.indexOf('trusted SessionStart `prepared` capsule');
+  const observation = restore.indexOf('--admission postcompact-observation');
+  const manual = restore.indexOf('--admission human-attested');
+  const direct = restore.indexOf('Direct dispatch boundary');
+  const fallback = restore.indexOf('### Fresh-affinity fallback');
+
+  assert.ok(rejection >= 0 && rejection < inspect,
+    'trusted rejection marker must route before evidence-free inspect');
+  assert.ok(inspect >= 0 && inspect < observation && observation < manual && manual < direct,
+    'inspect and mutually exclusive admissions must precede the direct dispatch boundary');
+  assert.ok(prepared >= 0 && prepared < inspect && inspect < fallback,
+    'trusted prepared SessionStart capsules must branch before checkpoint inspection and restore');
+  const preparedBranch = restore.slice(prepared, inspect);
+  assert.match(preparedBranch, /route[\s\S]{0,180}Fresh-affinity fallback/i);
+  assert.match(preparedBranch, /(?:must not|never)[\s\S]{0,180}checkpoint restore/i,
+    'prepared SessionStart has no PostCompact authority and must not call restore');
+  assert.match(preparedBranch, /(?:must not|never)[\s\S]{0,180}(?:restored capsule|provider evidence)/i,
+    'prepared SessionStart must not fabricate restored provenance');
+  assert.match(preparedBranch, /prepared-fallback/i,
+    'prepared SessionStart must carry an invocation-local one-tick readvice suppression marker');
+  assert.match(restore, /Direct dispatch boundary[\s\S]{0,4000}exactly once[\s\S]{0,500}\$deep-loop:deep-loop-continue/i);
+  assert.match(restore, /same model turn/i);
+  assert.doesNotMatch(restore, /On success, continue[\s\S]{0,120}(?:invokes|print)/i,
+    'a print-only or deferred continuation is not a dispatch');
+  assert.doesNotMatch(restore.slice(0, direct), /next-action --json/,
+    'restore must not pre-read routing before direct continue dispatch');
+  assert.match(restore, /Automatic SessionStart[\s\S]{0,300}must never[\s\S]{0,180}human-attested/i);
+  assert.match(restore, /direct-human[\s\S]{0,600}checkpoint inspect[\s\S]{0,600}phase[^\n]*restored/i,
+    'direct-human success must derive its restored capsule from a fresh public inspection');
+  assert.match(restore, /injected_by[^\n]*direct-human-skill/i,
+    'direct-human success must carry explicit non-SessionStart provenance');
+  assert.match(restore, /direct-human[\s\S]{0,900}never fabricate `injected_by:"sessionstart"`/i,
+    'direct-human success must explicitly forbid fabricated SessionStart provenance');
+  assert.match(restore,
+    /four and only four top-level keys[\s\S]{0,500}"marker"[\s\S]{0,120}"version"[\s\S]{0,120}"injected_by"[\s\S]{0,120}"capsule"/i,
+    'restore must spell the canonical wrapper shape before dispatch');
+  assert.match(restore,
+    /complete serialized wrapper[\s\S]{0,360}(?:never|must not)[\s\S]{0,240}(?:fresh public descriptor|inner `capsule`)/i,
+    'restore must forbid dispatching the flat inspect descriptor or inner capsule');
+  assert.match(restore,
+    /nested `capsule`[\s\S]{0,1200}`kind`[\s\S]{0,120}`deep-loop-compact-capsule`[\s\S]{0,240}`run_id`[\s\S]{0,120}`<run_id>`[\s\S]{0,800}`restore_command`[\s\S]{0,180}`next_command`/i,
+    'restore must spell the literal and renamed fields instead of copying the inspect descriptor');
+  assert.match(restore,
+    /(?:must not|never)[^\n]*(?:copy|spread)[^\n]*(?:checkpoint_rel|cycle)/i,
+    'restore must explicitly exclude inspect-only fields from the nested capsule');
+  assert.match(restore,
+    /Skill\(\{\s*skill:\s*"deep-loop:deep-loop-continue",\s*args:\s*"<canonical_restored_wire_json>"\s*\}\)/,
+    'Claude dispatch must pass the complete canonical wire as Skill args');
+
+  const fallbackBody = restore.slice(fallback);
+  for (const field of [
+    'session_chain.lease',
+    'session_chain.sessions',
+    'workstreams',
+    'current_episode',
+  ]) assert.match(fallbackBody, new RegExp(`state get --field ${field.replace('.', '\\.')}`));
+  assert.match(fallbackBody, /open, non-terminal bound Workstream/i);
+  assert.match(fallbackBody, /capsule-free[\s\S]{0,240}exactly once/i);
+  assert.match(fallbackBody, /otherwise[\s\S]{0,240}(?:execute|invoke)[\s\S]{0,180}public fenced preserve-pause/i,
+    'failed prepared affinity proof must preserve-pause');
+
+  const continueBody = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  const invocation = continueBody.slice(
+    continueBody.indexOf('## Invocation mode'),
+    continueBody.indexOf('## 개요'),
+  );
+  assert.match(invocation,
+    /exactly three mutually exclusive forms[\s\S]{0,500}no\s+arguments[\s\S]{0,300}`prepared-fallback`[\s\S]{0,400}canonical\s+restored wrapper JSON string/i,
+    'invocation mode must admit all three mutually exclusive continue inputs');
+  assert.match(invocation,
+    /canonical\s+restored wrapper[\s\S]{0,360}Stage A[\s\S]{0,300}(?:before|prior to)[\s\S]{0,220}(?:reject|rejection)/i,
+    'the wrapper must route to Stage A before generic argument rejection');
+  assert.match(continueBody, /prepared-fallback[\s\S]{0,1000}advice[\s\S]{0,160}compact/i,
+    'continue must recognize the exact prepared fallback marker and its compact advice');
+  assert.match(continueBody, /prepared-fallback[\s\S]{0,1600}(?:ignore|suppress|consume)[\s\S]{0,240}(?:one tick|exactly once)/i,
+    'prepared fallback must consume compact readvice for exactly one useful tick');
+  assert.match(continueBody, /prepared-fallback[\s\S]{0,1800}(?:underlying|original)[\s\S]{0,240}action\.type/i,
+    'prepared fallback must still execute the kernel-returned underlying action');
+});
+
+test('continue validates SessionStart and direct-human restored capsules against provenance, cursor, and event head before mutation', () => {
+  const body = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  const capsuleGate = body.indexOf('## 0.25. Restored compact capsule gate');
+  const profile = body.indexOf('## 0.5.');
+  assert.ok(capsuleGate >= 0 && capsuleGate < profile,
+    'restored capsule gate must precede session-profile mutation');
+  const gate = body.slice(capsuleGate, profile);
+
+  assert.match(gate, /2048 UTF-8 bytes/);
+  assert.match(gate, /JSON\.parse/);
+  assert.match(gate, /exact (?:top-level )?key/i);
+  assert.match(gate, /deep-loop-compact-capsule-v1/);
+  assert.match(gate, /canonical restored wire JSON[\s\S]{0,240}single string argument/i,
+    'continue must explicitly admit the canonical wrapper as its one dispatch argument');
+  assert.match(gate, /phase[^\n]*restored/);
+  assert.match(gate, /injected_by[\s\S]{0,240}sessionstart[\s\S]{0,240}direct-human-skill/i);
+  assert.match(gate, /direct-human-skill[\s\S]{0,400}human-attested[\s\S]{0,240}direct-human-skill/i,
+    'direct-human wire provenance must be coupled to manual admission');
+  for (const field of [
+    'session_chain.lease',
+    'session_chain.sessions',
+    'event_log_head',
+    'workstreams',
+    'current_episode',
+    'compact_cursor',
+    'checkpoint_key',
+    'context_sha256',
+    'pre_restore_loop_hash',
+    'provider_evidence',
+    'admission',
+    'restore_event',
+  ]) assert.match(gate, new RegExp(field.replace('.', '\\.')));
+  assert.match(gate, /restore_event[\s\S]{0,180}event_log_head/);
+  assert.match(gate, /\/deep-loop-status[\s\S]{0,180}stop/i);
+  assert.doesNotMatch(gate, /next_action/,
+    'the restored capsule is immutable identity, not captured routing advice');
 });
 
 test('status skill reads the gate decision and durable counters from their real sources', () => {
@@ -1203,6 +1327,12 @@ test('continue SKILL: compact advice uses native same-conversation preparation',
   assert.match(md, /deep-loop-compact prepare/);
   assert.match(md, /native `\/compact`/);
   assert.match(md, /same conversation|같은 conversation/i);
+});
+test('continue SKILL: standalone maker consumes inline descriptors without a null skill dispatch', () => {
+  const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
+  assert.match(md, /dispatch\.kind === 'inline'[\s\S]{0,500}(?:direct|직접)[\s\S]{0,240}(?:tool|도구)/i);
+  assert.match(md, /dispatch\.kind === 'skill'[\s\S]{0,500}dispatch\.skill/);
+  assert.match(md, /inline[\s\S]{0,500}dispatch\.skill[\s\S]{0,160}(?:null|호출하지|must not)/i);
 });
 test('continue SKILL: handoff uses exact kernel terminal boundary only', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');

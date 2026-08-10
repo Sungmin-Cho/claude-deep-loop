@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { appendEvent, verifyLog, recomputeSpent, readLines } from '../scripts/lib/integrity.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -11,6 +12,84 @@ import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { atomicWrite } from '../scripts/lib/envelope.mjs';
 
 const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
+
+test('compact restore writer owns one lock and never calls generic append gateways', () => {
+  const source = readFileSync(join(
+    dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'integrity.mjs',
+  ), 'utf8');
+  const start = source.indexOf('function commitOrReplayCompactRestoreInternal');
+  const end = source.indexOf('\nexport function commitOrReplayCompactRestore', start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  assert.equal((body.match(/\bwithLock\s*\(/g) || []).length, 1);
+  assert.doesNotMatch(body, /\bappendAnchored\s*\(/);
+  assert.doesNotMatch(body, /\bappendEvent\s*\(/);
+  assert.doesNotMatch(body, /withReconciledMutationLock/);
+});
+
+test('checkpoint fenced gateway authorizes verified prepared manifests before recovery and callbacks fence before prune', () => {
+  const libDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib');
+  const integritySource = readFileSync(join(libDir, 'integrity.mjs'), 'utf8');
+  const authorityStart = integritySource.indexOf('function assertPreparedPublicationFence');
+  const authorityEnd = integritySource.indexOf('\nexport function withFencedReconciledMutationLock', authorityStart);
+  assert.ok(authorityStart >= 0 && authorityEnd > authorityStart);
+  const authority = integritySource.slice(authorityStart, authorityEnd);
+  assert.match(authority, /manifest\.expect\.owner/);
+  assert.match(authority, /manifest\.expect\.generation/);
+  assert.match(authority, /manifest\.runtime/);
+
+  const gatewayStart = integritySource.indexOf('export function withFencedReconciledMutationLock');
+  const gatewayEnd = integritySource.indexOf('\nexport function withVerifiedReadLock', gatewayStart);
+  assert.ok(gatewayStart >= 0 && gatewayEnd > gatewayStart);
+  const gateway = integritySource.slice(gatewayStart, gatewayEnd);
+  const prepared = gateway.indexOf('findPreparedPublicationLocked');
+  const manifestFence = gateway.indexOf('assertPreparedPublicationFence');
+  const currentFence = gateway.indexOf('assertEstablishedFence', manifestFence);
+  const compactIntent = gateway.indexOf('assertNoCompactRestoreIntentLocked');
+  const reconcile = gateway.indexOf('reconcileAnchoredPublicationLocked');
+  const strictSnapshot = gateway.indexOf('snapshotRaw', reconcile);
+  const strictFence = gateway.indexOf('assertEstablishedFence', strictSnapshot);
+  const retire = gateway.indexOf('retireCommittedPublicationLocked');
+  const callback = gateway.indexOf('return callback');
+  assert.ok(prepared >= 0 && prepared < manifestFence && manifestFence < currentFence);
+  assert.ok(currentFence < compactIntent && compactIntent < reconcile);
+  assert.ok(reconcile < strictSnapshot && strictSnapshot < strictFence);
+  assert.ok(strictFence < retire && retire < callback);
+
+  const checkpointSource = readFileSync(join(libDir, 'checkpoint.mjs'), 'utf8');
+  for (const [startMarker, endMarker] of [
+    ['export function emitCompactCheckpoint', '\nexport function __testEmitCompactCheckpoint'],
+    ['function observeCompactCheckpointInternal', '\nexport function observeCompactCheckpoint'],
+  ]) {
+    const start = checkpointSource.indexOf(startMarker);
+    const end = checkpointSource.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start);
+    const body = checkpointSource.slice(start, end);
+    const fence = body.indexOf('assertFence');
+    const prune = body.indexOf('reconcilePruneTombstonesLocked');
+    assert.ok(fence >= 0 && fence < prune, startMarker);
+  }
+});
+
+test('generic mutation authorizer preserves fence precedence over compact intent and reconciliation', () => {
+  const source = readFileSync(join(
+    dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'integrity.mjs',
+  ), 'utf8');
+  const start = source.indexOf('export function withReconciledMutationLock');
+  const end = source.indexOf('\nfunction validatedFenceRequest', start);
+  assert.ok(start >= 0 && end > start);
+  const gateway = source.slice(start, end);
+  const candidate = gateway.indexOf('compactRestoreIntentCandidateLocked');
+  const earlyAuthorize = gateway.indexOf('authorize(guard');
+  const intent = gateway.indexOf('assertNoCompactRestoreIntentLocked');
+  const reconcile = gateway.indexOf('reconcileAnchoredPublicationLocked');
+  const snapshot = gateway.indexOf('snapshotRaw', reconcile);
+  const strictAuthorize = gateway.indexOf('authorize(guard', earlyAuthorize + 1);
+  const callback = gateway.indexOf('return callback');
+  assert.ok(candidate >= 0 && candidate < earlyAuthorize && earlyAuthorize < intent);
+  assert.ok(intent < reconcile && reconcile < snapshot && snapshot < strictAuthorize);
+  assert.ok(strictAuthorize < callback);
+});
 
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));

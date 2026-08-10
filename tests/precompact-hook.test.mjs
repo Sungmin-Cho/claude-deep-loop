@@ -329,13 +329,13 @@ test('workstream-session PreCompact checkpoints every runtime and trigger mode w
       ? { provider: runtime === 'claude' ? 'claude-code' : 'codex', id: input.session_id }
       : undefined;
     const inspected = inspectCompactCheckpoint(fixture.root, fixture.runId, {
-      hostSessionEvidence: evidence,
       now: Date.parse('2026-06-24T00:01:00Z'),
     });
     assert.equal(inspected.ok, true);
     assert.deepEqual(inspected.provider_evidence, {
-      present: evidence !== undefined,
-      matched: evidence === undefined ? null : true,
+      recorded: evidence !== undefined,
+      supplied: false,
+      matched: false,
     });
   }
 });

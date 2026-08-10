@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   writeFileSync,
 } from 'node:fs';
@@ -24,6 +25,7 @@ const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
 const SESSIONSTART = join(ROOT, 'scripts', 'hooks-impl', 'sessionstart-restore.mjs');
 const COMPACT_SKILL = join(ROOT, 'skills', 'deep-loop-compact', 'SKILL.md');
 const FIXED_NOW = '2026-07-24T00:05:00.000Z';
+const MANUAL_COMPACT_NOW = '2026-07-24T00:05:01.000Z';
 
 function cli(root, args, { input, env } = {}) {
   return spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
@@ -100,7 +102,7 @@ function mutationArgs(runId, owner, generation) {
 
 function runSessionStart(root, runtime) {
   const payload = {
-    cwd: root,
+    cwd: realpathSync(root),
     hook_event_name: 'SessionStart',
     source: 'compact',
   };
@@ -228,6 +230,15 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(setupEvents.length, 5);
     assert.deepEqual(setupEvents.map(event => event.ts), Array(5).fill(FIXED_NOW));
 
+    // PreCompact is reached because attended cadence is already at its cap.
+    // Test setup fixes that state explicitly so the prepared fallback exercises
+    // the immediate-readvice edge rather than a below-cap approximation.
+    const cappedBeforePrepare = readKernelState(root, runId).data;
+    const cappedPrepareOwner = cappedBeforePrepare.session_chain.sessions
+      .find(session => session.run_id === cappedBeforePrepare.session_chain.lease.owner_run_id);
+    cappedPrepareOwner.turns = cappedBeforePrepare.budget.per_session_turn_cap;
+    writeState(root, runId, cappedBeforePrepare);
+
     const beforeCompact = state(root, runId);
     const identityBeforeCompact = compactIdentity(beforeCompact);
     assert.equal(identityBeforeCompact.scope.kind, 'workstream');
@@ -249,18 +260,53 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(hook.stderr, '');
     const hookOutput = JSON.parse(hook.stdout);
     const context = hookOutput.hookSpecificOutput.additionalContext;
-    assert.match(context, /source=compact/);
-    assert.match(
-      context,
+    const preparedCapsule = JSON.parse(context);
+    assert.equal(preparedCapsule.marker, 'deep-loop-compact-capsule-v1');
+    assert.equal(preparedCapsule.injected_by, 'sessionstart');
+    assert.equal(preparedCapsule.capsule.phase, 'prepared');
+    assert.equal(preparedCapsule.capsule.checkpoint_key, emitted.checkpoint_key);
+    assert.equal(preparedCapsule.capsule.owner_run_id, runId);
+    assert.equal(preparedCapsule.capsule.generation, 1);
+    assert.equal(preparedCapsule.capsule.runtime, runtime);
+    assert.equal(preparedCapsule.capsule.workstream_id, workstreamA);
+    assert.equal(
+      preparedCapsule.capsule.restore_command,
       runtime === 'claude'
-        ? /\/deep-loop-compact restore/
-        : /\$deep-loop:deep-loop-compact restore/,
+        ? '/deep-loop-compact restore'
+        : '$deep-loop:deep-loop-compact restore',
     );
-    assert.match(context, new RegExp(emitted.checkpoint_rel.replace(/[.]/g, '\\.')));
-    assert.match(context, new RegExp(`owner=${runId}`));
-    assert.match(context, /generation=1/);
-    assert.match(context, new RegExp(`runtime=${runtime}`));
-    assert.match(context, new RegExp(`workstream=${workstreamA}`));
+
+    // A trusted prepared SessionStart capsule has no PostCompact receipt and
+    // therefore takes the capsule-free public fallback. The four views prove
+    // fresh affinity; the single routing read must not restore or mutate.
+    const preparedViews = Object.fromEntries([
+      'session_chain.lease',
+      'session_chain.sessions',
+      'workstreams',
+      'current_episode',
+    ].map(field => [field, jsonResult(cli(root, [
+      'state', 'get', '--field', field, '--run-id', runId,
+    ]), `prepared fallback ${field}`)]));
+    assert.equal(preparedViews['session_chain.lease'].owner_run_id, runId);
+    assert.equal(preparedViews['session_chain.lease'].generation, 1);
+    assert.ok(preparedViews['session_chain.sessions']
+      .some(session => session.run_id === runId
+        && session.scope.workstream_id === workstreamA));
+    assert.equal(preparedViews.workstreams
+      .find(workstream => workstream.id === workstreamA).status, 'planned');
+    assert.equal(preparedViews.current_episode, makerA);
+    const beforePreparedFallback = durableInventory(root, runId);
+    const preparedContinuation = jsonResult(cli(root, [
+      'next-action', '--json', '--now', FIXED_NOW, '--run-id', runId,
+    ]), 'prepared capsule-free continuation tick');
+    assert.equal(preparedContinuation.action.episode_id, makerA);
+    assert.notEqual(preparedContinuation.action.type, 'handoff');
+    assert.equal(preparedContinuation.action.advice, 'compact',
+      'without an invocation-local prepared fallback marker the kernel still exposes cap advice');
+    assert.equal(preparedContinuation.action.advice_reason, 'per_session_turn_cap');
+    assert.deepEqual(durableInventory(root, runId), beforePreparedFallback);
+    assert.equal(eventLog(root, runId)
+      .filter(event => event.type === 'compact-restored').length, 0);
 
     const inspected = jsonResult(cli(root, [
       'checkpoint', 'inspect',
@@ -269,11 +315,45 @@ for (const runtime of ['claude', 'codex']) {
       '--run-id', runId,
     ]), 'checkpoint inspect');
     assert.equal(inspected.checkpoint_rel, emitted.checkpoint_rel);
+    assert.equal(inspected.phase, 'prepared');
+    const observed = jsonResult(cli(root, [
+      'checkpoint', 'observe',
+      '--checkpoint', emitted.checkpoint_rel,
+      '--trigger', 'auto',
+      '--runtime', runtime,
+      '--trusted-postcompact-stdin',
+      '--json',
+      '--now', FIXED_NOW,
+      ...fence1,
+    ], {
+      input: JSON.stringify({
+        hook_event_name: 'PostCompact', cwd: realpathSync(root), trigger: 'auto',
+      }),
+    }), 'checkpoint observe');
+    assert.equal(observed.created, true);
+    assert.equal(observed.checkpoint_key, emitted.checkpoint_key);
+    const compacted = jsonResult(cli(root, [
+      'checkpoint', 'inspect', '--json', '--now', FIXED_NOW, '--run-id', runId,
+    ]), 'checkpoint inspect compacted');
+    assert.equal(compacted.phase, 'compacted');
+    assert.equal(compacted.trigger, 'auto');
+
+    const compactedHook = runSessionStart(root, runtime);
+    assert.equal(compactedHook.status, 0, compactedHook.stderr);
+    const compactedCapsule = JSON.parse(
+      JSON.parse(compactedHook.stdout).hookSpecificOutput.additionalContext,
+    ).capsule;
+    assert.equal(compactedCapsule.phase, 'compacted');
+    assert.deepEqual(compactedCapsule.admission, {
+      kind: 'postcompact-observation', source: null, receipt_trigger: 'auto',
+    });
 
     const restored = jsonResult(cli(root, [
       'checkpoint', 'restore',
       '--checkpoint', inspected.checkpoint_rel,
       '--runtime', runtime,
+      '--admission', 'postcompact-observation',
+      '--source', 'sessionstart',
       '--json',
       '--now', FIXED_NOW,
       ...fence1,
@@ -281,8 +361,14 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(restored.owner_run_id, runId);
     assert.equal(restored.generation, 1);
     assert.equal(restored.runtime, runtime);
-    assert.equal(restored.scope.workstream_id, workstreamA);
+    assert.equal(restored.phase, 'restored');
+    assert.equal(restored.workstream_id, workstreamA);
+    assert.equal(restored.next_command, null);
+    assert.equal(restored.requires_model_turn, false);
     assert.deepEqual(compactIdentity(state(root, runId)), identityBeforeCompact);
+    const restoredHook = runSessionStart(root, runtime);
+    assert.equal(restoredHook.status, 0, restoredHook.stderr);
+    assert.equal(restoredHook.stdout, '');
 
     const continuation = jsonResult(cli(root, [
       'next-action',
@@ -292,6 +378,78 @@ for (const runtime of ['claude', 'codex']) {
     ]), 'continue Workstream A');
     assert.equal(continuation.action.episode_id, makerA);
     assert.notEqual(continuation.action.type, 'handoff');
+
+    // Hookless/manual compact is a complete same-owner path: no SessionStart
+    // capsule is required, and exactly one direct continuation tick follows.
+    jsonResult(cli(root, [
+      'state', 'patch',
+      '--field', 'discovered_items',
+      '--value', '["manual-compact-fixture"]',
+      '--now', MANUAL_COMPACT_NOW,
+      ...fence1,
+    ]), 'manual continuation state mutation');
+    const manualEmitted = jsonResult(cli(root, [
+      'checkpoint', 'emit',
+      '--runtime', runtime,
+      '--now', MANUAL_COMPACT_NOW,
+      ...fence1,
+    ]), 'manual checkpoint emit');
+    const manualInspected = jsonResult(cli(root, [
+      'checkpoint', 'inspect', '--json', '--now', MANUAL_COMPACT_NOW, '--run-id', runId,
+    ]), 'manual checkpoint inspect');
+    assert.equal(manualInspected.phase, 'prepared');
+    assert.equal(manualInspected.checkpoint_rel, manualEmitted.checkpoint_rel);
+    const manualRestored = jsonResult(cli(root, [
+      'checkpoint', 'restore',
+      '--checkpoint', manualInspected.checkpoint_rel,
+      '--runtime', runtime,
+      '--admission', 'human-attested',
+      '--source', 'direct-human-skill',
+      '--confirm-manual-compact',
+      '--json',
+      '--now', MANUAL_COMPACT_NOW,
+      ...fence1,
+    ]), 'manual checkpoint restore');
+    assert.equal(manualRestored.disposition, 'committed');
+    assert.deepEqual(manualRestored.admission, {
+      kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null,
+    });
+    const manualRestoredInspect = jsonResult(cli(root, [
+      'checkpoint', 'inspect', '--json', '--now', MANUAL_COMPACT_NOW, '--run-id', runId,
+    ]), 'manual restored checkpoint inspect');
+    assert.equal(manualRestoredInspect.phase, 'restored');
+    assert.deepEqual(manualRestoredInspect.restore_event, manualRestored.restore_event);
+    const manualContinuation = jsonResult(cli(root, [
+      'next-action', '--json', '--now', MANUAL_COMPACT_NOW, '--run-id', runId,
+    ]), 'manual direct-human continuation tick');
+    assert.equal(manualContinuation.action.episode_id, makerA);
+    assert.notEqual(manualContinuation.action.type, 'handoff');
+
+    const capped = readKernelState(root, runId).data;
+    const cappedOwner = capped.session_chain.sessions
+      .find(session => session.run_id === capped.session_chain.lease.owner_run_id);
+    cappedOwner.turns = (cappedOwner.compact_cursor?.baseline_turns ?? 0)
+      + capped.budget.per_session_turn_cap;
+    writeState(root, runId, capped);
+    for (const autoHandoff of [true, false]) {
+      const unattendedState = readKernelState(root, runId).data;
+      unattendedState.autonomy.auto_handoff = autoHandoff;
+      writeState(root, runId, unattendedState);
+      const unattendedContinuation = jsonResult(cli(root, [
+        'next-action',
+        '--unattended',
+        '--json',
+        '--now', FIXED_NOW,
+        '--run-id', runId,
+      ]), `unattended Workstream A auto_handoff=${autoHandoff}`);
+      assert.equal(unattendedContinuation.action.episode_id, makerA);
+      assert.notEqual(unattendedContinuation.action.type, 'handoff');
+      assert.equal(Object.hasOwn(unattendedContinuation.action, 'advice'), false);
+      assert.equal(Object.hasOwn(unattendedContinuation.action, 'advice_reason'), false);
+    }
+    const restoredAutonomy = readKernelState(root, runId).data;
+    restoredAutonomy.autonomy.auto_handoff = true;
+    writeState(root, runId, restoredAutonomy);
 
     // Approval is a human-gated public mutation. Missing confirmation must be
     // a byte-preserving usage rejection, and therefore cannot authorize the
@@ -486,6 +644,88 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(final.session_chain.sessions
       .find(session => session.run_id === handoff.childRunId)
       .scope.workstream_id, workstreamB);
+  });
+}
+
+for (const runtime of ['claude', 'codex']) {
+  test(`${runtime} prepared SessionStart proof failure uses fenced preserve-pause without restore`, () => {
+    const root = mkdtempSync(join(tmpdir(), `deep-loop-prepared-pause-${runtime}-`));
+    mkdirSync(join(root, '.claude', 'worktrees', 'prepared-pause'), { recursive: true });
+    const initialized = jsonResult(cli(root, [
+      'init-run',
+      '--runtime', runtime,
+      '--goal', `Prepared fallback pause ${runtime}`,
+      '--continuation', 'workstream-session',
+      '--now', FIXED_NOW,
+    ]), 'prepared pause init-run');
+    const runId = initialized.run_id;
+    const fence = mutationArgs(runId, runId, 1);
+    const workstreamId = jsonResult(cli(root, [
+      'workstream', 'new',
+      '--title', 'Prepared pause',
+      '--branch', `prepared-pause-${runtime}`,
+      '--worktree', '.claude/worktrees/prepared-pause',
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause workstream').id;
+    const episodeId = jsonResult(cli(root, [
+      'episode', 'new',
+      '--plugin', 'deep-work',
+      '--role', 'maker',
+      '--kind', 'implementation',
+      '--point', 'implementation',
+      '--workstream', workstreamId,
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause episode').id;
+    jsonResult(cli(root, [
+      'episode', 'record',
+      '--id', episodeId,
+      '--status', 'in_progress',
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause bind');
+    jsonResult(cli(root, [
+      'checkpoint', 'emit',
+      '--runtime', runtime,
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared pause checkpoint');
+    const hook = runSessionStart(root, runtime);
+    assert.equal(hook.status, 0, hook.stderr);
+    const capsule = JSON.parse(
+      JSON.parse(hook.stdout).hookSpecificOutput.additionalContext,
+    ).capsule;
+    assert.equal(capsule.phase, 'prepared');
+
+    // Model a legitimate race after SessionStart injection: one fresh view no
+    // longer proves the received episode affinity. Test setup alone edits the
+    // fixture; recovery still goes through the public fenced pause route.
+    const drifted = readKernelState(root, runId).data;
+    drifted.current_episode = null;
+    writeState(root, runId, drifted);
+    const currentEpisode = jsonResult(cli(root, [
+      'state', 'get', '--field', 'current_episode', '--run-id', runId,
+    ]), 'prepared pause failed proof');
+    assert.equal(currentEpisode, null);
+
+    const paused = jsonResult(cli(root, [
+      'pause',
+      '--mode', 'preserve',
+      '--reason', 'host-session-lost',
+      '--now', FIXED_NOW,
+      ...fence,
+    ]), 'prepared fallback preserve-pause');
+    assert.deepEqual(paused, { ok: true, status: 'paused' });
+    const after = state(root, runId);
+    assert.equal(after.status, 'paused');
+    assert.equal(after.pause_reason, 'host-session-lost');
+    assert.equal(after.session_chain.lease.owner_run_id, runId);
+    assert.equal(after.session_chain.lease.generation, 1);
+    assert.equal(eventLog(root, runId)
+      .filter(event => event.type === 'compact-restored').length, 0);
+    assert.equal(eventLog(root, runId)
+      .filter(event => event.type === 'run-paused').length, 1);
   });
 }
 

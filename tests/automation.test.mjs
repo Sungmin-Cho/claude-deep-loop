@@ -799,10 +799,10 @@ test('forced settlement reports termination failure at the fixed deadline', { sk
 
 const SOURCE_HEADER = Buffer.from('646565702d6c6f6f702d706c7567696e2d736f757263652d763100', 'hex');
 const FIXTURE_RECORDS = Object.freeze({
-  '.claude-plugin/plugin.json': '{"name":"deep-loop","version":"1.14.0"}\n',
-  '.codex-plugin/plugin.json': '{"name":"deep-loop","version":"1.14.0"}\n',
+  '.claude-plugin/plugin.json': '{"name":"deep-loop","version":"1.15.0"}\n',
+  '.codex-plugin/plugin.json': '{"name":"deep-loop","version":"1.15.0"}\n',
   'hooks/hooks.json': '{"fixture":"hooks"}\n',
-  'package.json': '{"name":"deep-loop","version":"1.14.0"}\n',
+  'package.json': '{"name":"deep-loop","version":"1.15.0"}\n',
   'protocols/deep-work.json': '{"fixture":"deep-work"}\n',
   'recipes/automation/github-actions-loop.yml': 'fixture: github-actions-loop\n',
   'recipes/hillclimb-ledger.json': '{"fixture":"hillclimb-ledger"}\n',
@@ -951,7 +951,7 @@ function runTrustedVerifier(fixture, options = {}) {
     DEEP_LOOP_CANDIDATE_ROOT: fixture.candidate, DEEP_LOOP_STAGE_PARENT: fixture.stageParent,
     DEEP_LOOP_PROJECT_ROOT: fixture.project, DEEP_LOOP_CANONICAL_PROJECT_ROOT: fixture.project,
     GITHUB_WORKSPACE: fixture.workspace, DEEP_LOOP_RUN_ID: fixture.runId,
-    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.14.0',
+    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.15.0',
     DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: fixture.digest, ...options,
   };
   const sourceDir = mkdtempSync(join(tmpdir(), 'dl-trusted-source-'));
@@ -972,7 +972,7 @@ function runProductionWorkflowForTest(fixture, options = {}) {
     DEEP_LOOP_CANDIDATE_ROOT: fixture.candidate, DEEP_LOOP_STAGE_PARENT: fixture.stageParent,
     DEEP_LOOP_PROJECT_ROOT: fixture.project, DEEP_LOOP_CANONICAL_PROJECT_ROOT: fixture.project,
     GITHUB_WORKSPACE: fixture.workspace, DEEP_LOOP_RUN_ID: fixture.runId,
-    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.14.0',
+    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.15.0',
     DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: fixture.digest, ...options,
   };
   const sourceDir = mkdtempSync(join(tmpdir(), 'dl-production-source-'));
@@ -1034,7 +1034,7 @@ function assertConfigurationInvalid(result) {
 test('source identity positive 17-record fixture', () => {
   const source = trustedWorkflowSource();
   assert.equal(Object.keys(FIXTURE_RECORDS).length, 17);
-  assert.equal(fixtureDigest(), 'f0a6680ee6b1c6d62c449b92d12ee6ab29462daabab094ae9dba124bda16a18c');
+  assert.equal(fixtureDigest(), 'cf8c3a3b9aabf7653b13c48f2942c85e6504764e60b2a9513571e4605ccf5c32');
   const fixture = seedTrustedFixture();
   const result = runTrustedVerifier(fixture);
   assert.equal(result.status, 0, result.stdout);
@@ -1042,7 +1042,7 @@ test('source identity positive 17-record fixture', () => {
   assert.equal(verified.ok, true);
   assert.equal(verified.records, 17);
   assert.match(source, /deep-loop-plugin-source-v1/);
-  assert.match(source, /f0a6680ee6b1c6d62c449b92d12ee6ab29462daabab094ae9dba124bda16a18c/);
+  assert.match(source, /cf8c3a3b9aabf7653b13c48f2942c85e6504764e60b2a9513571e4605ccf5c32/);
   assert.match(source, /\.claude-plugin\/plugin\.json/);
   assert.match(source, /\.codex-plugin\/plugin\.json/);
   assert.match(source, /package\.json/);

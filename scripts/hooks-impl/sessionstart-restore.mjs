@@ -1,16 +1,29 @@
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  opendirSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
-import { relative } from 'node:path';
 import {
   captureVerifiedCheckpointSet,
+  inspectCompactForSessionStart,
   selectCheckpoint,
 } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
-import { runDir } from '../lib/state.mjs';
 import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
-import { sessionRuntime } from '../lib/runtime.mjs';
 
 const CAP = 3072;
+export const MAX_COMPACT_CAPSULE_WIRE_BYTES = 2048;
+export const MAX_SESSIONSTART_RUN_ENTRIES = 256;
+export const MAX_SESSIONSTART_LOOP_BYTES = 1024 * 1024;
+const SAFE_RUN_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function clamp(value) {
   if (Buffer.byteLength(value, 'utf8') <= CAP) return value;
@@ -20,55 +33,187 @@ function clamp(value) {
   return `${cut}...`;
 }
 
-function strictHostSessionEvidence(input, runtime) {
+function safeRunId(value) {
+  return typeof value === 'string'
+    && value.length <= 200
+    && value !== '.'
+    && value !== '..'
+    && SAFE_RUN_SEGMENT.test(value);
+}
+
+function canonicalExactDirectory(value) {
+  try {
+    return typeof value === 'string'
+      && resolve(value) === value
+      && realpathSync(value) === value
+      && lstatSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function boundedDirectoryNames(path, maxEntries) {
+  let directory;
+  try {
+    directory = opendirSync(path);
+    const names = [];
+    while (true) {
+      const entry = directory.readSync();
+      if (entry === null) return names;
+      if (names.length >= maxEntries) return null;
+      names.push(entry.name);
+    }
+  } catch {
+    return null;
+  } finally {
+    try { directory?.closeSync(); } catch { /* best effort */ }
+  }
+}
+
+function readBoundedExactRegular(path, maxBytes) {
+  let descriptor;
+  try {
+    const entry = lstatSync(path);
+    if (entry.isSymbolicLink() || !entry.isFile() || realpathSync(path) !== path) return null;
+    descriptor = openSync(path, 'r');
+    const stat = fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.size < 1n || stat.size > BigInt(maxBytes)) return null;
+    const expected = Number(stat.size);
+    const bytes = Buffer.allocUnsafe(expected + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return offset === expected ? bytes.subarray(0, offset) : null;
+  } catch {
+    return null;
+  } finally {
+    try { if (descriptor !== undefined) closeSync(descriptor); } catch { /* best effort */ }
+  }
+}
+
+function sessionStartRunCandidate(root, runId, canonicalCwd) {
+  const runPath = join(root, '.deep-loop', 'runs', runId);
+  if (!canonicalExactDirectory(runPath)) return null;
+  const bytes = readBoundedExactRegular(join(runPath, 'loop.json'), MAX_SESSIONSTART_LOOP_BYTES);
+  if (bytes === null) return null;
+  let loop;
+  try { loop = JSON.parse(bytes.toString('utf8')); } catch { return null; }
+  if (loop?.run_id !== runId) return null;
+  try { if (realpathSync(loop?.project?.root) !== root) return null; } catch { return null; }
+
+  let cwdBound = false;
+  const owner = loop?.session_chain?.lease?.owner_run_id;
+  const session = Array.isArray(loop?.session_chain?.sessions)
+    ? loop.session_chain.sessions.find(item => item?.run_id === owner)
+    : null;
+  const workstreamId = session?.scope?.kind === 'workstream'
+    ? session.scope.workstream_id
+    : null;
+  const workstream = typeof workstreamId === 'string' && Array.isArray(loop?.workstreams)
+    ? loop.workstreams.find(item => item?.id === workstreamId)
+    : null;
+  if (typeof workstream?.worktree === 'string') {
+    const worktreePath = resolve(root, workstream.worktree);
+    if (canonicalExactDirectory(worktreePath)) {
+      const rootRelative = relative(root, worktreePath);
+      const cwdRelative = relative(worktreePath, canonicalCwd);
+      cwdBound = Boolean(rootRelative)
+        && !rootRelative.startsWith('..')
+        && !rootRelative.split(sep).includes('..')
+        && (cwdRelative === ''
+          || (!cwdRelative.startsWith('..') && !cwdRelative.split(sep).includes('..')));
+    }
+  }
+  return { runId, active: loop.status === 'running', cwdBound };
+}
+
+export function resolveSessionStartRunId(root, cwd = root) {
+  let canonicalRoot;
+  let canonicalCwd;
+  try {
+    canonicalRoot = realpathSync(root);
+    canonicalCwd = realpathSync(cwd);
+  } catch {
+    return null;
+  }
+  if (!canonicalExactDirectory(canonicalRoot) || !canonicalExactDirectory(canonicalCwd)) return null;
+  const cwdWithinRoot = relative(canonicalRoot, canonicalCwd);
+  if (cwdWithinRoot.startsWith('..') || cwdWithinRoot.split(sep).includes('..')) return null;
+  const runsPath = join(canonicalRoot, '.deep-loop', 'runs');
+  if (!canonicalExactDirectory(runsPath)) return null;
+  const entries = boundedDirectoryNames(runsPath, MAX_SESSIONSTART_RUN_ENTRIES);
+  if (entries === null) return null;
+  const candidates = entries
+    .filter(safeRunId)
+    .sort()
+    .map(runId => sessionStartRunCandidate(canonicalRoot, runId, canonicalCwd))
+    .filter(Boolean);
+  const cwdBound = candidates.filter(candidate => candidate.cwdBound);
+  if (cwdBound.length === 1) return cwdBound[0].runId;
+  if (cwdBound.length > 1) return null;
+  const active = candidates.filter(candidate => candidate.active);
+  if (active.length === 1) return active[0].runId;
+  return active.length === 0 && candidates.length === 1 ? candidates[0].runId : null;
+}
+
+function hostSessionIdentityInput(input) {
   if (input.hook_event_name !== 'SessionStart') throw new Error('host-context-invalid');
   if (!Object.hasOwn(input, 'session_id')) return undefined;
-  if (typeof input.session_id !== 'string'
-    || input.session_id.length === 0
-    || input.session_id.length > 1024
-    || /[\0\r\n]/.test(input.session_id)) {
-    throw new Error('host-evidence-invalid');
-  }
-  return {
-    provider: runtime === 'claude' ? 'claude-code' : 'codex',
-    id: input.session_id,
+  return input.session_id;
+}
+
+function compactCapsule(runId, descriptor) {
+  const wire = {
+    marker: 'deep-loop-compact-capsule-v1',
+    version: 1,
+    injected_by: 'sessionstart',
+    capsule: {
+      kind: 'deep-loop-compact-capsule',
+      phase: descriptor.phase,
+      run_id: runId,
+      checkpoint_key: descriptor.checkpoint_key,
+      context_sha256: descriptor.context_sha256,
+      pre_restore_loop_hash: descriptor.pre_restore_loop_hash,
+      owner_run_id: descriptor.owner_run_id,
+      generation: descriptor.generation,
+      runtime: descriptor.runtime,
+      workstream_id: descriptor.workstream_id,
+      episode_id: descriptor.episode_id,
+      provider_evidence: structuredClone(descriptor.provider_evidence),
+      admission: structuredClone(descriptor.admission),
+      restore_event: structuredClone(descriptor.restore_event),
+      restore_command: descriptor.next_command,
+    },
   };
+  let serialized;
+  try { serialized = JSON.stringify(wire); } catch { return null; }
+  return Buffer.byteLength(serialized, 'utf8') <= MAX_COMPACT_CAPSULE_WIRE_BYTES
+    ? serialized
+    : null;
 }
 
-function strictRestoreContext(runId, descriptor, { source, selectionSource }) {
-  const runtime = descriptor.runtime;
-  const command = runtime === 'claude'
-    ? '/deep-loop-compact restore'
-    : '$deep-loop:deep-loop-compact restore';
-  const sourceLabel = source === 'compact' ? 'source=compact' : 'source-unverified';
-  const evidenceLabel = descriptor.provider_evidence?.matched === true
-    ? 'evidence-verified'
-    : 'evidence-unverified';
-  return clamp(
-    `deep-loop compact restore ${sourceLabel} selection=${selectionSource} ${evidenceLabel}: invoke ${command} now in the same owner session. `
-    + `checkpoint_rel=${descriptor.checkpoint_rel} owner=${descriptor.owner_run_id} `
-    + `generation=${descriptor.generation} runtime=${runtime} `
-    + `workstream=${descriptor.scope?.workstream_id ?? 'none'} run=${runId}.`,
-  );
-}
-
-function strictUnavailableContext({ evidencePresent, runtime }) {
+function strictRejectedContext(runtime) {
   const restoreCommand = runtime === 'claude'
     ? '/deep-loop-compact restore'
     : '$deep-loop:deep-loop-compact restore';
   const statusCommand = runtime === 'claude'
     ? '/deep-loop-status'
     : '$deep-loop:deep-loop-status';
-  return evidencePresent
-    ? clamp(
-      `deep-loop checkpoint-unavailable-with-trusted-evidence: invoke ${restoreCommand} now for `
-      + 'preserve-pause and host resume guidance; do not retry without trusted evidence. '
-      + `Run ${statusCommand} for bounded diagnostics.`,
-    )
-    : clamp(
-      `deep-loop checkpoint-unavailable evidence-unverified: invoke ${restoreCommand} now for the `
-      + `state-derived fallback; run ${statusCommand} for bounded diagnostics and preserve the current owner session.`,
-    );
+  return clamp(
+    'deep-loop-compact-preserve-pause-only '
+    + 'checkpoint-unavailable-with-trusted-evidence provider-evidence-mismatch: '
+    + `invoke ${restoreCommand} for preserve-pause only; run ${statusCommand} for host-resume guidance.`,
+  );
+}
+
+function strictMissingContext(runtime) {
+  const statusCommand = runtime === 'claude'
+    ? '/deep-loop-status'
+    : '$deep-loop:deep-loop-status';
+  return clamp(`deep-loop checkpoint-unavailable: run ${statusCommand} for bounded diagnostics; no restore was authorized.`);
 }
 
 function routingDiagnostic(selection) {
@@ -88,50 +233,52 @@ function routingDiagnostic(selection) {
   });
 }
 
-function strictDescriptorFromVerifiedBytes(root, runId, checkpointSet) {
-  const candidates = [];
-  for (const checkpoint of checkpointSet.checkpoints || []) {
-    try {
-      const envelope = JSON.parse(checkpoint.bytes.toString('utf8'));
-      const context = envelope?.payload?.context;
-      if (!context || typeof envelope?.envelope?.generated_at !== 'string') continue;
-      const relCandidate = relative(runDir(root, runId), checkpoint.path);
-      const rel = relCandidate && !relCandidate.startsWith('..')
-        ? relCandidate.split('\\').join('/')
-        : null;
-      if (!rel) continue;
-      candidates.push({ checkpoint, envelope, context, rel });
-    } catch { /* captureVerifiedCheckpointSet already rejected malformed bytes */ }
+export function resolveSessionStartProjectRoot(cwd, { expectedRoot } = {}) {
+  try {
+    if (typeof cwd !== 'string' || cwd.length === 0 || resolve(cwd) !== cwd) return null;
+    const canonicalCwd = realpathSync(cwd);
+    if (canonicalCwd !== cwd) return null;
+    const found = findRoot(canonicalCwd);
+    const base = realpathSync(found);
+    if (found !== base || (expectedRoot !== undefined && realpathSync(expectedRoot) !== base)) return null;
+    if (!existsSync(join(base, '.deep-loop', 'current'))) return null;
+    if (canonicalCwd === base) return base;
+    const rel = relative(base, canonicalCwd);
+    if (!rel || rel.startsWith('..') || rel.split(sep).includes('..')) return null;
+    const parts = rel.split(sep);
+    const offset = parts[0] === '.worktrees'
+      ? 1
+      : parts[0] === '.claude' && parts[1] === 'worktrees'
+        ? 2
+        : -1;
+    if (offset < 0 || typeof parts[offset] !== 'string' || parts[offset].length === 0) return null;
+    const worktreeRoot = join(base, ...parts.slice(0, offset + 1));
+    if (realpathSync(worktreeRoot) !== worktreeRoot) return null;
+    if (existsSync(join(worktreeRoot, '.deep-loop', 'current'))) return null;
+    let current = canonicalCwd;
+    while (current !== worktreeRoot) {
+      if (existsSync(join(current, '.deep-loop', 'current')) || existsSync(join(current, '.git'))) {
+        return null;
+      }
+      const parent = join(current, '..');
+      const resolvedParent = resolve(parent);
+      if (resolvedParent === current) return null;
+      current = resolvedParent;
+    }
+    return base;
+  } catch {
+    return null;
   }
-  candidates.sort((left, right) => (
-    right.envelope.envelope.generated_at.localeCompare(left.envelope.envelope.generated_at)
-      || right.rel.localeCompare(left.rel)
-  ));
-  const selected = candidates[0];
-  if (!selected) return null;
-  const { context } = selected;
-  return {
-    ok: true,
-    checkpoint_rel: selected.rel,
-    owner_run_id: context.owner_run_id,
-    generation: context.generation,
-    runtime: context.runtime,
-    scope: context.scope,
-    workstream: context.workstream,
-    current_episode: context.current_episode,
-    next_action: context.next_action,
-    provider_evidence: {
-      present: context.provider_evidence !== null,
-      matched: context.provider_evidence !== null,
-    },
-  };
 }
 
 // Read-only restore glue (spec §4.2). No branch mutates durable state.
 export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
+  cwd = root,
   now = Date.now(),
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
+  inspectCompact = inspectCompactForSessionStart,
+  runtimeHint = 'claude',
   resolveContextFn = resolveRunContext,
   captureVerifiedCheckpointSetFn = captureVerifiedCheckpointSet,
 } = {}) {
@@ -140,7 +287,7 @@ export function runSessionStartRestore(input = {}, {
   }
   const selection = resolveContextFn({
     root,
-    cwd: typeof input.cwd === 'string' ? input.cwd : process.cwd(),
+    cwd: typeof input.cwd === 'string' ? input.cwd : cwd,
     purpose: 'hook-restore',
     nowFn: () => (now instanceof Date ? now.getTime() : now),
   });
@@ -157,54 +304,67 @@ export function runSessionStartRestore(input = {}, {
     };
   }
   const runId = selection.runId;
-  const loop = selection.snapshot.data;
-  const hash = selection.snapshot.hash;
+
+  let hostSessionIdentity;
+  try { hostSessionIdentity = hostSessionIdentityInput(input); } catch {
+    return { ok: false, branch: 'evidence-invalid', additionalContext: null };
+  }
+
+  let inspected;
+  try {
+    inspected = inspectCompact(root, runId, {
+      hostSessionEvidence: hostSessionIdentity === undefined ? undefined : { id: hostSessionIdentity },
+      now,
+    });
+  } catch (error) {
+    if (String(error?.message || error).includes('CHECKPOINT_EVIDENCE_INVALID')) {
+      return { ok: false, branch: 'evidence-invalid', additionalContext: null };
+    }
+    return { ok: true, branch: 'unreadable', additionalContext: null };
+  }
+
+  if (inspected !== null) {
+    if (!inspected.ok) {
+      if (inspected.reason === 'trusted-evidence-rejected') {
+        return {
+          ok: true,
+          branch: 'checkpoint-unavailable-with-trusted-evidence',
+          additionalContext: strictRejectedContext(runtimeHint),
+        };
+      }
+      if (['checkpoint-not-found', 'checkpoint-ineligible'].includes(inspected.reason)) {
+        return {
+          ok: true,
+          branch: 'no-checkpoint',
+          additionalContext: strictMissingContext(runtimeHint),
+        };
+      }
+      return {
+        ok: true,
+        branch: inspected.reason === 'run-not-resumable'
+          ? 'terminal-or-paused'
+          : inspected.reason,
+        additionalContext: null,
+      };
+    }
+    if (inspected.phase === 'restored') {
+      return { ok: true, branch: 'restored', additionalContext: null };
+    }
+    const additionalContext = compactCapsule(runId, inspected);
+    return additionalContext === null
+      ? { ok: true, branch: 'capsule-unavailable', additionalContext: null }
+      : { ok: true, branch: inspected.phase, additionalContext };
+  }
+
+  const { data: loop, hash } = selection.snapshot;
 
   if (['completed', 'stopped', 'paused'].includes(loop.status)) {
     return { ok: true, branch: 'terminal-or-paused', additionalContext: null };
   }
 
   const lease = loop.session_chain?.lease || {};
-  if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    let runtime;
-    let hostSessionEvidence;
-    try {
-      runtime = sessionRuntime(loop);
-      hostSessionEvidence = strictHostSessionEvidence(input, runtime);
-    } catch {
-      return { ok: false, branch: 'evidence-invalid', additionalContext: null };
-    }
-    const checkpointSet = captureVerifiedCheckpointSetFn({
-      root,
-      runId,
-      snapshot: selection.snapshot,
-      hostSessionEvidence,
-      now,
-    });
-    if (!checkpointSet?.ok) {
-      return {
-        ok: true,
-        branch: checkpointSet?.kind || 'checkpoint-unavailable',
-        diagnostic: JSON.stringify({
-          kind: checkpointSet?.kind || 'checkpoint-unavailable',
-          phase: checkpointSet?.phase || 'checkpoint',
-        }).slice(0, 220),
-        additionalContext: null,
-      };
-    }
-    const inspected = strictDescriptorFromVerifiedBytes(root, runId, checkpointSet);
-    if (!inspected) return { ok: true, branch: 'no-checkpoint', additionalContext: null };
-    return {
-      ok: true,
-      branch: input.source === 'compact' ? 'resume' : 'resume-source-unverified',
-      additionalContext: strictRestoreContext(runId, inspected, {
-        source: input.source,
-        selectionSource: selection.source,
-      }),
-    };
-  }
 
-  const advisory = `deep-loop lease owner=${lease.owner_run_id} gen=${lease.generation} selection=${selection.source}. 이 세션이 해당 run의 owner가 아니면 mutation을 시도하지 말 것.`;
+  const advisory = `deep-loop lease owner=${lease.owner_run_id} gen=${lease.generation}. 이 세션이 해당 run의 owner가 아니면 mutation을 시도하지 말 것.`;
 
   if (lease.handoff_phase === 'reserved' && lease.state === 'active') {
     return {
@@ -245,15 +405,13 @@ export function runSessionStartRestore(input = {}, {
     snapshot: selection.snapshot,
     now,
   });
-  if (!checkpointSet?.ok) return {
-    ok: true,
-    branch: checkpointSet?.kind || 'checkpoint-unavailable',
-    diagnostic: JSON.stringify({
-      kind: checkpointSet?.kind || 'checkpoint-unavailable',
-      phase: checkpointSet?.phase || 'checkpoint',
-    }).slice(0, 220),
-    additionalContext: null,
-  };
+  if (!checkpointSet?.ok) {
+    return {
+      ok: true,
+      branch: checkpointSet?.kind || 'integrity-invalid',
+      additionalContext: null,
+    };
+  }
   const checkpoint = selectCheckpoint(checkpointSet, {
     owner: lease.owner_run_id,
     generation: lease.generation,
@@ -271,9 +429,7 @@ export function runSessionStartRestore(input = {}, {
 
   let envelope;
   try {
-    // The checkpoint bytes are already part of the verified immutable vector;
-    // never reopen the live path after capture.
-    envelope = JSON.parse(checkpoint.bytes.toString('utf8'));
+    envelope = JSON.parse(readCheckpoint(checkpoint.path, checkpoint.bytes));
   } catch {
     return {
       ok: true,
@@ -304,9 +460,14 @@ export async function main() {
     const cwd = input && typeof input.cwd === 'string' && input.cwd.length > 0
       ? input.cwd
       : process.cwd();
-    const result = runSessionStartRestore(input ?? {}, { root: findRoot(cwd) });
+    const root = resolveSessionStartProjectRoot(cwd);
+    if (root === null) return;
+    const result = runSessionStartRestore(input ?? {}, {
+      root,
+      cwd,
+      runtimeHint: process.env.CLAUDE_PLUGIN_ROOT ? 'claude' : 'codex',
+    });
     if (!result.ok) throw new Error('restore-context-invalid');
-    if (result.diagnostic) process.stderr.write(`deep-loop: sessionstart ${result.diagnostic.slice(0, 220)}\n`);
     if (result.additionalContext) {
       process.stdout.write(`${JSON.stringify({
         hookSpecificOutput: {
