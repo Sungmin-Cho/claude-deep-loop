@@ -1981,9 +1981,9 @@ if (MUTATING_ROUTE_SET.has(routeKey) && !requireExactRunId(rest).ok) {
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
 // (integrity 등의 detect-and-fail-stop 모델을 넓은 catch로 삼키지 않는다).
 try {
-  process.exit(await fn(rest));
+  process.exitCode = await fn(rest);
 } catch (e) {
   const classified = classifyKernelError(e);
-  if (classified) { error(classified.message); process.exit(classified.code); }
-  throw e;
+  if (classified) { error(classified.message); process.exitCode = classified.code; }
+  else throw e;
 }

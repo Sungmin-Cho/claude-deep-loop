@@ -237,6 +237,20 @@ test('state get returns whole loop and a field path', () => {
   assert.equal(missing, null);
 });
 
+test('state get drains large JSON output before the CLI exits', () => {
+  const { root, runId } = seed();
+  const items = Array.from({ length: 2_000 }, (_, index) =>
+    `${String(index).padStart(4, '0')}-${'x'.repeat(64)}`);
+  run(root, [
+    'state', 'patch', '--field', 'discovered_items', '--value', JSON.stringify(items),
+    '--owner', runId, '--generation', '1',
+  ]);
+
+  const stdout = run(root, ['state', 'get']);
+  assert.ok(Buffer.byteLength(stdout, 'utf8') > 131_072);
+  assert.deepEqual(JSON.parse(stdout).discovered_items, items);
+});
+
 test('state patch writes whitelisted field with valid fence', () => {
   const { root, runId } = seed();
   run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '["a","b"]', '--owner', runId, '--generation', '1']);
