@@ -69,6 +69,22 @@ function boundedDirectoryNames(path, maxEntries) {
   }
 }
 
+function boundedLoopInventory(root, runNames) {
+  for (const runId of runNames.filter(safeCurrentRunId)) {
+    const runPath = join(root, '.deep-loop', 'runs', runId);
+    if (canonicalExactDirectory(runPath) !== runPath) return false;
+    const loopPath = join(runPath, 'loop.json');
+    if (!exactRegularFile(loopPath)) return false;
+    try {
+      const size = statSync(loopPath, { bigint: true }).size;
+      if (size < 1n || size > BigInt(MAX_POSTCOMPACT_LOOP_BYTES)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 function containedWorktreeBase(canonicalCwd) {
   let current = canonicalCwd;
   while (true) {
@@ -148,8 +164,9 @@ function observationRequest(root, cwd, resolveContextFn = resolveRunContext) {
   const canonicalCwd = canonicalExactDirectory(cwd);
   if (canonicalCwd === null) return null;
   const runsPath = join(root, '.deep-loop', 'runs');
-  if (canonicalExactDirectory(runsPath) !== runsPath
-    || boundedDirectoryNames(runsPath, MAX_POSTCOMPACT_RUN_ENTRIES) === null) return null;
+  if (canonicalExactDirectory(runsPath) !== runsPath) return null;
+  const runNames = boundedDirectoryNames(runsPath, MAX_POSTCOMPACT_RUN_ENTRIES);
+  if (runNames === null || !boundedLoopInventory(root, runNames)) return null;
   const selected = resolveContextFn({
     root,
     cwd: canonicalCwd,

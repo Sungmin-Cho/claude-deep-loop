@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
@@ -380,7 +381,15 @@ test('PostCompact bounds run inventory, loop bytes, checkpoint entries, and obse
 
   const loopFixture = seed('claude');
   const loopPath = join(runDir(loopFixture.root, loopFixture.runId), 'loop.json');
-  writeFileSync(loopPath, ' '.repeat(adapter.MAX_POSTCOMPACT_LOOP_BYTES + 1));
+  const loopBytes = readFileSync(loopPath);
+  const oversizedValidLoop = Buffer.concat([
+    loopBytes,
+    Buffer.alloc(adapter.MAX_POSTCOMPACT_LOOP_BYTES + 1 - loopBytes.length, 0x20),
+  ]);
+  assert.equal(oversizedValidLoop.length, adapter.MAX_POSTCOMPACT_LOOP_BYTES + 1);
+  JSON.parse(oversizedValidLoop.toString('utf8'));
+  writeFileSync(loopPath, oversizedValidLoop);
+  writeFileSync(join(runDir(loopFixture.root, loopFixture.runId), '.loop.hash'), contentHash(oversizedValidLoop));
   const oversizedLoop = adapter.runPostCompactObserve({
     cwd: loopFixture.containedCwd,
     hook_event_name: 'PostCompact',
