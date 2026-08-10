@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { reserveHandoff } from '../scripts/lib/lease.mjs';
 import { EFFORT_LEVELS, validateEffort, validateModel, validateRuntimeProfile, setSessionProfile } from '../scripts/lib/session-profile.mjs';
 
@@ -111,7 +111,15 @@ test('setSessionProfile invalid value throws and does not mutate', () => {
 
 const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 function cli(root, args) {
-  return spawnSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+  return spawnSync('node', [CLI, ...args, '--project-root', root, '--run-id', seedRunId(root)], { encoding: 'utf8' });
+}
+
+function seedRunId(root) {
+  const ids = readdirSync(join(root, '.deep-loop', 'runs'), { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name);
+  assert.equal(ids.length, 1, 'fixture must have exactly one run');
+  return ids[0];
 }
 
 test('CLI session-profile set: exit codes', () => {
@@ -156,4 +164,109 @@ test('CLI supports --key=value form for --model/--effort (WS1 parseFlags)', () =
   const { data } = readState(root, runId);
   assert.equal(data.autonomy.session_model, 'claude-opus-4-8[1m]');
   assert.equal(data.autonomy.session_effort, 'xhigh');
+});
+
+test('CLI session-profile JSON accepts partial and complete profiles', () => {
+  const { root, runId } = seed();
+  let result = cli(root, [
+    'session-profile', 'set', '--session-profile', '{"model":"opus"}',
+    '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  result = cli(root, [
+    'session-profile', 'set', '--session-profile', '{"model":"sonnet","effort":"xhigh"}',
+    '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.session_model, 'sonnet');
+  assert.equal(data.autonomy.session_effort, 'xhigh');
+});
+
+test('CLI session-profile JSON partial update preserves model and omits it from the event', () => {
+  const { root, runId } = seed();
+  setSessionProfile(root, runId, { model: 'opus', effort: 'high', expect: expect_(runId), now: 1 });
+  const result = cli(root, [
+    'session-profile', 'set', '--session-profile', '{"effort":"low"}',
+    '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.session_model, 'opus');
+  assert.equal(data.autonomy.session_effort, 'low');
+  const events = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line)).filter(event => event.type === 'session-profile-set');
+  assert.deepEqual(events.at(-1).data, { effort: 'low' });
+});
+
+test('CLI empty JSON session profile is a lease-checked no-op', () => {
+  const { root, runId } = seed();
+  const seq = readState(root, runId).data.event_log_head.seq;
+  let result = cli(root, [
+    'session-profile', 'set', '--session-profile', '{}',
+    '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, changed: false });
+  assert.equal(readState(root, runId).data.event_log_head.seq, seq);
+
+  result = cli(root, [
+    'session-profile', 'set', '--session-profile', '{}',
+    '--owner', runId, '--generation', '2',
+  ]);
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(readState(root, runId).data.event_log_head.seq, seq);
+});
+
+test('CLI empty JSON profile does not revalidate an unchanged independently seeded pair', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-sp-codex-max-'));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', detected: {}, model: 'gpt-5.6-sol', effort: 'max',
+    now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const seq = readState(root, runId).data.event_log_head.seq;
+  const result = cli(root, [
+    'session-profile', 'set', '--session-profile', '{}',
+    '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, changed: false });
+  assert.equal(readState(root, runId).data.event_log_head.seq, seq);
+});
+
+test('CLI session-profile JSON grammar has exact usage and invalid-value classes', () => {
+  const { root, runId } = seed();
+  for (const args of [
+    ['--session-profile'],
+    ['--session-profile='],
+    ['--session-profile', ''],
+    ['--session-profile', '{}', '--model', 'opus'],
+    ['--session-profile', '{}', '--effort', 'high'],
+  ]) {
+    const result = cli(root, [
+      'session-profile', 'set', ...args, '--owner', runId, '--generation', '1',
+    ]);
+    assert.equal(result.status, 2, `${JSON.stringify(args)}: ${result.stderr}`);
+  }
+
+  for (const profile of [
+    '{', 'null', '[]', '"opus"', '{"unknown":"x"}',
+    '{"model":null}', '{"effort":1}', '{"model":""}', '{"effort":""}',
+  ]) {
+    const result = cli(root, [
+      'session-profile', 'set', '--session-profile', profile,
+      '--owner', runId, '--generation', '1',
+    ]);
+    assert.equal(result.status, 1, `${profile}: ${result.stderr}`);
+    assert.match(result.stderr, /INVALID_SESSION_PROFILE/);
+  }
+});
+
+test('bare legacy session-profile set remains NOTHING_TO_SET usage', () => {
+  const { root, runId } = seed();
+  const result = cli(root, [
+    'session-profile', 'set', '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /NOTHING_TO_SET/);
 });

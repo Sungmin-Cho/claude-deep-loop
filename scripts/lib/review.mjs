@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureLatestInsightsSet, latestInsights } from './insights.mjs';
-import { captureReconciledRunSnapshot, withReconciledMutationLock } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -424,6 +424,11 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     //    (ledger 항목의 insights_ref/insights_sha256, design/plan은 문서의 인용)과 대조하고 mismatch를
     //    criterion (a) 위반으로 판정한다(v1 바인딩 메커니즘 — 커널은 T1 ledger를 파싱하지 않는다).
     const li = latestInsights(captureLatestInsightsSet(root));
+    if (li?.ok === false) {
+      const kind = typeof li.kind === 'string' ? li.kind : 'insights-unavailable';
+      const phase = typeof li.phase === 'string' ? li.phase : 'unknown';
+      throw new Error(`INSIGHTS_UNAVAILABLE: ${kind} phase=${phase}`);
+    }
     evidence = li ? {
       insights_path: li.path,
       emit_ulid: li.path.replace(/^.*\//, '').replace(/-insights\.json$/, ''),
@@ -721,9 +726,9 @@ export function importReviewOutcome(root, runId, options = {}, internal = {}) {
     runtime,
     snapshot,
   });
-  // Successful publication no longer needs its retry marker: retire it before returning so a
-  // caller's subsequent fenced mutation cannot race a still-visible committed predecessor.
-  withReconciledMutationLock(root, runId, () => {});
+  // Keep the committed publication journal for the next canonical mutation gateway to reconcile
+  // and retire under its own lock. A second cleanup lock here can outlive the bounded importer
+  // after the proof has already committed, leaving a dead-owner lock that masks successful review.
   return result;
 }
 

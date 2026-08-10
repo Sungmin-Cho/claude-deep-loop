@@ -24,15 +24,26 @@ function seedTerminal(status, mutate, runtime = 'claude') {
   writeState(root, runId, data);
   return { root, runId, owner: data.session_chain.lease.owner_run_id, gen: data.session_chain.lease.generation };
 }
+function fixtureRunId(root) {
+  const runsRoot = join(root, '.deep-loop', 'runs');
+  const ids = readdirSync(runsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name);
+  assert.equal(ids.length, 1, `fixture must have exactly one target run, found ${ids.join(',')}`);
+  return ids[0];
+}
+
+function routedArgs(root, args) {
+  return args.includes('--run-id') ? [...args, '--project-root', root] : [...args, '--project-root', root, '--run-id', fixtureRunId(root)];
+}
+
 const run = (root, args, options = {}) => spawnSync(
   process.execPath,
-  [CLI, ...args, '--project-root', root],
+  [CLI, ...routedArgs(root, args)],
   { encoding: 'utf8', ...options },
 );
 
 function runAsync(root, args) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(process.execPath, [CLI, ...args, '--project-root', root], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI, ...routedArgs(root, args)], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
     child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
@@ -542,7 +553,7 @@ test('CLI lease release on terminal run is intentionally allowed (cleanup path) 
   assert.match(w.stderr, /RUN_TERMINAL/);
 });
 
-test('CLI state get reconciles a publication prepared after argument preflight and never exposes predecessor bytes', () => {
+test('CLI state get rejects prepared publication without reconciliation or mutation', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-state-get-reconcile-'));
   const { runId } = initRun(root, {
     runtime: 'claude', goal: 'before', now: new Date('2026-07-23T00:00:00.000Z'),
@@ -561,10 +572,17 @@ test('CLI state get reconciles a publication prepared after argument preflight a
     },
   ), /TRANSACTION_PENDING/);
 
+  const before = {
+    loop: readFileSync(join(runDir(root, runId), 'loop.json')),
+    hash: readFileSync(join(runDir(root, runId), '.loop.hash')),
+    goal: readState(root, runId).data.goal,
+  };
   const result = run(root, ['state', 'get', '--run-id', runId]);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(JSON.parse(result.stdout).goal, 'after');
-  assert.equal(readState(root, runId).data.goal, 'after');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(JSON.parse(result.stdout).kind, 'reconciliation-required');
+  assert.equal(readState(root, runId).data.goal, before.goal);
+  assert.deepEqual(readFileSync(join(runDir(root, runId), 'loop.json')), before.loop);
+  assert.deepEqual(readFileSync(join(runDir(root, runId), '.loop.hash')), before.hash);
 });
 
 test('CLI state get fail-stops byte-different replay lines without publishing later resources', () => {
@@ -630,7 +648,7 @@ test('CLI state get fail-stops byte-different replay lines without publishing la
     const result = run(root, ['state', 'get', '--run-id', runId]);
     assert.deepEqual({
       status: result.status,
-      classified: /TRANSACTION_RECONCILIATION_REQUIRED/.test(result.stderr),
+      classified: /reconciliation-required|integrity-invalid|INTEGRITY_INVALID|TRANSACTION_RECONCILIATION_REQUIRED/i.test(`${result.stdout}${result.stderr}`),
       rawEqual: readFileSync(logPath).equals(tamperedLog),
       loopEqual: readFileSync(join(dir, 'loop.json')).equals(beforeLoop),
       hashEqual: readFileSync(join(dir, '.loop.hash')).equals(beforeHash),

@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -10,8 +19,35 @@ import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
-function run(root, args) { return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); }
+const MUTATING = new Set([
+  'state patch', 'budget record', 'budget extend', 'episode new', 'episode record', 'episode abandon',
+  'review dispatch', 'review record', 'review import', 'workstream new', 'workstream set',
+  'workstream terminal', 'checkpoint emit', 'checkpoint observe', 'checkpoint restore',
+  'lease acquire', 'lease release', 'comprehension ack',
+  'breaker reset', 'finish',
+]);
+const EXACT_READS = new Set([
+  'next-action', 'tick', 'state get', 'path resolve', 'lease check', 'budget check',
+  'comprehension status', 'breaker check', 'checkpoint inspect', 'root diagnose',
+]);
+function run(root, args) {
+  const first = args[1] && !args[1].startsWith('--') ? args[1] : null;
+  const key = args[0] === 'finish' ? 'finish' : first ? `${args[0]} ${first}` : args[0];
+  let effective = args;
+  if ((MUTATING.has(key) || EXACT_READS.has(key)) && !args.some(arg => arg === '--run-id' || arg.startsWith('--run-id='))) {
+    const currentPath = join(root, '.deep-loop', 'current');
+    if (existsSync(currentPath)) effective = [...args, '--run-id', readFileSync(currentPath, 'utf8').trim()];
+  }
+  return execFileSync('node', [CLI, ...effective, '--project-root', root], { encoding: 'utf8' });
+}
 function runFail(root, args) { try { run(root, args); return 0; } catch (e) { return e.status; } }
+function runResult(root, args) {
+  try {
+    return { status: 0, stdout: execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }), stderr: '' };
+  } catch (e) {
+    return { status: e.status, stdout: e.stdout?.toString() || '', stderr: e.stderr?.toString() || '' };
+  }
+}
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-sf-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
@@ -34,6 +70,114 @@ function seedMigratedLegacy() {
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
   return seeded;
 }
+
+test('all mutating routes reject missing, value-less, empty, and duplicate run-id before current access', () => {
+  const { root } = seed();
+  initRun(root, { runtime: 'claude', goal: 'b', protocol: 'deep-work', now: new Date('2026-06-24T00:00:01Z') });
+  const routes = [
+    ['root', 'recovery', 'acquire'], ['root', 'rebind'], ['root', 'recover'],
+    ['runtime-executable', 'approve'], ['launcher-executable', 'approve'],
+    ['checkpoint', 'emit'], ['checkpoint', 'observe'], ['checkpoint', 'restore'],
+    ['lease', 'acquire'], ['lease', 'release'],
+    ['workstream', 'new'], ['workstream', 'set'], ['workstream', 'terminal'],
+    ['episode', 'new'], ['episode', 'record'], ['episode', 'abandon'],
+    ['review', 'dispatch'], ['review', 'record'], ['review', 'import'],
+    ['handoff', 'emit'], ['respawn'], ['state', 'patch'], ['pause'], ['recover'],
+    ['recovery', 'acquire'], ['budget', 'record'], ['budget', 'extend'],
+    ['comprehension', 'ack'], ['breaker', 'reset'], ['insights', 'emit'],
+    ['spawn-style', 'offer-desktop'], ['spawn-style', 'confirm-desktop'],
+    ['spawn-style', 'decline-desktop'], ['spawn-style', 'reset-desktop'],
+    ['attended-launch', 'approve'], ['attended-launch', 'revoke'],
+    ['session-profile', 'set'], ['detect-terminal'], ['finish'],
+  ];
+  const expectedInventory = routes.map(route => route[0] === 'root' ? route.join(' ') : route.length > 1 ? route.slice(0, 2).join(' ') : route[0]);
+  const source = readFileSync(join(process.cwd(), 'scripts', 'deep-loop.mjs'), 'utf8');
+  const inventoryStart = source.indexOf('export const MUTATING_ROUTE_INVENTORY');
+  const inventoryEnd = source.indexOf(']);', inventoryStart);
+  const productionInventory = [...source.slice(inventoryStart, inventoryEnd).matchAll(/'([^']+)'/g)].map(match => match[1]);
+  assert.deepEqual(productionInventory, expectedInventory);
+  const durableTree = runId => {
+    const base = join(root, '.deep-loop', 'runs', runId);
+    const result = {};
+    const visit = rel => {
+      const dir = join(base, rel);
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const child = rel ? join(rel, entry.name) : entry.name;
+        if (entry.isDirectory()) visit(child);
+        else result[child] = readFileSync(join(base, child));
+      }
+    };
+    visit('');
+    return result;
+  };
+  const ids = readdirSync(join(root, '.deep-loop', 'runs')).sort();
+  const beforeTrees = Object.fromEntries(ids.map(id => [id, durableTree(id)]));
+  for (const route of routes) {
+    assert.equal(runResult(root, route).status, 2, route.join(' '));
+    assert.equal(runResult(root, [...route, '--run-id']).status, 2, `${route.join(' ')} value-less`);
+    assert.equal(runResult(root, [...route, '--run-id=']).status, 2, `${route.join(' ')} empty`);
+    assert.equal(runResult(root, [...route, '--run-id', 'A', '--run-id', 'B']).status, 2, `${route.join(' ')} duplicate`);
+  }
+  assert.deepEqual(Object.fromEntries(ids.map(id => [id, durableTree(id)])), beforeTrees);
+});
+
+test('exact-read handlers do not resolve the ambient current pointer before their verified branch', () => {
+  const source = readFileSync(join(process.cwd(), 'scripts', 'deep-loop.mjs'), 'utf8');
+  for (const [handler, verb] of [
+    ['lease', 'check'], ['state', 'get'], ['budget', 'check'],
+    ['comprehension', 'status'], ['breaker', 'check'],
+  ]) {
+    const start = source.indexOf(`  ${handler}: async`);
+    const end = source.indexOf('\n  },', start);
+    assert.ok(start >= 0 && end > start, `${handler} handler must be present`);
+    const body = source.slice(start, end);
+    const branch = body.indexOf(`if (verb === '${verb}')`);
+    assert.ok(branch >= 0, `${handler} exact branch must be present`);
+    assert.equal(body.slice(0, branch).includes('runIdOf(root, f)'), false, `${handler} reads current too early`);
+  }
+});
+
+test('explicit exact reads succeed without opening an unreadable current pointer', () => {
+  const { root, runId } = seed();
+  // A directory at the pointer path makes any accidental readFileSync(current)
+  // fail deterministically while the explicit run remains fully readable.
+  unlinkSync(join(root, '.deep-loop', 'current'));
+  mkdirSync(join(root, '.deep-loop', 'current'));
+  const result = runResult(root, ['state', 'get', '--run-id', runId]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).run_id, runId);
+});
+
+test('handoff emit and checkpoint restore missing identity preserve both run vectors', () => {
+  const { root } = seed();
+  initRun(root, { runtime: 'claude', goal: 'b', protocol: 'deep-work', now: new Date('2026-06-24T00:00:01Z') });
+  const vector = runId => ['loop.json', '.loop.hash']
+    .map(name => readFileSync(join(root, '.deep-loop', 'runs', runId, name), 'utf8'));
+  const before = readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim();
+  const ids = readdirSync(join(root, '.deep-loop', 'runs')).sort();
+  const beforeVectors = Object.fromEntries(ids.map(id => [id, vector(id)]));
+  for (const args of [['handoff', 'emit'], ['checkpoint', 'restore']]) {
+    assert.equal(runResult(root, args).status, 2, args.join(' '));
+  }
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim(), before);
+  assert.deepEqual(Object.fromEntries(ids.map(id => [id, vector(id)])), beforeVectors);
+});
+
+test('run resolve projects selection diagnostics without snapshots or bytes', () => {
+  const { root, runId: a } = seed();
+  const { runId: b } = initRun(root, { runtime: 'claude', goal: 'b', protocol: 'deep-work', now: new Date('2026-06-24T00:00:01Z') });
+  const result = runBoth(root, ['run', 'resolve', '--run-id', a, '--purpose', 'cli-read']);
+  assert.equal(result.code, 0, result.err);
+  const output = JSON.parse(result.out);
+  assert.equal(output.run_id, a);
+  assert.equal(output.source, 'explicit');
+  assert.equal(output.ok, true);
+  assert.equal(output.current, undefined);
+  assert.equal(output.snapshot, undefined);
+  assert.equal(output.vector, undefined);
+  assert.equal(output.bytes, undefined);
+  assert.notEqual(output.run_id, b);
+});
 
 // Codex r1 should-fix-2: spec §6 의 4-verb 계약을 CLI 가 노출해야 한다 (dispatch 만 X).
 test('adapter resolve returns a normalized 4-verb descriptor', () => {
@@ -235,7 +379,7 @@ test('handoff boundary-event CLI spelling is strict base10 seq without leading z
     ['1:not-a-checksum', 1],
   ]) {
     const { root, runId } = seed();
-    const args = ['handoff', 'emit', '--owner', runId, '--generation', '1', '--boundary-event'];
+    const args = ['handoff', 'emit', '--run-id', runId, '--owner', runId, '--generation', '1', '--boundary-event'];
     if (value !== null) args.push(value);
     const result = runBoth(root, args);
     assert.equal(result.code, expectedCode, `${value}: ${result.err}`);
@@ -366,6 +510,7 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
 
   const emitted = runBoth(root, [
     'checkpoint', 'emit',
+    '--run-id', runId,
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
@@ -376,12 +521,13 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
   assert.equal(Object.hasOwn(checkpoint, 'path'), false);
   assert.equal(emitted.out.includes(root), false);
 
-  const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
-  assert.equal(inspected.code, 0, inspected.err);
+  const inspected = runBoth(root, ['checkpoint', 'inspect', '--run-id', runId, '--json']);
+  assert.equal(inspected.code, 0, `${inspected.err}\n${inspected.out}`);
   assert.equal(JSON.parse(inspected.out).checkpoint_rel, checkpoint.checkpoint_rel);
 
   const restored = runBoth(root, [
     'checkpoint', 'restore',
+    '--run-id', runId,
     '--checkpoint', checkpoint.checkpoint_rel,
     '--owner', runId,
     '--generation', '1',
@@ -430,7 +576,7 @@ test('checkpoint observe accepts only bounded trusted PostCompact stdin and insp
     recorded: false, supplied: true, matched: false,
   });
   const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
-  assert.equal(inspected.code, 0, inspected.err);
+  assert.equal(inspected.code, 0, `${inspected.err}\n${inspected.out}`);
   assert.deepEqual(JSON.parse(inspected.out).provider_evidence, {
     recorded: false, supplied: true, matched: false,
   });
@@ -486,25 +632,26 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
   bindCheckpointAffinity(root, runId);
   for (const args of [
     ['checkpoint', 'emit', '--owner', runId, '--generation', '1'],
-    ['checkpoint', 'inspect'],
+    ['checkpoint', 'inspect', '--run-id', runId],
     ['checkpoint', 'restore', '--checkpoint', 'checkpoints/x-compact.json',
       '--owner', runId, '--generation', '1', '--runtime', 'claude'],
   ]) {
     assert.equal(runBoth(root, args).code, 2, args.join(' '));
   }
   for (const args of [
-    ['checkpoint', 'emit', '--runtime', 'claude'],
-    ['checkpoint', 'emit', '--owner', runId, '--runtime', 'claude'],
-    ['checkpoint', 'emit', '--owner', runId, '--generation', 'zero', '--runtime', 'claude'],
-    ['checkpoint', 'emit', '--owner', runId, '--owner', runId,
+    ['checkpoint', 'emit', '--run-id', runId, '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--run-id', runId, '--owner', runId, '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--run-id', runId, '--owner', runId, '--generation', 'zero', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--run-id', runId, '--owner', runId, '--owner', runId,
       '--generation', '1', '--runtime', 'claude'],
-    ['checkpoint', 'emit', '--owner', runId,
+    ['checkpoint', 'emit', '--run-id', runId, '--owner', runId,
       '--generation', '1', '--generation', '1', '--runtime', 'claude'],
   ]) {
     assert.equal(runBoth(root, args).code, 3, args.join(' '));
   }
   assert.equal(runBoth(root, [
     'checkpoint', 'emit',
+    '--run-id', runId,
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
@@ -512,18 +659,21 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
   ]).code, 2);
   assert.equal(runBoth(root, [
     'checkpoint', 'emit',
+    '--run-id', runId,
     '--owner', runId,
     '--generation', '9',
     '--runtime', 'claude',
   ]).code, 3);
   assert.equal(runBoth(root, [
     'checkpoint', 'emit',
+    '--run-id', runId,
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'invalid',
   ]).code, 1);
   assert.equal(runBoth(root, [
     'checkpoint', 'restore',
+    '--run-id', runId,
     '--checkpoint', '../outside.json',
     '--owner', runId,
     '--generation', '1',
@@ -615,11 +765,12 @@ test('checkpoint verbs reject explicit-empty and duplicate-empty project roots a
   const verbs = [
     [
       'checkpoint', 'emit',
+      '--run-id', runId,
       '--owner', runId,
       '--generation', '1',
       '--runtime', 'claude',
     ],
-    ['checkpoint', 'inspect', '--json'],
+    ['checkpoint', 'inspect', '--run-id', runId, '--json'],
     [
       'checkpoint', 'restore',
       '--checkpoint', emitted.checkpoint_rel,
@@ -649,6 +800,7 @@ test('checkpoint CLI cannot invoke the trusted legacy compatibility emitter', ()
   const { root, runId } = seedMigratedLegacy();
   const active = runBoth(root, [
     'checkpoint', 'emit',
+    '--run-id', runId,
     '--owner', runId,
     '--generation', '1',
     '--runtime', 'claude',
@@ -658,6 +810,7 @@ test('checkpoint CLI cannot invoke the trusted legacy compatibility emitter', ()
   assert.equal(
     runBoth(root, [
       'checkpoint', 'emit',
+      '--run-id', runId,
       '--owner', runId,
       '--generation', '9',
       '--runtime', 'claude',
@@ -667,6 +820,7 @@ test('checkpoint CLI cannot invoke the trusted legacy compatibility emitter', ()
   assert.equal(
     runBoth(root, [
       'checkpoint', 'emit',
+      '--run-id', runId,
       '--owner', runId,
       '--generation', '1',
       '--runtime', 'codex',
@@ -731,9 +885,17 @@ test('review dispatch missing --point exits 2', () => {
 });
 
 // ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
-import { mkdirSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 function runBoth(root, args, { env = process.env, input } = {}) {
-  try { const out = execFileSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8', env, input }); return { out: out.trim(), code: 0, err: '' }; }
+  const first = args[1] && !args[1].startsWith('--') ? args[1] : null;
+  const key = args[0] === 'finish' ? 'finish' : first ? `${args[0]} ${first}` : args[0];
+  let effective = args;
+  if ((MUTATING.has(key) || EXACT_READS.has(key))
+    && !args.some(arg => arg === '--run-id' || arg.startsWith('--run-id='))) {
+    const currentPath = join(root, '.deep-loop', 'current');
+    if (existsSync(currentPath)) effective = [...args, '--run-id', readFileSync(currentPath, 'utf8').trim()];
+  }
+  try { const out = execFileSync(process.execPath, [CLI, ...effective, '--project-root', root], { encoding: 'utf8', env, input }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
 }
 function runRaw(root, args) {
@@ -745,21 +907,20 @@ function runRaw(root, args) {
   }
 }
 
-test('A1: state get with no current pointer → null, exit 0, no stacktrace', () => {
+test('A1: state get with no current pointer requires explicit identity', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
   const r = runBoth(root, ['state', 'get', '--field', 'status']);
-  assert.equal(r.out, 'null');
-  assert.equal(r.code, 0);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /exact reads require/);
   assert.ok(!/\bat .*:\d+:\d+/.test(r.err), 'no stacktrace in stderr');
 });
 
-test('A1: dangling current (run dir absent) → null, exit 0', () => {
+test('A1: dangling current does not authorize an exact read', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
   mkdirSync(join(root, '.deep-loop'), { recursive: true });
   writeFileSync(join(root, '.deep-loop', 'current'), '01JABCNOTAREALRUN\n');
-  const r = runBoth(root, ['state', 'get', '--field', 'status']);
-  assert.equal(r.out, 'null');
-  assert.equal(r.code, 0);
+  const r = runResult(root, ['state', 'get', '--field', 'status']);
+  assert.equal(r.status, 2);
 });
 
 test('A1: partial state loss (run dir present, loop.json gone) → STATE_MISSING, exit≠0', () => {
@@ -769,9 +930,9 @@ test('A1: partial state loss (run dir present, loop.json gone) → STATE_MISSING
   mkdirSync(rd, { recursive: true });
   writeFileSync(join(rd, 'event-log.jsonl'), '{}\n');   // run dir + artifact exist; loop.json does NOT
   writeFileSync(join(root, '.deep-loop', 'current'), rid + '\n');
-  const r = runBoth(root, ['state', 'get', '--field', 'status']);
+  const r = runBoth(root, ['state', 'get', '--run-id', rid, '--field', 'status']);
   assert.notEqual(r.code, 0);
-  assert.match(r.err, /STATE_MISSING/);
+  assert.match(`${r.err}${r.out}`, /STATE_MISSING|integrity-invalid|reconciliation-required/);
 });
 
 test('A1: explicit --run-id miss → fail closed (not null)', () => {
@@ -789,7 +950,7 @@ test('A1: corrupt loop.json (bad JSON) → fail closed (not null)', () => {
   writeFileSync(join(rd, 'loop.json'), '{ not json');
   writeFileSync(join(rd, '.loop.hash'), 'whatever');
   writeFileSync(join(root, '.deep-loop', 'current'), rid + '\n');
-  const r = runBoth(root, ['state', 'get', '--field', 'status']);
+  const r = runBoth(root, ['state', 'get', '--run-id', rid, '--field', 'status']);
   assert.notEqual(r.code, 0);
   assert.notEqual(r.out, 'null');
 });
@@ -798,12 +959,13 @@ test('A1: state patch with no run → MISSING_RUN_ID, exit 2', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
   const r = runBoth(root, ['state', 'patch', '--field', 'discovered_items', '--value', '[]', '--owner', 'x', '--generation', '1']);
   assert.equal(r.code, 2);
-  assert.match(r.err, /MISSING_RUN_ID/);
+  assert.match(r.err, /valued --run-id/);
 });
 
 // #4: finish --status stopped is a human-only bypass — the CLI fast-fails (exit 2) without --confirm,
 // mirroring abandon/recover/breaker-reset. completed is unaffected.
 test('finish --status stopped without --confirm exits 2 (#4)', () => {
   const { root, runId } = seed();
-  assert.equal(runFail(root, ['finish', '--status', 'stopped', '--proof', '{"human_reason":"x"}', '--owner', runId, '--generation', '1']), 2);
+  const result = runBoth(root, ['finish', '--status', 'stopped', '--proof', '{"human_reason":"x"}', '--owner', runId, '--generation', '1', '--run-id', runId]);
+  assert.equal(result.code, 2);
 });

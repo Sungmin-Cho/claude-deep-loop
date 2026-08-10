@@ -248,7 +248,7 @@ test('pause CLI: success exits 0, run is paused', () => {
   const { root, runId } = seed();
   mkdirSync(join(root, '.deep-loop'), { recursive: true });
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
-  execFileSync('node', [CLI, 'pause', '--owner', OWNER, '--generation', String(GEN), '--reason', 'test-cli-pause', '--project-root', root], { encoding: 'utf8' });
+  execFileSync('node', [CLI, 'pause', '--owner', OWNER, '--generation', String(GEN), '--reason', 'test-cli-pause', '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
   const { data } = readState(root, runId);
   assert.equal(data.status, 'paused');
   assert.equal(data.pause_reason, 'test-cli-pause');
@@ -262,7 +262,7 @@ test('pause CLI: wrong generation exits 3, status unchanged', () => {
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'pause', '--owner', OWNER, '--generation', '99', '--reason', 'x', '--project-root', root], { encoding: 'utf8' });
+    execFileSync('node', [CLI, 'pause', '--owner', OWNER, '--generation', '99', '--reason', 'x', '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
   } catch (e) { code = e.status; }
   assert.equal(code, 3, 'wrong generation must exit 3');
   assert.equal(readState(root, runId).data.status, 'running', 'status must be unchanged');
@@ -276,7 +276,7 @@ test('pause CLI: missing --reason exits 2', () => {
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'pause', '--owner', OWNER, '--generation', String(GEN), '--project-root', root], { encoding: 'utf8' });
+    execFileSync('node', [CLI, 'pause', '--owner', OWNER, '--generation', String(GEN), '--project-root', root, '--run-id', runId], { encoding: 'utf8' });
   } catch (e) { code = e.status; }
   assert.equal(code, 2, 'missing --reason must exit 2');
 });
@@ -319,8 +319,9 @@ test('pauseRun terminal guard: stopped status throws RUN_TERMINAL, no state chan
 });
 
 function runCliStatus(args) {
+  const routed = args.includes('--run-id') ? args : [...args, '--run-id', OWNER];
   try {
-    execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('node', [CLI, ...routed], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return 0;
   } catch (error) {
     return error.status;

@@ -41,9 +41,10 @@ export function validateRuntimeProfile(runtime, { model = null, effort = null } 
 // so we only DECIDE inside the lock and, if a write is needed, appendAnchored AFTER releasing it; appendAnchored's
 // own in-lock preCheck re-fences the write, so a concurrent lease change between the two locks can never cause
 // an unfenced write — the worst case is one harmless redundant event.
-export function setSessionProfile(root, runId, { model, effort, expect, now = Date.now() } = {}) {
+export function setSessionProfile(root, runId, { model, effort, expect, now = Date.now(), allowEmpty = false } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: setSessionProfile');
-  if (model == null && effort == null) throw new Error('NOTHING_TO_SET: setSessionProfile');
+  const empty = model == null && effort == null;
+  if (empty && !allowEmpty) throw new Error('NOTHING_TO_SET: setSessionProfile');
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
 
@@ -51,6 +52,7 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
   withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lc = leaseCheck(data, { owner: expect.owner, generation: expect.generation, intent: 'lease' });
     if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);   // in-lock authoritative fence (even for no-op)
+    if (empty) return;
     validateRuntimeProfile(sessionRuntime(data), {
       model: model ?? data.autonomy?.session_model ?? null,
       effort: effort ?? data.autonomy?.session_effort ?? null,

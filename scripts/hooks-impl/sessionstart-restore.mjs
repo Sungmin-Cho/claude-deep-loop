@@ -11,12 +11,13 @@ import {
 import { join, relative, resolve, sep } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import {
-  captureCheckpointSet,
+  captureVerifiedCheckpointSet,
   inspectCompactForSessionStart,
   selectCheckpoint,
 } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
+import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
 
 const CAP = 3072;
 export const MAX_COMPACT_CAPSULE_WIRE_BYTES = 2048;
@@ -215,6 +216,23 @@ function strictMissingContext(runtime) {
   return clamp(`deep-loop checkpoint-unavailable: run ${statusCommand} for bounded diagnostics; no restore was authorized.`);
 }
 
+function routingDiagnostic(selection) {
+  if (!selection || selection.kind === 'none') return null;
+  return formatBoundedRoutingDiagnostic({
+    kind: selection.kind,
+    reason: selection.reason,
+    ...(selection.errors && typeof selection.errors === 'object' && !Array.isArray(selection.errors)
+      ? { errors: selection.errors } : {}),
+    ...(selection.candidates ? { candidates: selection.candidates } : {}),
+    ...(selection.total !== undefined ? { total: selection.total } : {}),
+    ...(selection.max_run_ids !== undefined ? { max_run_ids: selection.max_run_ids } : {}),
+    ...(selection.deadline_ms !== undefined ? { deadline_ms: selection.deadline_ms } : {}),
+    ...(selection.observed_count !== undefined ? { observed_count: selection.observed_count } : {}),
+    ...(selection.total_is_lower_bound !== undefined
+      ? { total_is_lower_bound: selection.total_is_lower_bound } : {}),
+  });
+}
+
 export function resolveSessionStartProjectRoot(cwd, { expectedRoot } = {}) {
   try {
     if (typeof cwd !== 'string' || cwd.length === 0 || resolve(cwd) !== cwd) return null;
@@ -261,12 +279,31 @@ export function runSessionStartRestore(input = {}, {
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
   inspectCompact = inspectCompactForSessionStart,
   runtimeHint = 'claude',
+  resolveContextFn = resolveRunContext,
+  captureVerifiedCheckpointSetFn = captureVerifiedCheckpointSet,
 } = {}) {
-  if (input.source !== 'compact') {
+  if (Object.hasOwn(input, 'source') && input.source !== 'compact') {
     return { ok: true, branch: 'source-other', additionalContext: null };
   }
-  const runId = resolveSessionStartRunId(root, cwd);
-  if (!runId) return { ok: true, branch: 'no-run', additionalContext: null };
+  const selection = resolveContextFn({
+    root,
+    cwd: typeof input.cwd === 'string' ? input.cwd : cwd,
+    purpose: 'hook-restore',
+    nowFn: () => (now instanceof Date ? now.getTime() : now),
+  });
+  if (!selection?.ok || selection.kind !== 'selected') {
+    const branch = selection?.reason === 'no-runs' ? 'no-run'
+      : selection?.reason === 'run-set-integrity' ? 'unreadable'
+        : selection?.reason || selection?.kind || 'unreadable';
+    const diagnostic = routingDiagnostic(selection);
+    return {
+      ok: true,
+      branch,
+      ...(diagnostic ? { diagnostic } : {}),
+      additionalContext: null,
+    };
+  }
+  const runId = selection.runId;
 
   let hostSessionIdentity;
   try { hostSessionIdentity = hostSessionIdentityInput(input); } catch {
@@ -319,15 +356,7 @@ export function runSessionStartRestore(input = {}, {
       : { ok: true, branch: inspected.phase, additionalContext };
   }
 
-  let loop;
-  let hash;
-  let checkpointSet;
-  try {
-    checkpointSet = captureCheckpointSet(root, runId);
-    ({ data: loop, hash } = checkpointSet.snapshot);
-  } catch {
-    return { ok: true, branch: 'unreadable', additionalContext: null };
-  }
+  const { data: loop, hash } = selection.snapshot;
 
   if (['completed', 'stopped', 'paused'].includes(loop.status)) {
     return { ok: true, branch: 'terminal-or-paused', additionalContext: null };
@@ -370,6 +399,19 @@ export function runSessionStartRestore(input = {}, {
     };
   }
 
+  const checkpointSet = captureVerifiedCheckpointSetFn({
+    root,
+    runId,
+    snapshot: selection.snapshot,
+    now,
+  });
+  if (!checkpointSet?.ok) {
+    return {
+      ok: true,
+      branch: checkpointSet?.kind || 'integrity-invalid',
+      additionalContext: null,
+    };
+  }
   const checkpoint = selectCheckpoint(checkpointSet, {
     owner: lease.owner_run_id,
     generation: lease.generation,

@@ -22,16 +22,18 @@ user-invocable: true
 
 `/deep-loop "<goal>"` — deep-suite 전체를 아우르는 내구성 있는 크로스-플러그인 오케스트레이션 run을 시작한다. loop engineering 진입점.
 
-## 단계 1: 기존 Run 감지
+## 단계 1: 기존 Run 감지와 명시적 identity 선택
 
-먼저 진행 중인 run이 있는지 확인한다:
+프로젝트에는 여러 run이 동시에 존재할 수 있다. 먼저 bounded verified 목록을 확인하고, 사용자가 선택한 불변 logical id를 이후 명령에 명시한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" run list --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-- 결과가 `running`이면 `/deep-loop-status`로 현황을 보여주고 이어가기 또는 새 run 시작 중 선택을 요청한다.
-- `null` 또는 파일 없음이면 새 run을 시작한다.
+`current` 포인터는 마지막으로 만들어진 run을 알려주는 **hint**일 뿐이며 권위, 소유권 증명, 후보 tie-breaker가 아니다. 목록에 없는 run이나 current로의 암묵적 fallback은 선택하지 않는다. 결과가 `running`이면 `/deep-loop-status`로 해당 `<run_id>`의 현황을 보여주고 이어가기 또는 새 run 시작 중 선택을 요청한다. `null` 또는 파일 없음이면 새 run을 시작한다.
+
+동시 run마다 worktree 경로와 branch를 서로 다르게 사용한다. worktree를 먼저 만들고 `workstream new`로 기록하는 create↔record 사이에는 좁은 TOCTOU가 아직 남아 있다. v1은 project-level reservation, claim retirement, ownership transfer를 구현하거나 보장하지 않으며, 중복 claim은 fail-closed되고 고아 정리는 proposal-only로 surface한다.
 
 ## 단계 2: Run 시작
 
@@ -113,32 +115,19 @@ cooperative subagent를 선택하면 durable reviewer enum은 `subagent-checker`
 
 respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 시 현재 세션 값을 호스트 컨텍스트에서 직접 관측한다(이 값이 durable "init seed" — 첫 handoff가 PreCompact/headless여도 fallback이 된다). Claude host가 제공하는 `CLAUDE_EFFORT`와 정확한 모델 ID는 셸에서 읽지 말고 로드된 세션 컨텍스트 값으로 사용한다. Codex도 현재 task의 모델과 effort를 같은 방식으로 사용한다.
 
-- effort가 비어 있으면 그 항목만 생략한다. 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
-- 관측된 값만 아래 `init-run`에 플래그로 덧붙인다(값 없는 `--model`/`--effort`는 커널이 usage exit 2로 거부하므로, 관측 못 한 항목은 플래그 자체를 생략한다). 무효 effort는 커널이 exit 1로 거부.
+- 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만든다. 둘 다 관측하지 못하면 `{}`다. 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
 
 ### 2-5. Run 생성 (`init-run`)
 
-현재 runtime을 실제 `claude` 또는 `codex`로 치환한다. model과 effort를 둘 다 관측했으면 다음 완전한 명령을 사용한다:
+현재 runtime을 실제 `claude` 또는 `codex`로 치환하고 다음 완전한 명령 하나를 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --effort "<session_effort>" --project-root "<canonical_project_root>"
-```
-
-model만 관측했으면 다음 완전한 명령을 사용한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --project-root "<canonical_project_root>"
-```
-
-둘 다 관측하지 못했으면 다음 완전한 명령을 사용한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --session-profile '<session_profile_json_compact>' --project-root "<canonical_project_root>"
 ```
 
 `--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.
 `<review_json_compact>` placeholder는 선택한 durable review object의 한 줄 compact JSON으로 치환한다. compact JSON 내부의 JSON double quotes(JSON 이중 따옴표)는 그대로 유지하고, 바깥 single quotes가 전체 JSON을 POSIX와 PowerShell 모두에서 하나의 argv 값으로 보존한다.
-`--model`/`--effort`는 §2-4.5에서 관측한 값(관측된 것만; effort가 비면 `--effort` 생략, 둘 다 못 하면 둘 다 생략 → 커널 기본값). 이 값이 `autonomy.session_model`/`session_effort`로 seed된다.
+`<session_profile_json_compact>`도 §2-4.5의 한 줄 compact JSON으로 치환한다. 내부 JSON double quotes(JSON 이중 따옴표)는 그대로 두고 바깥 single quotes로 argv 하나를 만든다. `{}`도 유효하며, 관측된 값은 `autonomy.session_model`/`session_effort`로 seed된다.
 init-run 반환의 `<run_id>`를 저장한다. 이 값은 descriptor/current run의 논리적(logical) loop run id이며 전체 run 수명 동안 불변(immutable)이다. 초기 lease는 init-run이 같은 ID와 generation 1로 만들지만 두 역할의 placeholder는 이후에도 구분한다: `<owner_run_id> = <run_id>`, `<generation> = 1`. 이후 모든 mutating CLI는 `--owner <owner_run_id> --generation <generation> --run-id <run_id>`를 사용하며 논리 ID를 owner 변수로 재사용하지 않는다.
 
 ### 2-5-1. Continuity 기본값
@@ -267,9 +256,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> 
 ```
 
 `--artifacts`는 필수다 — maker `done` 전이는 비어있지 않은 `expected_artifacts`와 실제 파일 존재를 요구한다.
-expected 경로는 `adapter resolve`의 `read.path`를 **변환(TRANSFORM)** 하여 도출한다: `adapter resolve`가 반환하는 `read.path`(예: `.deep-work/<task>/session-receipt.json`)는 UNPREFIXED 경로이므로 반드시 `<recorded-worktree-relative-to-root>/<adapter read.path>` 형태로 워크트리 접두(prefix)를 붙여야 한다(예: `.claude/worktrees/<ws-slug>/.deep-work/<task>/session-receipt.json`). 계획된 산출물도 동일하게 변환한다.
-
-> **artifact 경로 규칙(기록된 worktree 경로(루트 기준 상대) 접두):** 최초 episode 생성(`episode new`)의 `--artifacts`(expected)와 완료 기록(`episode record`)의 `--artifacts`(submitted)는 반드시 동일한 project root 기준 상대 경로, **기록된 worktree 경로(루트 기준 상대) 접두** 형태로 지정해야 한다 — `<recorded-worktree-relative-to-root>/path/to/file` (예: `.claude/worktrees/<ws-slug>/path/to/file` 또는 `.worktrees/<ws-slug>/path/to/file`). 두 목록이 일치하지 않으면 커널의 coverage + existence 검사가 실패한다.
+Artifact 상세 교정 규칙은 `deep-loop-workflow`의 `## 핵심 불변식`을 따른다.
 
 ## 단계 3: 완료 메시지
 

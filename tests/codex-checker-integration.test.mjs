@@ -19,6 +19,8 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
+import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 import { recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
@@ -731,19 +733,36 @@ test('nested concurrent hosts produce one claim event and one checker process', 
 test('terminal accounting race is explicit and never adopts another fence', () => {
   const f = seed();
   const deps = hostDeps(f);
+  let importedResult;
   const result = driveHeadlessRun({
     root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
     checkerImportFn: (options, bytes) => {
       const imported = deps.checkerImportFn(options, bytes);
-      const state = readState(f.root, f.runId).data;
-      state.status = 'stopped';
-      writeState(f.root, f.runId, state);
+      importedResult = imported.value;
+      finishRun(f.root, f.runId, {
+        status: 'stopped',
+        confirm: true,
+        proof: { human_reason: 'terminal accounting race fixture' },
+        fence: f.fence,
+        now: FIXED_NOW,
+      });
       return imported;
     },
   });
   assert.equal(result.action, 'checker-complete');
   assert.equal(result.recorded, false);
   assert.equal(result.accounting_reason, 'terminal');
+  const state = readState(f.root, f.runId).data;
+  assert.equal(state.status, 'stopped');
+  assert.equal(state.session_chain.lease.owner_run_id, f.fence.owner);
+  assert.equal(state.session_chain.lease.generation, f.fence.generation);
+  assert.equal(existsSync(join(runDir(f.root, f.runId), 'transactions',
+    `review-import-${importedResult.report_sha256}`)), false);
+  assert.deepEqual(verifyLog(f.root, f.runId), { ok: true, errors: [] });
+  assert.deepEqual(verifyHead(f.root, f.runId, state.event_log_head), { ok: true, errors: [] });
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'finish').length, 1);
+  assert.equal(events(f.root, f.runId).some(event => event.type === 'cost'
+    && event.data?.reported_turns === 1 && event.data?.reported_tokens === 12), false);
 });
 
 test('session model or effort drift after preflight blocks before checker spawn', () => {

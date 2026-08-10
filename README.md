@@ -51,6 +51,23 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 
 > Note: `/deep-loop-workflow` is an internal non-user-invocable skill used by `/deep-loop-continue` and other skills.
 
+## Multi-run identity and worktree routing
+
+A project can contain multiple active or historical runs. Start with the bounded verified list, then choose one immutable logical id explicitly:
+
+```text
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" run list --project-root "<canonical_project_root>"
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+The `.deep-loop/current` pointer is only a last-created **hint**. It is never routing authority, ownership proof, or a tie-breaker. Mutation routes and exact reads never silently fall back to it; official automation also requires provisioned identity. The bounded resolver retains a `legacy-current` compatibility path only when the current selection resolves to one sole verified terminal run with no active runs; that run may have one or more distinct terminal claims, including nested Workstreams. Every concurrent run must use a unique worktree path and branch. The create↔record worktree flow still has a narrow TOCTOU between creation and `workstream new`; v1 does not promise project-level reservation, claim retirement, or ownership transfer. Duplicate claims fail closed and orphan cleanup remains proposal-only.
+
+For unattended execution, provision the canonical project root and immutable run id once, then pass both values on every tick:
+
+```text
+node "<absolute-deep-loop-root>/scripts/hooks-impl/drive-headless.mjs" --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
 ## Compatibility and recovery contract
 
 New runs use `workstream-session` with `spawn_style='interactive'` on Claude Code, Codex CLI, and Codex App. The active host conversation owns one bound Workstream until its exact `bound_workstream_first_terminal` event; compaction stays in that conversation, and only that first-terminal boundary may publish a normal child handoff. There is **no unattended mid-Workstream respawn**. The default continuation is interactive, and **manual resume** through `/deep-loop-resume` or `$deep-loop:deep-loop-resume` is a first-class supported path rather than an error-only fallback.
@@ -59,9 +76,9 @@ PreCompact publishes a bounded checkpoint and SessionStart with source/matcher `
 
 PostCompact accepts a bounded 256 KiB host event, projects only its trusted common fields, and supplies that bounded 4096-byte trusted payload to the fenced public `checkpoint observe` CLI; the adapter never restores or continues. An observation receipt corroborates that compaction occurred and never overrides a provider-evidence mismatch. A `prepared` checkpoint is only inspection evidence and never grants automatic restore authority. For an unattended tick inside an open bound Workstream, `next-action` preserves the normal action with no compact advice and no cap handoff. On a terminal run, `checkpoint observe` and `checkpoint restore` reject before changing durable bytes.
 
-Visible and desktop launches are never inferred from terminal detection. A human must inspect the current lease and executable diagnosis, then explicitly run `attended-launch approve --style visible --confirm ...`; desktop uses the nonce-bound `spawn-style offer-desktop ...` followed by `spawn-style confirm-desktop ...`. Budget exhaustion and a latched breaker also stop for a human: only confirmed `budget extend ...` and `breaker reset --confirm ...` recovery may resume the run. Neither approval is granted by an autonomous skill.
+Visible and desktop launches are never inferred from terminal detection. A human must inspect the selected run's lease and executable diagnosis, then explicitly run `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" attended-launch approve --style visible --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>`; desktop uses the nonce-bound `spawn-style offer-desktop ...` followed by `spawn-style confirm-desktop ...`. Budget exhaustion and a latched breaker are independent relief routes. Budget extend and breaker reset are independent relief routes: only confirmed `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" budget extend --turns <positive_turn_delta> --reason "<human_confirmed_reason>" --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>` for exhaustion or `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" breaker reset --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>` for a latched breaker may resume the run. Neither approval is granted by an autonomous skill.
 
-Lost-host recovery is likewise human-only. Preserve-pause comes first, then a confirmed affinity supersession publishes a capsule; a fresh process executes only the exact returned `recovery acquire --capsule ...` command. For a moved project, run the read-only `root diagnose --candidate-project-root ...`; only its exact returned `root rebind ...` or `root recover ...` command may change the binding, and a replacement process uses the returned `root recovery acquire --capsule ...`. `project.binding_generation` is the **root epoch**. Every state command and every **relative locator** is bound to that epoch, root digest, run id, lease owner, and lease generation. **Stale root-bound commands** are rejected by the epoch fence and are **never edited in place**; diagnose again to obtain a fresh command.
+Lost-host recovery is likewise human-only. Preserve-pause comes first, then a confirmed affinity supersession publishes a capsule; a fresh process executes only the exact returned `recovery acquire --capsule ...` command, unchanged. For a moved project, run the read-only `root diagnose --candidate-project-root ...`; after reviewing its descriptor, execute only the exact returned command unchanged (such as the returned root rebind or root recovery acquire --capsule ... command). Never synthesize, shorten, or edit a recovery command. `project.binding_generation` is the **root epoch**. Every state command and every **relative locator** is bound to that epoch, root digest, run id, lease owner, and lease generation. **Stale root-bound commands** are rejected by the epoch fence and are **never edited in place**; diagnose again to obtain a fresh command.
 
 The durable artifact inventory under `.deep-loop/runs/<run-id>/` includes:
 
@@ -98,7 +115,7 @@ no human step. The protocol is **generate → persist durably on the caller's si
 persisting after the call leaves a window where the call succeeded but the identifier is
 lost, so it is forbidden, and a caller that skips it gets no such guarantee. Retries reuse
 the value — a fresh one is a different attempt. Replay writes nothing of its own. A
-human-initiated `pause --mode preserve` revokes an already-granted attempt: replay requires
+human-initiated `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" pause --mode preserve --reason "host-session-lost" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>` revokes an already-granted attempt: replay requires
 the run to be `running`.
 
 `resume-command` grows an **acquired branch**: after consumption it still proves, read-only
@@ -155,7 +172,7 @@ The payload (`insights_schema_version` stays `1` — these are additive fields) 
 1. **proposal-only / human approval** — push, PR, merge, publish, delete, and marketplace/deep-suite sync are never executed automatically. v1 always surfaces a proposal and waits for human confirmation.
 2. **Lease fencing** — every mutating kernel CLI requires matching `--owner` (run_id) and `--generation`. Stale sessions are rejected before any state change.
 3. **Fail-closed on unmeasurable usage** — unattended (headless) sessions that cannot measure turns/tokens are rejected, not silently passed. The `drive-headless.mjs` driver enforces this.
-4. **Circuit breaker** — 3 consecutive REQUEST_CHANGES latch the breaker; a human must explicitly run `breaker reset --confirm --owner <run_id> --generation <n>` (lease-fenced, human-only) to resume. (`/deep-loop-ack` is unrelated — it reduces comprehension debt.)
+4. **Circuit breaker** — 3 consecutive REQUEST_CHANGES latch the breaker; a human must explicitly run `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" breaker reset --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>` (lease-fenced, human-only) to resume. (`/deep-loop-ack` is unrelated — it reduces comprehension debt.)
 5. **Terminal states via proof only** — episode `done`/`approved`/`rejected`, workstream `merged`/`abandoned` can only be set through verified proof artifacts, not direct state patch. **Exception: episode `abandoned` is a human-gated (`--confirm`) escape for stranded episodes, not proof-derived.**
 6. **No writes outside `.deep-loop/`** — all kernel writes go under `<project-root>/.deep-loop/`. External writes (deep-memory store, wiki) are delegated to those plugins' own skills.
 
@@ -231,13 +248,13 @@ For cron or CI use, deep-loop includes `scripts/hooks-impl/drive-headless.mjs`. 
 
 ```bash
 # POSIX shell / WSL
-DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs
+DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ```powershell
 # Native Windows PowerShell
 $env:DEEP_LOOP_UNATTENDED = '1'
-node scripts/hooks-impl/drive-headless.mjs
+node scripts/hooks-impl/drive-headless.mjs --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 For **Claude**, the headless driver parses bounded `claude -p --output-format json` output. For an approved **Codex** runtime, it uses an authenticated isolated `CODEX_HOME`, shell-free `codex exec --json`, and incremental JSONL parsing. Each path records exactly one measured turn; timeout, non-zero exit, malformed output, or unmeasurable usage **fails closed**. There is no cross-runtime fallback. The isolated Codex child disables plugins and hooks (as well as Apps and remote capabilities), so it executes the absolute resume skill workflow inline and relies on durable state plus measured process exit.

@@ -187,6 +187,22 @@ test('P2: hill-climb run dispatch succeeds after contract is materialized into t
   assert.match(req, /```json\nnull\n```/);
 });
 
+test('P2: bounded or integrity latest-insights errors fail review dispatch before checker mutation', () => {
+  const { root, runId, f } = seedRun({
+    reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb',
+  });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  mkdirSync(join(root, '.deep-loop', 'insights'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'insights', 'ZZZZZZZZZZ9999999999999999-insights.json'), '{torn');
+  const before = episodeCount(root, runId);
+  assert.throws(
+    () => dispatchReview(root, runId, {
+      point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
+    }), /INSIGHTS_UNAVAILABLE: insights-artifact-set-integrity/);
+  assert.equal(episodeCount(root, runId), before, 'structured insights failure cannot create a checker');
+});
+
 test('P2: non-hill-climb checker request has no evidence section (undefined omits it)', () => {
   const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop' });
   const ws = doneMakerOn(root, runId, f);

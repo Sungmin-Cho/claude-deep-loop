@@ -16,8 +16,8 @@ import {
   normalizePortableRelativePath,
 } from './fs-safe.mjs';
 import { nextAction } from './next-action.mjs';
-import { projectRootDigest } from './project-root.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
+import { validateSessionRuntime, sessionRuntime } from './runtime.mjs';
 import { validate } from './schema.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 import { runDir, withReconciledMutationLock } from './state.mjs';
@@ -28,6 +28,7 @@ import {
   reconcileCompactPruneTombstonesLocked,
   withFencedReconciledMutationLock,
   withVerifiedReadLock,
+  captureVerifiedRunSnapshot,
 } from './integrity.mjs';
 import {
   compactObservationRel,
@@ -41,11 +42,12 @@ import {
   STRICT_CONTEXT_DOMAIN,
   STRICT_FILE,
   STRICT_SCHEMA_VERSION,
-  validateStrictBytes as validateStrictCheckpointBytes,
   validateStrictSelf,
 } from './checkpoint-validation.mjs';
 
 const KEEP = 5;
+const LEGACY_FILE = /^[0-9A-HJKMNP-TV-Z]{26}-compact\.json$/;
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const MAX_CHECKPOINT_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_ARTIFACTS = 256;
@@ -109,6 +111,7 @@ const canonicalIso = value => typeof value === 'string'
   && Number.isFinite(new Date(value).getTime())
   && new Date(value).toISOString() === value;
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const sha256 = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const compareLexical = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 const exactKeys = (value, keys) => plainObject(value)
   && Object.keys(value).length === keys.length
@@ -178,6 +181,7 @@ function observeArtifact(root, rel) {
       state: 'present',
       sha256: contentHash(bytes),
       size: bytes.length,
+      bytes: Buffer.from(bytes),
     };
   }
   throw new Error(`CHECKPOINT_ARTIFACT_INVALID: ${normalized}`);
@@ -212,7 +216,25 @@ function affinity(loop) {
   return { scope, workstream, episode, artifacts };
 }
 
-function deriveContext(root, runId, snapshot, { now, providerEvidence }) {
+function verifiedArtifact(artifactEvidence, rel) {
+  const evidence = artifactEvidence?.[rel];
+  if (!evidence || evidence.state === 'absent') {
+    if (evidence?.state === 'absent') return { rel, state: 'absent', sha256: null, size: null };
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  if (evidence.state !== 'present' || !sha256(evidence.sha256)
+    || !Number.isSafeInteger(evidence.size) || evidence.size < 0
+    || typeof evidence.base64 !== 'string') throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  const bytes = Buffer.from(evidence.base64, 'base64');
+  if (bytes.length !== evidence.size || contentHash(bytes) !== evidence.sha256) {
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  return { rel, state: 'present', sha256: evidence.sha256, size: evidence.size };
+}
+
+function deriveContext(root, runId, snapshot, {
+  now, providerEvidence, verifiedOnly = false, artifactEvidence = null,
+}) {
   const { data: loop, hash } = snapshot;
   assertCurrentSchema(loop);
   if (loop.autonomy?.continuation_policy !== 'workstream-session') {
@@ -230,7 +252,17 @@ function deriveContext(root, runId, snapshot, { now, providerEvidence }) {
     scope: structuredClone(scope),
     workstream: structuredClone(workstream),
     current_episode: structuredClone(episode),
-    artifacts: artifacts.map(rel => observeArtifact(root, rel)),
+    artifacts: artifacts.map(rel => {
+      const evidence = verifiedOnly
+        ? verifiedArtifact(artifactEvidence, rel)
+        : observeArtifact(root, rel);
+      return {
+        rel: evidence.rel,
+        state: evidence.state,
+        sha256: evidence.sha256,
+        size: evidence.size,
+      };
+    }),
     next_action: nextAction(loop, { now, unattended: false }),
     provider_evidence: providerEvidence,
   };
@@ -254,17 +286,36 @@ function strictEnvelope(runId, context, now) {
   return { env, key };
 }
 
-function validateStrictBytes(bytes, { root, runId, key, snapshot, now, hostSessionEvidence }) {
-  return validateStrictCheckpointBytes(bytes, {
-    runId,
-    key,
-    hostSessionEvidence,
-    expectedContext: (context, generatedAt) => deriveContext(root, runId, snapshot, {
-      now: Date.parse(generatedAt),
-      providerEvidence: context.provider_evidence,
-    }),
-    freshNextAction: () => nextAction(snapshot.data, { now, unattended: false }),
+function validateStrictBytes(bytes, {
+  root, runId, key, snapshot, now, hostSessionEvidence, verifiedOnly = false, artifactEvidence = null,
+}) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_CHECKPOINT_BYTES) {
+    throw new Error('CHECKPOINT_INVALID');
+  }
+  let env;
+  try { env = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  const context = validateStrictSelf(env, { runId, key });
+  const expected = deriveContext(root, runId, snapshot, {
+    now: Date.parse(env.envelope.generated_at),
+    providerEvidence: context.provider_evidence,
+    verifiedOnly,
+    artifactEvidence,
   });
+  if (JSON.stringify(context) !== JSON.stringify(expected)) {
+    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
+  }
+  const supplied = normalizeProviderEvidence(hostSessionEvidence);
+  const providerEvidence = providerEvidenceProjection(context.provider_evidence, supplied);
+  if (providerEvidence.recorded && providerEvidence.supplied && !providerEvidence.matched) {
+    throw new Error('CHECKPOINT_EVIDENCE_MISMATCH');
+  }
+  return {
+    env,
+    context,
+    freshNextAction: nextAction(snapshot.data, { now, unattended: false }),
+    providerEvidence,
+    evidenceMatched: supplied === null ? null : context.provider_evidence !== null,
+  };
 }
 
 function captureDirectoryEntries(dir) {
@@ -711,6 +762,61 @@ function summarizeEpisode(value) {
   };
 }
 
+function descriptor(rel, key, validation) {
+  const { context, evidenceMatched, freshNextAction } = validation;
+  const result = {
+    ok: true,
+    checkpoint_rel: rel,
+    checkpoint_key: key,
+    owner_run_id: boundedDescriptorValue(context.owner_run_id),
+    generation: context.generation,
+    runtime: context.runtime,
+    scope: summarizeScope(context.scope),
+    workstream: summarizeWorkstream(context.workstream),
+    current_episode: summarizeEpisode(context.current_episode),
+    next_action: boundedDescriptorValue(freshNextAction),
+    context_sha256: contentHash(JSON.stringify(context)),
+    provider_evidence: {
+      present: context.provider_evidence !== null,
+      matched: evidenceMatched,
+    },
+  };
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_DESCRIPTOR_BYTES) {
+    result.scope = {
+      kind: boundedDescriptorValue(context.scope.kind),
+      workstream_id: boundedDescriptorValue(context.scope.workstream_id),
+      bound_at_seq: context.scope.bound_at_seq,
+    };
+    result.workstream = {
+      id: boundedDescriptorValue(context.workstream.id),
+      status: boundedDescriptorValue(context.workstream.status),
+    };
+    result.current_episode = summarizeEpisode(context.current_episode);
+    result.next_action = {
+      action: { type: boundedDescriptorValue(freshNextAction?.action?.type) },
+      next_command: boundedDescriptorValue(freshNextAction?.next_command),
+    };
+  }
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_DESCRIPTOR_BYTES) {
+    result.scope = {
+      kind: boundedDescriptorValue(context.scope.kind),
+      sha256: contentHash(JSON.stringify(context.scope)),
+    };
+    result.workstream = {
+      id: boundedDescriptorValue(context.workstream.id),
+      status: boundedDescriptorValue(context.workstream.status),
+    };
+    result.current_episode = {
+      id: boundedDescriptorValue(context.current_episode.id),
+      point: boundedDescriptorValue(context.current_episode.point),
+    };
+    result.next_action = {
+      action: { type: boundedDescriptorValue(freshNextAction?.action?.type) },
+    };
+  }
+  return result;
+}
+
 function emptyProjection(reason, providerEvidence = {
   recorded: false, supplied: false, matched: false,
 }) {
@@ -722,6 +828,18 @@ function emptyProjection(reason, providerEvidence = {
             : key === 'replay' ? 'not-applicable'
               : key === 'provider_evidence' ? structuredClone(providerEvidence)
                 : null]));
+}
+
+function frozenSafeDescriptor(value) {
+  const clone = JSON.parse(JSON.stringify(value));
+  const freeze = item => {
+    if (item && typeof item === 'object') {
+      for (const child of Object.values(item)) freeze(child);
+      Object.freeze(item);
+    }
+    return item;
+  };
+  return freeze(clone);
 }
 
 function restoreCommand(runtime) {
@@ -1106,6 +1224,221 @@ export function captureCheckpointSet(root, runId) {
   });
 }
 
+// Read-only SessionStart boundary.  This deliberately has no lock callback
+// capable of reconciliation or writing: the run snapshot is verified first,
+// then checkpoint names and bytes are projected from that exact immutable vector.
+function expectedArtifactRels(snapshot) {
+  const episode = (snapshot.data.episodes || []).find(item => item.id === snapshot.data.current_episode);
+  const rels = [...new Set([
+    ...(Array.isArray(episode?.expected_artifacts) ? episode.expected_artifacts : []),
+    ...(Array.isArray(episode?.artifacts) ? episode.artifacts : []),
+  ])].sort();
+  if (rels.some(rel => normalizePortableRelativePath(rel) !== rel)) {
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  return rels;
+}
+
+function normalizeArtifactEvidence(value, rels) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+  }
+  const normalized = Object.create(null);
+  for (const rel of rels) {
+    const evidence = value[rel];
+    if (!evidence || (evidence.state !== 'absent' && evidence.state !== 'present')) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    if (evidence.state === 'absent') {
+      normalized[rel] = Object.freeze({ rel, state: 'absent', sha256: null, size: null });
+      continue;
+    }
+    if (!sha256(evidence.sha256) || !Number.isSafeInteger(evidence.size) || evidence.size < 0) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    const bytes = typeof evidence.base64 === 'string'
+      ? Buffer.from(evidence.base64, 'base64')
+      : Buffer.isBuffer(evidence.bytes) ? Buffer.from(evidence.bytes) : null;
+    if (!bytes || bytes.length !== evidence.size || contentHash(bytes) !== evidence.sha256) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    normalized[rel] = Object.freeze({
+      rel,
+      state: 'present',
+      sha256: evidence.sha256,
+      size: evidence.size,
+      base64: bytes.toString('base64'),
+    });
+  }
+  return Object.freeze(normalized);
+}
+
+function captureArtifactEvidence(root, rels, options) {
+  const evidence = Object.create(null);
+  for (const rel of rels) {
+    const observed = (options.observeArtifactFn || observeArtifact)(root, rel);
+    if (observed.state === 'absent') {
+      evidence[rel] = Object.freeze({ rel, state: 'absent', sha256: null, size: null });
+    } else if (observed.state === 'present' && Buffer.isBuffer(observed.bytes)) {
+      const bytes = Buffer.from(observed.bytes);
+      evidence[rel] = Object.freeze({
+        rel,
+        state: 'present',
+        sha256: contentHash(bytes),
+        size: bytes.length,
+        base64: bytes.toString('base64'),
+      });
+    } else {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+    options.afterArtifactCapture?.({ rel, evidence: evidence[rel] });
+  }
+  return Object.freeze(evidence);
+}
+
+function verifiedCheckpointEntries(root, runId, snapshot) {
+  if (!Array.isArray(snapshot.vector)) throw new Error('CHECKPOINT_VECTOR_REQUIRED');
+  const seen = new Set();
+  const entries = [];
+  for (const vectorEntry of snapshot.vector) {
+    if (!Array.isArray(vectorEntry) || typeof vectorEntry[0] !== 'string'
+      || typeof vectorEntry[1] !== 'string' || typeof vectorEntry[2] !== 'string') {
+      throw new Error('CHECKPOINT_VECTOR_INVALID');
+    }
+    if (vectorEntry[0] !== runId) throw new Error('CHECKPOINT_VECTOR_FOREIGN_RUN');
+    const rel = vectorEntry[1];
+    if (seen.has(rel)) throw new Error('CHECKPOINT_VECTOR_DUPLICATE');
+    seen.add(rel);
+    if (typeof rel !== 'string' || !rel.startsWith('checkpoints/')) continue;
+    if (vectorEntry[2] !== 'file' || !vectorEntry[3] || typeof vectorEntry[3].base64 !== 'string') {
+      if (vectorEntry[2] === 'ABSENT' || vectorEntry[2] === 'directory') continue;
+      throw new Error('CHECKPOINT_VECTOR_INVALID');
+    }
+    const bytes = Buffer.from(vectorEntry[3].base64, 'base64');
+    if (bytes.length !== vectorEntry[3].size || contentHash(bytes) !== vectorEntry[3].sha256) {
+      throw new Error('CHECKPOINT_VECTOR_INVALID');
+    }
+    const name = rel.slice('checkpoints/'.length);
+    const match = name.match(STRICT_FILE);
+    const legacy = !match && LEGACY_FILE.test(name);
+    if (!match && !legacy) throw new Error('CHECKPOINT_INVALID');
+    entries.push({
+      name,
+      path: join(runDir(root, runId), rel),
+      bytes,
+      ...(match ? { key: match[1], rel } : { legacy: true }),
+    });
+  }
+  entries.sort((left, right) => right.name.localeCompare(left.name));
+  return entries;
+}
+
+export function captureVerifiedCheckpointSet(rootOrOptions, runIdArg, optionsArg = {}) {
+  const objectForm = rootOrOptions && typeof rootOrOptions === 'object' && !Array.isArray(rootOrOptions);
+  const root = objectForm ? rootOrOptions.root : rootOrOptions;
+  const runId = objectForm ? rootOrOptions.runId : runIdArg;
+  const options = objectForm ? rootOrOptions : optionsArg;
+  const capture = options.captureVerifiedRunSnapshot || captureVerifiedRunSnapshot;
+  const captured = options.snapshot === undefined
+    ? capture(root, runId, options)
+    : options.snapshot;
+  if (captured?.ok === false) {
+    return Object.freeze({
+      ok: false,
+      kind: captured.kind || 'integrity-invalid',
+      operation_id: captured.operation_id ?? null,
+      phase: captured.phase || 'run-snapshot',
+    });
+  }
+  const snapshot = captured?.snapshot || captured;
+  if (!snapshot || typeof snapshot !== 'object' || !snapshot.data
+    || snapshot.data.run_id !== runId || typeof snapshot.hash !== 'string') {
+    return Object.freeze({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' });
+  }
+  try {
+    if (canonicalProjectRoot(root) !== canonicalProjectRoot(snapshot.data.project?.root)) {
+      return Object.freeze({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' });
+    }
+  } catch {
+    return Object.freeze({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' });
+  }
+  options.afterRunSnapshotCapture?.(snapshot);
+  let artifactEvidence;
+  const checkpoints = [];
+  try {
+    const artifactRels = expectedArtifactRels(snapshot);
+    artifactEvidence = options.artifactEvidence === undefined
+      ? captureArtifactEvidence(root, artifactRels, options)
+      : normalizeArtifactEvidence(options.artifactEvidence, artifactRels);
+    for (const entry of verifiedCheckpointEntries(root, runId, snapshot)) {
+      let safeDescriptor = null;
+      let generatedAt = null;
+      if (entry.legacy) {
+        validateLegacyBytes(entry.bytes, {
+          root, runId, snapshot, artifactRels, artifactEvidence, name: entry.name,
+        });
+      } else {
+        const env = JSON.parse(entry.bytes.toString('utf8'));
+        validateStrictSelf(env, { runId, key: entry.key });
+        const validation = validateStrictBytes(entry.bytes, {
+          root,
+          runId,
+          key: entry.key,
+          snapshot,
+          now: options.now ?? Date.now(),
+          hostSessionEvidence: options.hostSessionEvidence,
+          verifiedOnly: true,
+          artifactEvidence,
+        });
+        generatedAt = validation.env.envelope.generated_at;
+        safeDescriptor = frozenSafeDescriptor(descriptor(entry.rel, entry.key, validation));
+      }
+      checkpoints.push(Object.freeze({
+        path: entry.path,
+        bytes: Buffer.from(entry.bytes),
+        ...(safeDescriptor ? {
+          rel: entry.rel,
+          key: entry.key,
+          generatedAt,
+          descriptor: safeDescriptor,
+        } : {}),
+      }));
+    }
+  } catch (error) {
+    return Object.freeze({
+      ok: false,
+      kind: 'integrity-invalid',
+      phase: 'checkpoint',
+    });
+  }
+  return Object.freeze({ ok: true, snapshot, checkpoints: Object.freeze(checkpoints) });
+}
+
+// Pure projection for read-only consumers. Every selected field is derived from
+// the immutable checkpoint bytes/validation captured above; this function never
+// opens the live checkpoint directory and therefore cannot reconcile or replay it.
+export function selectVerifiedCheckpointDescriptor(captured) {
+  if (captured?.ok === false) return captured;
+  if (!captured || !Array.isArray(captured.checkpoints)) {
+    return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
+  }
+  if (['completed', 'stopped', 'paused'].includes(captured.snapshot?.data?.status)) {
+    return frozenSafeDescriptor(emptyProjection('run-not-resumable'));
+  }
+  const candidates = captured.checkpoints
+    .filter(item => item?.descriptor && typeof item.rel === 'string' && typeof item.key === 'string')
+    .map(item => ({
+      rel: item.rel,
+      key: item.key,
+      generatedAt: item.generatedAt,
+      descriptor: item.descriptor,
+  }))
+    .sort(compareNewest);
+  if (candidates.length === 0) return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
+  const selected = candidates[0];
+  return frozenSafeDescriptor(selected.descriptor);
+}
+
 function listLegacyCheckpoints(root, runId) {
   const dir = checkpointDir(root, runId);
   if (!existsSync(dir)) return [];
@@ -1123,6 +1456,74 @@ function validLegacy(env, runId) {
     && env.envelope.schema?.version === '1.0'
     && env.envelope.run_id === runId
     && exactKeys(env.payload, LEGACY_PAYLOAD_KEYS);
+}
+
+function decodeLegacyTimestamp(name) {
+  const prefix = name.slice(0, 10);
+  if (prefix.length !== 10) throw new Error('CHECKPOINT_INVALID');
+  let timestamp = 0;
+  for (const character of prefix) {
+    const digit = ULID_ALPHABET.indexOf(character);
+    if (digit < 0) throw new Error('CHECKPOINT_INVALID');
+    timestamp = timestamp * 32 + digit;
+  }
+  // ULID timestamps are 48 bits; the first 50-bit digit must therefore be 0..7.
+  if (ULID_ALPHABET.indexOf(prefix[0]) > 7
+    || !Number.isSafeInteger(timestamp)
+    || timestamp < 0) {
+    throw new Error('CHECKPOINT_INVALID');
+  }
+  try { new Date(timestamp).toISOString(); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  return timestamp;
+}
+
+function validateLegacyBytes(bytes, { root, runId, snapshot, artifactRels, artifactEvidence, name }) {
+  let env;
+  try { env = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  if (!validLegacy(env, runId)) throw new Error('CHECKPOINT_INVALID');
+  if (!canonicalIso(env.envelope.generated_at)) throw new Error('CHECKPOINT_INVALID');
+  const timestamp = decodeLegacyTimestamp(name);
+  if (new Date(timestamp).toISOString() !== env.envelope.generated_at) {
+    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
+  }
+  const payload = env.payload;
+  const loop = snapshot.data;
+  const lease = loop.session_chain?.lease || {};
+  const episode = (loop.episodes || []).find(item => item.id === loop.current_episode) || null;
+  const expectedArtifacts = Array.isArray(episode?.expected_artifacts)
+    ? episode.expected_artifacts : [];
+  const expectedEpisodeDetail = episode ? {
+    id: episode.id,
+    role: episode.role,
+    status: episode.status,
+    point: episode.point,
+    workstream_id: episode.workstream_id,
+  } : null;
+  const expectedNextAction = nextAction(loop, {
+    now: Date.parse(env.envelope.generated_at),
+    unattended: false,
+  });
+  const expectedNextActionHint = {
+    type: expectedNextAction.action.type,
+    next_command: expectedNextAction.next_command,
+  };
+  if (payload.owner_run_id !== lease.owner_run_id
+    || payload.generation !== lease.generation
+    || payload.loop_hash !== snapshot.hash
+    || payload.current_episode !== loop.current_episode
+    || JSON.stringify(payload.current_episode_detail) !== JSON.stringify(expectedEpisodeDetail)
+    || JSON.stringify(payload.active_workstreams) !== JSON.stringify(loop.active_workstreams || [])
+    || JSON.stringify(payload.next_action_hint) !== JSON.stringify(expectedNextActionHint)
+    || JSON.stringify(payload.artifacts) !== JSON.stringify(expectedArtifacts)) {
+    throw new Error('CHECKPOINT_CONTEXT_MISMATCH');
+  }
+  for (const rel of artifactRels) {
+    const evidence = artifactEvidence?.[rel];
+    if (!evidence || !['absent', 'present'].includes(evidence.state)) {
+      throw new Error('CHECKPOINT_ARTIFACT_INVALID');
+    }
+  }
+  void root;
 }
 
 function legacyPrune(root, runId, owner, generation) {

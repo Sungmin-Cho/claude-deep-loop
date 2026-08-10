@@ -4,14 +4,15 @@ import {
   existsSync,
   fsyncSync,
   lstatSync,
+  opendirSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { contentHash, ulid } from './envelope.mjs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { contentHash, ulid, unwrap } from './envelope.mjs';
 import {
   parseHashVerifiedStateBytes,
   runDir,
@@ -19,6 +20,7 @@ import {
   writeCompactRestoreState,
   writeState,
   withLock,
+  withReadLock,
 } from './state.mjs';
 import {
   assertProjectRootBinding,
@@ -204,6 +206,117 @@ export function reconcileCompactPruneTombstonesLocked(
   return reconciled;
 }
 
+const DIAGNOSTIC_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ORPHAN_ENTRY = /^\.orphan-([A-Za-z0-9][A-Za-z0-9._-]{0,127})-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const TRANSACTION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const TRANSACTION_OWNER_KEYS = ['protocol_version', 'token', 'pid', 'hostname', 'acquired_at_ms', 'heartbeat_at_ms', 'lock_identity'];
+const VERIFIED_VECTOR_DEFAULTS = Object.freeze({
+  maxEntries: 10_000,
+  maxBytes: 64 * 1024 * 1024,
+  maxDepth: 128,
+});
+
+function exactObjectKeys(value, keys) {
+  return value != null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function canonicalIsoTimestamp(value) {
+  if (typeof value !== 'string') return false;
+  try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+
+function canonicalHostname(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.normalize('NFC').trim().toLowerCase();
+  return normalized && !/[\u0000-\u001f\u007f]/.test(normalized) ? normalized : null;
+}
+
+function canonicalRegularEntry(path) {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isFile()) return false;
+    const canonical = (realpathSync.native || realpathSync)(path);
+    const canonicalParent = (realpathSync.native || realpathSync)(dirname(path));
+    return resolve(canonical) === resolve(join(canonicalParent, basename(path)));
+  } catch { return false; }
+}
+
+function canonicalDirectoryEntry(path) {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    const canonical = (realpathSync.native || realpathSync)(path);
+    const canonicalParent = (realpathSync.native || realpathSync)(dirname(path));
+    return resolve(canonical) === resolve(join(canonicalParent, basename(path)));
+  } catch { return false; }
+}
+
+function validTransactionOwner(path, runId, operationId, expectedToken = null, allowPrepared = false, readOptions = {}) {
+  try {
+    if (!canonicalDirectoryEntry(path)) return false;
+    const children = readStableDirectoryNames(path, readOptions).names;
+    const unpreparedChildren = JSON.stringify(children) === JSON.stringify(['owner.json'])
+      || JSON.stringify(children) === JSON.stringify(['owner.json', 'stages']);
+    const preparedChildren = children.includes('owner.json')
+      && children.includes('stages')
+      && children.includes('prepared.json')
+      && children.every(name => ['owner.json', 'stages', 'prepared.json', 'markers', 'committed.json'].includes(name));
+    if ((!allowPrepared && !unpreparedChildren) || (allowPrepared && !preparedChildren)) return false;
+    if (!canonicalRegularEntry(join(path, 'owner.json'))) return false;
+    if (children.includes('stages')) {
+      if (!canonicalDirectoryEntry(join(path, 'stages'))) return false;
+      const stageNames = readStableDirectoryNames(join(path, 'stages'), readOptions).names;
+      if (stageNames.some(name => !/^\d{6}\.bin$/.test(name))) return false;
+      if (stageNames.some(name => !canonicalRegularEntry(join(path, 'stages', name)))) return false;
+    }
+    if (allowPrepared && !canonicalRegularEntry(join(path, 'prepared.json'))) return false;
+    if (children.includes('markers') && !canonicalDirectoryEntry(join(path, 'markers'))) return false;
+    if (children.includes('committed.json') && !canonicalRegularEntry(join(path, 'committed.json'))) return false;
+    const env = JSON.parse(readStableRegularFile(join(path, 'owner.json'), readOptions).bytes.toString('utf8'));
+    const owner = env?.payload?.lock_owner;
+    if (!unwrap(env, { producer: 'deep-loop', artifact_kind: 'transaction-owner' })
+      || env.schema_version !== '1.0'
+      || env.envelope?.schema?.version !== '1.0'
+      || env.envelope?.run_id !== runId
+      || !canonicalIsoTimestamp(env.envelope?.generated_at)
+      || !exactObjectKeys(env.payload, ['operation_id', 'lock_owner', 'operation_dir_identity', 'created_at'])
+      || env.payload.operation_id !== operationId
+      || !canonicalIsoTimestamp(env.payload.created_at)
+      || env.envelope.generated_at !== env.payload.created_at
+      || !exactObjectKeys(owner, TRANSACTION_OWNER_KEYS)
+      || owner.protocol_version !== 1
+      || !TRANSACTION_UUID.test(owner.token || '')
+      || (expectedToken !== null && owner.token !== expectedToken)
+      || !Number.isSafeInteger(owner.pid) || owner.pid < 1
+      || canonicalHostname(owner.hostname) !== owner.hostname
+      || !Number.isSafeInteger(owner.acquired_at_ms) || owner.acquired_at_ms < 0
+      || !Number.isSafeInteger(owner.heartbeat_at_ms) || owner.heartbeat_at_ms < owner.acquired_at_ms
+      || !matchingStableFileIdentity(owner.lock_identity, owner.lock_identity)
+      || !matchingStableFileIdentity(
+        captureStableFileIdentity(path),
+        env.payload.operation_dir_identity,
+      )) return false;
+    if (allowPrepared) {
+      const prepared = JSON.parse(readStableRegularFile(join(path, 'prepared.json'), readOptions).bytes.toString('utf8'));
+      return Boolean(
+        unwrap(prepared, { producer: 'deep-loop', artifact_kind: 'anchored-publication' })
+          && prepared.schema_version === '1.0'
+          && prepared.envelope?.schema?.version === '1.0'
+          && prepared.envelope?.run_id === runId
+          && canonicalIsoTimestamp(prepared.envelope?.generated_at)
+          && prepared.envelope.generated_at === env.payload.created_at
+          && exactObjectKeys(prepared.payload, ['manifest', 'stages'])
+          && Array.isArray(prepared.payload.stages)
+          && prepared.payload.manifest?.operationId === operationId,
+      );
+    }
+    return !children.includes('prepared.json');
+  } catch { return false; }
+}
+
 // #3: every business-intent mutation is charged at least this many turns via appendAnchored's `opts.floor`
 // (paired cost, same anchor). Lives here (with the floor mechanism) so both state.mjs and budget.mjs can import
 // it without a state↔budget cycle; budget.mjs re-exports it for call sites/tests.
@@ -283,6 +396,138 @@ function assertNoUnresolvedGenericPublicationLocked(root, runId, guard) {
   }
 }
 
+function integrityInvalidError(message) {
+  const error = new Error(`VERIFIED_READ_INTEGRITY_INVALID: ${message}`);
+  error.code = 'VERIFIED_READ_INTEGRITY_INVALID';
+  return error;
+}
+
+function readStableRegularFile(path, options = {}) {
+  const maxBytes = options.maxBytes === undefined ? VERIFIED_VECTOR_DEFAULTS.maxBytes : options.maxBytes;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw integrityInvalidError(`read bound ${path}`);
+  const nowFn = typeof options.nowFn === 'function' ? options.nowFn : () => Date.now();
+  const checkDeadline = () => {
+    if (options.deadlineAtMs === undefined) return;
+    const current = nowFn();
+    const now = current instanceof Date ? current.getTime() : Number(current);
+    if (!Number.isFinite(now) || now >= Number(options.deadlineAtMs)) {
+      throw integrityInvalidError(`read deadline ${path}`);
+    }
+  };
+  let stat;
+  try {
+    checkDeadline();
+    stat = lstatSync(path, { bigint: true });
+  } catch { throw integrityInvalidError(`read ${path}`); }
+  if (stat.isSymbolicLink() || !stat.isFile()) throw integrityInvalidError(`file type ${path}`);
+  const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
+  const declaredSize = Number(stat.size);
+  if (!Number.isSafeInteger(declaredSize) || declaredSize < 0 || declaredSize > maxBytes) {
+    throw integrityInvalidError(`read bound ${path}`);
+  }
+  let before;
+  let bytes;
+  let after;
+  try {
+    checkDeadline();
+    before = captureStableFileIdentity(path);
+    bytes = readFileSync(path);
+    checkDeadline();
+    after = captureStableFileIdentity(path);
+  } catch { throw integrityInvalidError(`file read ${path}`); }
+  if (!matchingStableFileIdentity(initialIdentity, before)
+    || !matchingStableFileIdentity(before, after) || bytes.length !== declaredSize) {
+    throw integrityInvalidError(`file identity drift ${path}`);
+  }
+  return { bytes, before, after };
+}
+
+function readStableDirectoryNames(path, options = {}) {
+  const maxEntries = options.maxEntries === undefined ? VERIFIED_VECTOR_DEFAULTS.maxEntries : options.maxEntries;
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
+    throw integrityInvalidError(`directory bound ${path}`);
+  }
+  const nowFn = typeof options.nowFn === 'function' ? options.nowFn : () => Date.now();
+  const deadlineAtMs = options.deadlineAtMs;
+  const identityFn = typeof options.identityFn === 'function'
+    ? options.identityFn
+    : target => captureStableFileIdentity(target);
+  const lstatFn = typeof options.lstatFn === 'function' ? options.lstatFn : lstatSync;
+  const openDirFn = typeof options.opendirFn === 'function' ? options.opendirFn : opendirSync;
+  const excludedNames = options.excludedNames instanceof Set ? options.excludedNames : null;
+  const expectedIdentity = options.expectedIdentity;
+  const checkDeadline = () => {
+    if (deadlineAtMs === undefined) return;
+    const current = nowFn();
+    const now = current instanceof Date ? current.getTime() : Number(current);
+    if (!Number.isFinite(now) || now >= Number(deadlineAtMs)) {
+      throw integrityInvalidError(`directory deadline ${path}`);
+    }
+  };
+  let before;
+  let names;
+  let after;
+  let directory;
+  try {
+    checkDeadline();
+    const stat = lstatFn(path, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw integrityInvalidError(`directory type ${path}`);
+    }
+    const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
+    before = identityFn(path);
+    if (!matchingStableFileIdentity(initialIdentity, before)
+      || (expectedIdentity && !matchingStableFileIdentity(expectedIdentity, before))) {
+      throw integrityInvalidError(`directory identity drift ${path}`);
+    }
+    directory = openDirFn(path);
+    names = [];
+    while (true) {
+      checkDeadline();
+      const entry = directory.readSync();
+      if (entry === null) break;
+      if (excludedNames?.has(entry.name)) continue;
+      if (names.length >= maxEntries) throw integrityInvalidError(`directory bound ${path}`);
+      names.push(entry.name);
+    }
+    names.sort();
+    checkDeadline();
+    after = identityFn(path);
+  } catch { throw integrityInvalidError(`directory read ${path}`); }
+  finally {
+    try { directory?.closeSync(); } catch { /* inspection will fail on identity/read evidence, not cleanup */ }
+  }
+  if (!matchingStableFileIdentity(before, after)) {
+    throw integrityInvalidError(`directory identity drift ${path}`);
+  }
+  return { names, before, after };
+}
+
+function diagnosticOperationId(value) {
+  return typeof value === 'string' && DIAGNOSTIC_OPERATION_ID.test(value) ? value : null;
+}
+
+function readDeadlineAtMs(options = {}) {
+  const vectorOptions = options.vectorOptions || {};
+  const explicit = options.vectorDeadlineAtMs
+    ?? options.deadlineAtMs
+    ?? options.deadlineAt
+    ?? vectorOptions.deadlineAtMs
+    ?? vectorOptions.deadlineMs;
+  if (explicit !== undefined) return explicit;
+  const budget = options.deadlineBudgetMs ?? vectorOptions.deadlineBudgetMs;
+  if (budget === undefined) return undefined;
+  const nowFn = typeof options.nowFn === 'function'
+    ? options.nowFn
+    : typeof vectorOptions.nowFn === 'function' ? vectorOptions.nowFn : () => Date.now();
+  const current = nowFn();
+  const now = current instanceof Date ? current.getTime() : Number(current);
+  if (!Number.isFinite(now) || !Number.isSafeInteger(budget) || budget < 0) {
+    throw integrityInvalidError('verified vector deadline');
+  }
+  return now + budget;
+}
+
 function exactLogBytes(lines) {
   return Buffer.from(lines.map(line => `${JSON.stringify(line)}\n`).join(''));
 }
@@ -314,10 +559,12 @@ function parseExactLogBytes(bytes, { reconciliation = false } = {}) {
 
 function readRawRun(root, runId) {
   const dir = runDir(root, runId);
-  const loopBytes = readFileSync(join(dir, 'loop.json'));
-  const hashBytes = existsSync(join(dir, '.loop.hash')) ? readFileSync(join(dir, '.loop.hash')) : null;
-  const logBytes = existsSync(join(dir, 'event-log.jsonl'))
-    ? readFileSync(join(dir, 'event-log.jsonl'))
+  const loopBytes = readStableRegularFile(join(dir, 'loop.json')).bytes;
+  const hashPath = join(dir, '.loop.hash');
+  const logPathForRun = join(dir, 'event-log.jsonl');
+  const hashBytes = existsSync(hashPath) ? readStableRegularFile(hashPath).bytes : null;
+  const logBytes = existsSync(logPathForRun)
+    ? readStableRegularFile(logPathForRun).bytes
     : Buffer.alloc(0);
   return { dir, loopBytes, hashBytes, logBytes };
 }
@@ -343,26 +590,33 @@ function snapshotRaw(root, runId, raw, { requireSchema = true, requireProjectBin
 function captureArtifactLocked(root, runId, rel) {
   if (normalizePortableRelativePath(rel) !== rel) throw new Error(`ARTIFACT_REL_INVALID: ${String(rel)}`);
   const base = runDir(root, runId);
-  const canonicalBase = (realpathSync.native || realpathSync)(base);
+  let canonicalBase;
+  try { canonicalBase = (realpathSync.native || realpathSync)(base); }
+  catch { throw integrityInvalidError(`ARTIFACT_REL_INVALID: artifact base ${rel}`); }
   const parts = rel.split('/');
   let current = base;
   for (let index = 0; index < parts.length; index++) {
     current = join(current, parts[index]);
-    if (!existsSync(current)) return Object.freeze({ state: 'absent' });
-    const stat = lstatSync(current, { bigint: true });
-    if (stat.isSymbolicLink()) throw new Error(`ARTIFACT_REL_INVALID: symlink ${rel}`);
+    let stat;
+    try { stat = lstatSync(current, { bigint: true }); }
+    catch (error) {
+      if (error?.code === 'ENOENT') return Object.freeze({ state: 'absent' });
+      throw integrityInvalidError(`ARTIFACT_REL_INVALID: artifact entry ${rel}`);
+    }
+    if (stat.isSymbolicLink()) throw integrityInvalidError(`ARTIFACT_REL_INVALID: symlink ${rel}`);
     if (index < parts.length - 1) {
-      if (!stat.isDirectory()) throw new Error(`ARTIFACT_REL_INVALID: parent ${rel}`);
-      const canonical = (realpathSync.native || realpathSync)(current);
+      if (!stat.isDirectory()) throw integrityInvalidError(`ARTIFACT_REL_INVALID: parent ${rel}`);
+      let canonical;
+      try { canonical = (realpathSync.native || realpathSync)(current); }
+      catch { throw integrityInvalidError(`ARTIFACT_REL_INVALID: parent ${rel}`); }
       const expected = join(canonicalBase, ...parts.slice(0, index + 1));
-      if (resolve(canonical) !== resolve(expected)) throw new Error(`ARTIFACT_REL_INVALID: alias ${rel}`);
+      if (resolve(canonical) !== resolve(expected)) throw integrityInvalidError(`ARTIFACT_REL_INVALID: alias ${rel}`);
       continue;
     }
-    if (!stat.isFile()) throw new Error(`ARTIFACT_REL_INVALID: target ${rel}`);
-    const before = captureStableFileIdentity(current);
-    const bytes = readFileSync(current);
-    const after = captureStableFileIdentity(current);
-    if (!matchingStableFileIdentity(before, after)) throw new Error(`ARTIFACT_REL_INVALID: identity drift ${rel}`);
+    if (!stat.isFile()) throw integrityInvalidError(`ARTIFACT_REL_INVALID: target ${rel}`);
+    let bytes;
+    try { ({ bytes } = readStableRegularFile(current)); }
+    catch { throw integrityInvalidError(`ARTIFACT_REL_INVALID: identity drift ${rel}`); }
     return Object.freeze({ state: 'present', bytes: Buffer.from(bytes), sha256: contentHash(bytes) });
   }
   throw new Error(`ARTIFACT_REL_INVALID: ${rel}`);
@@ -759,8 +1013,761 @@ function classifyPreparedRun(root, runId, guard, prepared, { rootRecovery = fals
     appendedCount,
     loopState,
     hashState,
+    classifications: artifactVector.classifications,
     committed,
   };
+}
+
+function committedMarkerInspection(prepared) {
+  const path = join(prepared.operationDir, 'committed.json');
+  if (!existsSync(path)) return { present: false, valid: false };
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isFile()) return { present: true, valid: false };
+    const expected = JSON.stringify({
+      kind: 'committed',
+      operation_id: prepared.manifest.operationId,
+      candidate_loop_hash: prepared.manifest.candidateLoopHash,
+    });
+    return { present: true, valid: readStableRegularFile(path).bytes.toString('utf8') === expected };
+  } catch {
+    return { present: true, valid: false };
+  }
+}
+
+// Shared read-only publication classifier.  The input is intentionally an
+// in-memory inspection record; it contains no writer, replay, or retirement
+// capability and emits only bounded operation/phase diagnostics.
+export function inspectAnchoredPublication({
+  operationId = null,
+  marker = { present: false, valid: false },
+  classified = null,
+  error = null,
+} = {}) {
+  const boundedOperationId = diagnosticOperationId(operationId);
+  if (marker.present && !marker.valid) {
+    return { ok: false, kind: 'integrity-invalid', operation_id: boundedOperationId, phase: 'committed' };
+  }
+  if (error) {
+    const message = String(error?.message || error);
+    if (marker.present && marker.valid && message.includes('cross-resource publication order')) {
+      return { ok: false, kind: 'reconciliation-required', operation_id: boundedOperationId, phase: 'premature-committed' };
+    }
+    return {
+      ok: false,
+      kind: marker.present && marker.valid ? 'integrity-invalid' : 'integrity-invalid',
+      operation_id: boundedOperationId,
+      phase: marker.present ? 'committed' : 'prepared',
+    };
+  }
+  if (!classified) {
+    return { ok: false, kind: 'reconciliation-required', operation_id: boundedOperationId, phase: 'uncommitted' };
+  }
+  if (classified.committed) {
+    return { ok: true, kind: 'clean-committed', operation_id: boundedOperationId, phase: 'committed' };
+  }
+  const artifactProgress = classified.classifications
+    .some(item => item.targetDone || item.replaceIntent || item.state === 'candidate');
+  const partial = artifactProgress || classified.appendedCount > 0
+    || classified.loopState === 'candidate' || classified.hashState === 'candidate';
+  return {
+    ok: false,
+    kind: 'reconciliation-required',
+    operation_id: boundedOperationId,
+    phase: partial ? 'partial' : 'prepared',
+  };
+}
+
+function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDeadlineAtMs) {
+  const limits = { ...VERIFIED_VECTOR_DEFAULTS, ...options };
+  const integerLimit = (name, fallback) => Number.isSafeInteger(limits[name]) && limits[name] >= 0
+    ? limits[name] : fallback;
+  const maxEntries = integerLimit('maxEntries', VERIFIED_VECTOR_DEFAULTS.maxEntries);
+  const maxBytes = integerLimit('maxBytes', VERIFIED_VECTOR_DEFAULTS.maxBytes);
+  const maxDepth = integerLimit('maxDepth', VERIFIED_VECTOR_DEFAULTS.maxDepth);
+  const nowFn = typeof options.nowFn === 'function' ? options.nowFn : () => Date.now();
+  const lstatFn = typeof options.lstatFn === 'function' ? options.lstatFn : lstatSync;
+  const opendirFn = typeof options.opendirFn === 'function' ? options.opendirFn : opendirSync;
+  const readFileFn = typeof options.readFileFn === 'function' ? options.readFileFn : readFileSync;
+  const identityFn = typeof options.identityFn === 'function'
+    ? options.identityFn
+    : path => captureStableFileIdentity(path, { lstatFn });
+  const deadlineAtMs = sharedDeadlineAtMs ?? options.deadlineAtMs ?? options.deadlineMs;
+  if (deadlineAtMs !== undefined && !Number.isFinite(Number(deadlineAtMs))) {
+    throw integrityInvalidError('verified vector deadline');
+  }
+  const entries = [];
+  const present = new Set();
+  const portableKeys = new Set();
+  const expectedRoots = ['transactions', 'artifacts', 'episodes', 'checkpoints', 'loop.json', '.loop.hash', 'event-log.jsonl'];
+  let totalBytes = 0;
+
+  const now = () => {
+    const value = nowFn();
+    const numeric = value instanceof Date ? value.getTime() : Number(value);
+    if (!Number.isFinite(numeric)) throw integrityInvalidError('verified vector clock');
+    return numeric;
+  };
+  const checkDeadline = () => {
+    if (deadlineAtMs !== undefined && now() >= deadlineAtMs) {
+      throw integrityInvalidError('verified vector deadline');
+    }
+  };
+  const addEntry = (entry, depth) => {
+    checkDeadline();
+    if (depth > maxDepth || entries.length >= maxEntries) {
+      throw integrityInvalidError('verified vector bound');
+    }
+    entries.push(entry);
+  };
+  const statAt = path => {
+    checkDeadline();
+    try { return lstatFn(path, { bigint: true }); }
+    catch { throw integrityInvalidError(`verified vector entry ${path}`); }
+  };
+  const readNames = (path, expectedIdentity) => readStableDirectoryNames(path, {
+    maxEntries: Math.max(0, maxEntries - entries.length),
+    deadlineAtMs,
+    nowFn,
+    identityFn,
+    lstatFn,
+    opendirFn,
+    excludedNames: path === dir ? new Set(['.lock']) : null,
+    expectedIdentity,
+  }).names;
+
+  const rootStat = statAt(dir);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw integrityInvalidError('verified vector run directory');
+  }
+  const rootIdentity = captureStableFileIdentity(dir, { lstatFn: () => rootStat });
+  addEntry(Object.freeze([runId, '', 'directory', deepFreeze({ identity: rootIdentity })]), 0);
+  present.add('');
+  const pending = [{ path: dir, rel: '', depth: 0, expectedIdentity: rootIdentity }];
+  while (pending.length > 0) {
+    checkDeadline();
+    const current = pending.pop();
+    const names = readNames(current.path, current.expectedIdentity);
+    if (current.depth >= maxDepth && names.length > 0) {
+      throw integrityInvalidError('verified vector depth');
+    }
+    for (const name of [...names].reverse()) {
+      if (name.includes('\\') || name.includes('/') || /^[A-Za-z]:/.test(name)) {
+        throw integrityInvalidError(`verified vector portable path ${name}`);
+      }
+      const path = join(current.path, name);
+      const rel = current.rel ? `${current.rel}/${name}` : name;
+      if (normalizePortableRelativePath(rel) !== rel || portableKeys.has(rel)) {
+        throw integrityInvalidError(`verified vector portable path ${rel}`);
+      }
+      portableKeys.add(rel);
+      const depth = current.depth + 1;
+      const stat = statAt(path);
+      if (stat.isSymbolicLink()) throw integrityInvalidError(`verified vector symlink ${rel}`);
+      if (stat.isDirectory()) {
+        const directoryIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
+        addEntry(Object.freeze([
+          runId,
+          rel,
+          'directory',
+          deepFreeze({ identity: directoryIdentity }),
+        ]), depth);
+        present.add(rel);
+        pending.push({ path, rel, depth, expectedIdentity: directoryIdentity });
+        continue;
+      }
+      if (!stat.isFile()) throw integrityInvalidError(`verified vector entry type ${rel}`);
+      const before = (() => {
+        checkDeadline();
+        try { return identityFn(path); } catch { throw integrityInvalidError(`verified vector identity ${rel}`); }
+      })();
+      const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
+      const declaredSize = Number(stat.size);
+      if (!Number.isSafeInteger(declaredSize) || declaredSize < 0 || totalBytes + declaredSize > maxBytes) {
+        throw integrityInvalidError('verified vector bytes');
+      }
+      let bytes;
+      try {
+        checkDeadline();
+        bytes = Buffer.from(readFileFn(path));
+      } catch { throw integrityInvalidError(`verified vector read ${rel}`); }
+      const after = (() => {
+        checkDeadline();
+        try { return identityFn(path); } catch { throw integrityInvalidError(`verified vector identity ${rel}`); }
+      })();
+      if (!matchingStableFileIdentity(initialIdentity, before)
+        || !matchingStableFileIdentity(before, after) || bytes.length !== declaredSize) {
+        throw integrityInvalidError(`verified vector identity drift ${rel}`);
+      }
+      totalBytes += bytes.length;
+      const portable = deepFreeze({
+        base64: bytes.toString('base64'),
+        sha256: contentHash(bytes),
+        size: bytes.length,
+        identity_before: before,
+        identity_after: after,
+      });
+      addEntry(Object.freeze([runId, rel, 'file', portable]), depth);
+      present.add(rel);
+    }
+  }
+  for (const rel of expectedRoots) {
+    if (!present.has(rel)) addEntry(Object.freeze([runId, rel, 'ABSENT']), 0);
+  }
+  entries.sort((left, right) => JSON.stringify(left.slice(0, 3)).localeCompare(JSON.stringify(right.slice(0, 3))));
+  checkDeadline();
+  return Object.freeze(entries);
+}
+
+function inspectTransactionTreeLocked(dir, readOptions = {}) {
+  const transactions = join(dir, 'transactions');
+  if (!existsSync(transactions)) {
+    return {
+      entries: Object.freeze([]),
+      prepared: Object.freeze([]),
+      reconciliation: Object.freeze([]),
+      error: null,
+    };
+  }
+  let stat;
+  let entries;
+  try {
+    stat = lstatSync(transactions, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      return {
+        entries: Object.freeze([]),
+        error: { ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' },
+      };
+    }
+    entries = readStableDirectoryNames(transactions, readOptions).names;
+  } catch {
+    return {
+      entries: Object.freeze([]),
+      error: { ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' },
+    };
+  }
+
+  const prepared = [];
+  const orphans = [];
+  const unprepared = [];
+  const invalid = [];
+  for (const name of entries) {
+    const operationDir = join(transactions, name);
+    const orphan = name.match(ORPHAN_ENTRY);
+    if (orphan) {
+      if (!validTransactionOwner(operationDir, basename(dir), orphan[1], orphan[2], false, readOptions)) {
+        invalid.push({ ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' });
+        continue;
+      }
+      orphans.push(orphan[1]);
+      continue;
+    }
+    if (!diagnosticOperationId(name)) {
+      invalid.push({ ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' });
+      continue;
+    }
+    try {
+      const operationStat = lstatSync(operationDir, { bigint: true });
+      if (operationStat.isSymbolicLink() || !operationStat.isDirectory()) {
+        invalid.push({
+          ok: false,
+          kind: 'integrity-invalid',
+          operation_id: diagnosticOperationId(name),
+          phase: 'transaction-tree',
+        });
+        continue;
+      }
+      if (existsSync(join(operationDir, 'prepared.json'))) {
+        if (validTransactionOwner(operationDir, basename(dir), name, null, true, readOptions)) prepared.push(name);
+        else invalid.push({ ok: false, kind: 'integrity-invalid', operation_id: name, phase: 'transaction-tree' });
+      }
+      else if (validTransactionOwner(operationDir, basename(dir), name, null, false, readOptions)) unprepared.push(name);
+      else invalid.push({ ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' });
+    } catch {
+      invalid.push({
+        ok: false,
+        kind: 'integrity-invalid',
+        operation_id: diagnosticOperationId(name),
+        phase: 'transaction-tree',
+      });
+    }
+  }
+
+  if (invalid.length > 0) {
+    return {
+      entries: Object.freeze(entries),
+      prepared: Object.freeze(prepared),
+      reconciliation: Object.freeze([...orphans, ...unprepared].sort()),
+      error: invalid[0],
+    };
+  }
+  if (orphans.length > 0 || unprepared.length > 0) {
+    return {
+      entries: Object.freeze(entries),
+      prepared: Object.freeze(prepared),
+      reconciliation: Object.freeze([...orphans, ...unprepared].sort()),
+      error: null,
+    };
+  }
+  return { entries: Object.freeze(entries), prepared: Object.freeze(prepared), reconciliation: Object.freeze([]), error: null };
+}
+
+function sameVerifiedVector(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function verifiedCaptureLocked(root, runId, guard, options) {
+  const dir = runDir(root, runId);
+  const vectorOptions = options.vectorOptions || {};
+  const effectiveVectorOptions = {
+    ...vectorOptions,
+    ...(vectorOptions.nowFn === undefined && typeof options.nowFn === 'function'
+      ? { nowFn: options.nowFn } : {}),
+  };
+  const inspectionReadOptions = {
+    maxEntries: VERIFIED_VECTOR_DEFAULTS.maxEntries,
+    maxBytes: VERIFIED_VECTOR_DEFAULTS.maxBytes,
+    deadlineAtMs: options.vectorDeadlineAtMs,
+    nowFn: effectiveVectorOptions.nowFn,
+    identityFn: effectiveVectorOptions.identityFn,
+    lstatFn: effectiveVectorOptions.lstatFn,
+    opendirFn: effectiveVectorOptions.opendirFn,
+  };
+  const checkDeadline = () => {
+    if (options.vectorDeadlineAtMs === undefined) return;
+    const nowFn = typeof effectiveVectorOptions.nowFn === 'function'
+      ? effectiveVectorOptions.nowFn : () => Date.now();
+    const current = nowFn();
+    const now = current instanceof Date ? current.getTime() : Number(current);
+    if (!Number.isFinite(now) || now >= Number(options.vectorDeadlineAtMs)) {
+      throw integrityInvalidError('verified capture deadline');
+    }
+  };
+  checkDeadline();
+  const verifiedVector = captureVerifiedDurableVectorLocked(
+    dir,
+    runId,
+    effectiveVectorOptions,
+    options.vectorDeadlineAtMs,
+  );
+  checkDeadline();
+  const transactionTree = inspectTransactionTreeLocked(dir, {
+    ...inspectionReadOptions,
+  });
+  checkDeadline();
+  if (transactionTree.error) return transactionTree.error;
+  const transactionEntries = transactionTree.entries;
+  if (transactionTree.reconciliation.length > 0) {
+    return {
+      ok: false,
+      kind: 'reconciliation-required',
+      operation_id: diagnosticOperationId(transactionTree.reconciliation[0]),
+      phase: 'transaction-tree',
+    };
+  }
+  if (transactionEntries.length === 0) {
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), {
+      requireProjectBinding: options.requireProjectBinding !== false,
+    });
+    const artifacts = captureArtifactsLocked(root, runId, options.artifactRels);
+    const finalVector = captureVerifiedDurableVectorLocked(
+      dir,
+      runId,
+      effectiveVectorOptions,
+      options.vectorDeadlineAtMs,
+    );
+    if (!sameVerifiedVector(verifiedVector, finalVector)) {
+      throw integrityInvalidError('verified vector phase drift');
+    }
+    checkDeadline();
+    return {
+      ok: true,
+      kind: 'clean-no-publication',
+      snapshot: {
+        ...snapshot,
+        artifacts,
+        vector: verifiedVector,
+      },
+    };
+  }
+
+  let prepared;
+  if (transactionTree.prepared.length > 0) {
+    try {
+      prepared = findPreparedPublicationLocked(dir, guard);
+      checkDeadline();
+    } catch (error) {
+      const operationId = transactionTree.prepared[0] || null;
+      const kind = String(error?.message || error).includes('multiple prepared operations')
+        ? 'reconciliation-required' : 'integrity-invalid';
+      return { ok: false, kind, operation_id: operationId, phase: 'transaction-tree' };
+    }
+  }
+  if (!prepared) {
+    return inspectAnchoredPublication({
+      operationId: diagnosticOperationId(transactionEntries[0]),
+    });
+  }
+
+  const operationId = prepared.manifest.operationId;
+  const marker = committedMarkerInspection(prepared);
+  let classified = null;
+  let error = null;
+  try {
+    checkDeadline();
+    classified = classifyPreparedRun(root, runId, guard, prepared, {
+      rootRecovery: options.rootRecovery === true,
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  checkDeadline();
+  const inspection = inspectAnchoredPublication({ operationId, marker, classified, error });
+  if (!inspection.ok) return inspection;
+  const snapshot = snapshotRaw(root, runId, classified.raw, {
+    requireProjectBinding: options.requireProjectBinding !== false,
+  });
+  const artifacts = captureArtifactsLocked(root, runId, options.artifactRels);
+  const finalVector = captureVerifiedDurableVectorLocked(
+    dir,
+    runId,
+    effectiveVectorOptions,
+    options.vectorDeadlineAtMs,
+  );
+  if (!sameVerifiedVector(verifiedVector, finalVector)) {
+    throw integrityInvalidError('verified vector phase drift');
+  }
+  checkDeadline();
+  return {
+    ...inspection,
+    snapshot: {
+      ...snapshot,
+      artifacts,
+      vector: verifiedVector,
+    },
+  };
+}
+
+// VERIFIED_READ_CLOSURE_START
+const VERIFIED_READ_CLOSURE = Object.freeze([
+  ['exactObjectKeys', exactObjectKeys],
+  ['canonicalIsoTimestamp', canonicalIsoTimestamp],
+  ['canonicalHostname', canonicalHostname],
+  ['canonicalRegularEntry', canonicalRegularEntry],
+  ['canonicalDirectoryEntry', canonicalDirectoryEntry],
+  ['deepFreeze', deepFreeze],
+  ['transactionError', transactionError],
+  ['integrityInvalidError', integrityInvalidError],
+  ['diagnosticOperationId', diagnosticOperationId],
+  ['readDeadlineAtMs', readDeadlineAtMs],
+  ['checksumFor', checksumFor],
+  ['nextEvent', nextEvent],
+  ['parseExactLogBytes', parseExactLogBytes],
+  ['readRawRun', readRawRun],
+  ['snapshotRaw', snapshotRaw],
+  ['readStableRegularFile', readStableRegularFile],
+  ['readStableDirectoryNames', readStableDirectoryNames],
+  ['validTransactionOwner', validTransactionOwner],
+  ['captureArtifactLocked', captureArtifactLocked],
+  ['captureArtifactsLocked', captureArtifactsLocked],
+  ['operationTimestamp', operationTimestamp],
+  ['exactBoundaryIdentity', exactBoundaryIdentity],
+  ['sameBoundaryIdentity', sameBoundaryIdentity],
+  ['validateBoundaryPublication', validateBoundaryPublication],
+  ['validatePreparedAuthority', validatePreparedAuthority],
+  ['classifyPreparedRun', classifyPreparedRun],
+  ['committedMarkerInspection', committedMarkerInspection],
+  ['inspectAnchoredPublication', inspectAnchoredPublication],
+  ['captureVerifiedDurableVectorLocked', captureVerifiedDurableVectorLocked],
+  ['inspectTransactionTreeLocked', inspectTransactionTreeLocked],
+  ['sameVerifiedVector', sameVerifiedVector],
+  ['verifiedCaptureLocked', verifiedCaptureLocked],
+  ['validCost', validCost],
+  ['headOfLines', headOfLines],
+  ['verifyLines', verifyLines],
+  ['verifyHeadLines', verifyHeadLines],
+  ['enumerateRunIdsBounded', enumerateRunIdsBounded],
+]);
+export const VERIFIED_READ_CLOSURE_NAMES = Object.freeze(VERIFIED_READ_CLOSURE.map(([name]) => name));
+const VERIFIED_READ_FORBIDDEN_CALL = /\b(?:appendAnchored|appendEvent|writeState|durableAtomicWrite|appendFileSync|renameSync|rmSync|unlinkSync|mkdirSync|fsyncSync|openSync|publishArtifactTargetsLocked|markPublicationCommittedLocked|retireCommittedPublicationLocked|reconcileAnchoredPublicationLocked)\s*\(/;
+for (const [name, reader] of VERIFIED_READ_CLOSURE) {
+  if (VERIFIED_READ_FORBIDDEN_CALL.test(reader.toString())) {
+    throw new Error(`VERIFIED_READ_CLOSURE_MUTATION: ${name}`);
+  }
+}
+// VERIFIED_READ_CLOSURE_END
+
+export function captureVerifiedRunSnapshot(root, runId, options = {}) {
+  try {
+    const vectorDeadlineAtMs = readDeadlineAtMs(options);
+    return withReadLock(
+      root,
+      runId,
+      guard => verifiedCaptureLocked(root, runId, guard, { ...options, vectorDeadlineAtMs }),
+      {
+        ...options.lockOptions,
+        ...(options.lockOptions?.nowFn === undefined && typeof options.nowFn === 'function'
+          ? { nowFn: options.nowFn } : {}),
+        ...(vectorDeadlineAtMs === undefined ? {} : { deadlineAtMs: vectorDeadlineAtMs }),
+      },
+    );
+  } catch (error) {
+    if (error?.code === 'VERIFIED_READ_INTEGRITY_INVALID'
+      || String(error?.message || '').startsWith('LOG_TAMPERED')
+      || error?.message === 'LOCK_DEADLINE_EXCEEDED') {
+      return {
+        ok: false,
+        kind: 'integrity-invalid',
+        operation_id: null,
+        phase: 'verified-vector',
+      };
+    }
+    throw error;
+  }
+}
+
+// Root-recovery diagnosis is a verified read of a relocated run. It deliberately
+// keeps the transaction/vector classification above while relaxing only the
+// ordinary project-root binding check; no reconciler or writer is reachable.
+export function captureVerifiedRootRecoverySnapshot(root, runId, options = {}) {
+  try {
+    const vectorDeadlineAtMs = readDeadlineAtMs(options);
+    return withReadLock(
+      root,
+      runId,
+      guard => verifiedCaptureLocked(root, runId, guard, {
+        ...options,
+        requireProjectBinding: false,
+        rootRecovery: true,
+        vectorDeadlineAtMs,
+      }),
+      {
+        ...options.lockOptions,
+        ...(options.lockOptions?.nowFn === undefined && typeof options.nowFn === 'function'
+          ? { nowFn: options.nowFn } : {}),
+        ...(vectorDeadlineAtMs === undefined ? {} : { deadlineAtMs: vectorDeadlineAtMs }),
+      },
+    );
+  } catch (error) {
+    if (error?.code === 'VERIFIED_READ_INTEGRITY_INVALID'
+      || String(error?.message || '').startsWith('LOG_TAMPERED')
+      || error?.message === 'LOCK_DEADLINE_EXCEEDED') {
+      return { ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'verified-vector' };
+    }
+    throw error;
+  }
+}
+
+function nowMillis(nowFn) {
+  const value = (typeof nowFn === 'function' ? nowFn : () => Date.now())();
+  return value instanceof Date ? value.getTime() : Number(value);
+}
+
+function boundedRunSetError({ maxRunIds, deadlineMs, observedCount, totalIsLowerBound, phase }) {
+  const diagnostic = Object.freeze({
+    reason: 'run-set-bound-exceeded',
+    kind: 'run-set-bound-exceeded',
+    max_run_ids: maxRunIds,
+    deadline_ms: deadlineMs,
+    observed_count: observedCount,
+    total_is_lower_bound: totalIsLowerBound,
+    phase,
+  });
+  return Object.freeze(diagnostic);
+}
+
+/**
+ * Enumerate the implicit historical run directory incrementally.  In
+ * particular, do not turn an unbounded readdir result into an array before
+ * checking the cap: old terminal history is part of the attack surface.
+ */
+export function enumerateRunIdsBounded(root, {
+  maxRunIds = 64,
+  deadlineAtMs,
+  deadlineAt,
+  deadlineMs = 500,
+  nowFn,
+  opendirFn = opendirSync,
+} = {}) {
+  const suppliedDeadlineAt = deadlineAtMs ?? deadlineAt;
+  if (!Number.isSafeInteger(maxRunIds) || maxRunIds < 1
+    || (suppliedDeadlineAt !== undefined && !Number.isFinite(Number(suppliedDeadlineAt)))
+    || !Number.isSafeInteger(deadlineMs) || deadlineMs < 0) {
+    throw new Error('RUN_SET_OPTIONS_INVALID');
+  }
+  const now = () => nowMillis(nowFn);
+  const absoluteDeadline = suppliedDeadlineAt === undefined ? now() + deadlineMs : Number(suppliedDeadlineAt);
+  if (!Number.isSafeInteger(absoluteDeadline)) throw new Error('RUN_SET_OPTIONS_INVALID');
+  const observed = [];
+  const checkDeadline = () => {
+    const current = now();
+    if (!Number.isSafeInteger(current)) throw new Error('RUN_SET_DEADLINE_INVALID');
+    if (current >= absoluteDeadline) {
+      throw boundedRunSetError({
+        maxRunIds, deadlineMs, observedCount: observed.length, totalIsLowerBound: false, phase: 'enumeration',
+      });
+    }
+  };
+  const runsDir = join(root, '.deep-loop', 'runs');
+  if (!existsSync(runsDir)) return Object.freeze({ runIds: Object.freeze([]), deadlineAtMs: absoluteDeadline });
+
+  let directory;
+  try {
+    checkDeadline();
+    directory = opendirFn(runsDir);
+    while (true) {
+      checkDeadline();
+      const entry = directory.readSync();
+      if (entry === null) break;
+      if (!entry.isDirectory()) continue;
+      observed.push(entry.name);
+      if (observed.length > maxRunIds) {
+        throw boundedRunSetError({
+          maxRunIds,
+          deadlineMs,
+          observedCount: observed.length,
+          totalIsLowerBound: true,
+          phase: 'enumeration',
+        });
+      }
+    }
+    checkDeadline();
+  } catch (error) {
+    if (error?.kind === 'run-set-bound-exceeded') throw error;
+    throw new Error(`RUN_SET_ENUMERATION_FAILED: ${String(error?.message || error)}`);
+  } finally {
+    try { directory?.closeSync(); } catch { /* bounded read is already failed */ }
+  }
+  observed.sort();
+  for (const id of observed) runDir(root, id);
+  return Object.freeze({ runIds: Object.freeze(observed), deadlineAtMs: absoluteDeadline });
+}
+
+function defaultReadSleep(ms) {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export function captureVerifiedRunSet(root, options = {}) {
+  const implicit = options.runIds === undefined;
+  let vectorDeadlineAtMs = readDeadlineAtMs(options);
+  if (vectorDeadlineAtMs === undefined && options.deadlineMs !== undefined) {
+    vectorDeadlineAtMs = nowMillis(options.nowFn) + Number(options.deadlineMs);
+  }
+  let runIds;
+  if (implicit) {
+    try {
+      const enumeration = enumerateRunIdsBounded(root, {
+        maxRunIds: options.maxRunIds ?? 64,
+        deadlineAtMs: vectorDeadlineAtMs,
+        deadlineMs: options.deadlineMs ?? 500,
+        nowFn: options.nowFn,
+        opendirFn: options.opendirFn,
+      });
+      runIds = enumeration.runIds;
+      vectorDeadlineAtMs = enumeration.deadlineAtMs;
+    } catch (error) {
+      if (error?.kind !== 'run-set-bound-exceeded') throw error;
+      return Object.freeze({
+        root: canonicalProjectRoot(root),
+        runIds: Object.freeze([]),
+        runs: Object.freeze(Object.create(null)),
+        errors: Object.freeze({ run_set: error }),
+        ok: false,
+        kind: error.kind,
+        ...error,
+      });
+    }
+  } else {
+    runIds = frozenRunIds(root, options.runIds);
+  }
+  options.afterEnumeration?.(runIds);
+  const runs = Object.create(null);
+  const errors = Object.create(null);
+  for (const runId of runIds) {
+    const capture = () => captureVerifiedRunSnapshot(root, runId, {
+      artifactRels: options.artifactRelsByRun?.[runId] || [],
+      lockOptions: options.lockOptions,
+      vectorOptions: options.vectorOptionsByRun?.[runId] || options.vectorOptions,
+      vectorDeadlineAtMs,
+      nowFn: options.nowFn,
+    });
+    try {
+      let result;
+      try {
+        result = capture();
+      } catch (firstError) {
+        // One retry is allowed, but only outside the per-run lock and only
+        // while the same aggregate deadline still has time remaining.
+        const retryable = String(firstError?.message || firstError).startsWith('LOCK_BUSY');
+        if (!retryable) throw firstError;
+        const current = nowMillis(options.nowFn);
+        const remaining = vectorDeadlineAtMs === undefined ? null : Number(vectorDeadlineAtMs) - current;
+        if (!Number.isSafeInteger(current) || (remaining !== null && remaining <= 0)) {
+          throw boundedRunSetError({
+            maxRunIds: options.maxRunIds ?? 64,
+            deadlineMs: options.deadlineMs ?? 500,
+            observedCount: runIds.length,
+            totalIsLowerBound: false,
+            phase: 'lock-retry',
+          });
+        }
+        const delay = remaining === null ? (options.retryDelayMs ?? 50)
+          : Math.min(options.retryDelayMs ?? 50, remaining);
+        (options.sleepFn || options.lockOptions?.sleepFn || defaultReadSleep)(delay);
+        if (vectorDeadlineAtMs !== undefined && nowMillis(options.nowFn) >= Number(vectorDeadlineAtMs)) {
+          throw boundedRunSetError({
+            maxRunIds: options.maxRunIds ?? 64,
+            deadlineMs: options.deadlineMs ?? 500,
+            observedCount: runIds.length,
+            totalIsLowerBound: false,
+            phase: 'lock-retry',
+          });
+        }
+        result = capture();
+      }
+      if (result.ok) runs[runId] = result;
+      else {
+        const aggregateBound = implicit || options.deadlineMs !== undefined || options.maxRunIds !== undefined;
+        if (aggregateBound && vectorDeadlineAtMs !== undefined
+          && nowMillis(options.nowFn) >= Number(vectorDeadlineAtMs)) {
+          throw boundedRunSetError({
+            maxRunIds: options.maxRunIds ?? 64,
+            deadlineMs: options.deadlineMs ?? 500,
+            observedCount: runIds.length,
+            totalIsLowerBound: false,
+            phase: 'lock-retry',
+          });
+        }
+        errors[runId] = result;
+      }
+    } catch (error) {
+      if (error?.kind === 'run-set-bound-exceeded') {
+        const diagnostic = error;
+        return Object.freeze({
+          root: canonicalProjectRoot(root),
+          runIds: Object.freeze([]),
+          runs: Object.freeze(Object.create(null)),
+          errors: Object.freeze({ run_set: diagnostic }),
+          ok: false,
+          kind: diagnostic.kind,
+          ...diagnostic,
+        });
+      }
+      errors[runId] = Object.freeze({
+        kind: error?.message?.startsWith('TRANSACTION_RECONCILIATION_REQUIRED')
+          ? 'reconciliation-required' : 'integrity-invalid',
+        message: String(error?.message || error).split(':')[0],
+      });
+    }
+  }
+  const result = {
+    root: canonicalProjectRoot(root),
+    runIds,
+    runs: Object.freeze(Object.keys(errors).length ? Object.create(null) : runs),
+    errors: Object.freeze(errors),
+  };
+  return Object.freeze(result);
 }
 
 function appendDurableLine(path, bytes, guard, faultAt, index) {

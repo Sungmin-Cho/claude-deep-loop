@@ -123,19 +123,13 @@ stop한다. model/effort are not part of the immutable capsule identity. 따라�
 model/effort를 public kernel route로 갱신한다. 스킬이 상태 파일을 직접
 쓰지 않는다.
 
-현재 호스트가 알려 준 model과 effort를 직접 관측한다. 둘 다 있으면 다음 완전한 명령을 사용한다:
+현재 호스트가 알려 준 model과 effort를 직접 관측한다. 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만들고 다음 완전한 명령 하나를 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --effort "<session_effort>" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --session-profile '<session_profile_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-effort를 관측하지 못했으면 `--effort`를 넣지 않은 다음 완전한 명령을 사용한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-- **빈 값 금지**: `--model`/`--effort`는 관측된 것만 포함한다(`CLAUDE_EFFORT`가 비면 `--effort` 생략). 모델도 관측 못 하고 effort도 비면 이 단계 전체를 건너뛴다(state 그대로 진행 — 무해).
+`<session_profile_json_compact>` 내부의 JSON double quotes(JSON 이중 따옴표)는 그대로 두고 바깥 single quotes로 argv 하나를 만든다. 둘 다 관측하지 못하면 이 refresh 전체를 건너뛴다(state 그대로 진행 — 무해).
 - 값이 그대로면 no-op이다. 관측값이 없으면 이 단계를 건너뛴다.
 - handoff가 진행 중이어도 다음 분기를 추측하지 않는다. 항상 §1의 새
   `next-action` 응답만 따른다.
@@ -163,23 +157,15 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuat
 `action.workstream_id`가 존재하는 action에만 이 단계를 실행한다. 이는 `dispatch_maker`, `dispatch_checker`, `fix_episode`, `await_result`(진행 중인 maker/checker 폴링 시 워크트리 경로가 필요)를 포함한다.
 `workstream_id`가 없는 action 타입(`finish`, `handoff`, `await_human`, `discover`)은 이 단계를 건너뛴다.
 
-§1에서 실행한 `next-action --json` 결과의 `action.workstream_id`를 읽는다. 그 ID를 기준으로:
+§1에서 실행한 `next-action --json` 결과의 `action.workstream_id`를 읽고, 커널에서 절대 worktree 경로를 얻는다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" path resolve --target workstream --workstream <workstream_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-workstream 목록에서 `id === action.workstream_id`인 항목의 `worktree` 경로를 확인한다. **경로 절대화(FIX C/FIX I/FIX O):** 기록된 `worktree` 값이 상대 경로이면(FIX N 이후 항상 루트-상대), state에서 project root를 읽어 절대화한다.
+반환된 한 줄의 절대 경로를 그대로 사용한다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 도구의 working-directory 옵션에 전달한다. 이후 커널 명령도 descriptor-bound `--project-root`와 `--run-id`를 계속 명시한다.
 
-> `state get --field project.root`는 JSON-인코딩된 문자열(예: `"/repo"`)을 출력한다 — 따옴표를 제거해야 올바른 경로가 된다.
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field project.root --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-반환 JSON 문자열을 `JSON.parse`로 해석해 따옴표가 제거된 절대 `project.root` 값을 얻고, 그 값과 `<recorded-worktree>`를 host path API로 결합한다. 셸 변수, 파이프라인, `cd` 명령은 사용하지 않는다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 도구의 working-directory 옵션에 절대 worktree 경로를 전달한다. 이후 커널 명령도 descriptor-bound `--project-root`와 `--run-id`를 계속 명시한다.
-
-> **artifact 경로 규칙(project-root 기준 상대, 기록된 worktree 경로 접두):** `episode new`·`episode record` 의 artifact 인자는 반드시 project root 기준 상대 경로, **기록된 worktree 경로(루트 기준 상대) 접두** 형태로 지정한다 — `<recorded-worktree-relative-to-root>/path/to/file` (예: `.claude/worktrees/<ws-slug>/path/to/file` 또는 `.worktrees/<ws-slug>/path/to/file`). §1.5에서 cwd가 worktree 안으로 이동했더라도 containment 검증은 항상 project root 기준이므로, 이 규칙을 어기면 artifact proof가 실패한다.
+Artifact 상세 교정 규칙은 `deep-loop-workflow`의 `## 핵심 불변식`을 따른다.
 
 `max_parallel` 환경에서 여러 active workstream이 있어도, 항상 `action.workstream_id`가 지정하는 workstream의 worktree만 진입한다 — 임의 active workstream이 아님.
 

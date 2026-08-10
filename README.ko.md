@@ -42,6 +42,23 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 
 > 참고: `/deep-loop-workflow`는 `/deep-loop-continue` 등이 내부적으로 사용하는 비공개(user-invocable:false) 스킬입니다.
 
+## Multi-run identity와 worktree 라우팅
+
+한 프로젝트에는 여러 active/historical run이 함께 존재할 수 있습니다. 먼저 bounded verified 목록을 확인한 뒤 불변 logical id 하나를 명시적으로 선택합니다:
+
+```text
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" run list --project-root "<canonical_project_root>"
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+`.deep-loop/current` 포인터는 마지막 생성 run을 알려주는 **hint**일 뿐입니다. routing 권위·소유권 증명·tie-breaker가 아닙니다. mutation route와 exact read never silently fallback to current; 공식 automation도 provisioned identity를 요구합니다. 단, bounded resolver는 active run이 없고 현재 선택이 검증된 terminal run 하나일 때에만 `legacy-current` 호환 경로를 유지하며, 그 run에는 서로 다른 terminal claim이 하나 이상(중첩 Workstream 포함) 있을 수 있습니다. 동시에 실행하는 각 run은 고유한 worktree 경로와 branch를 사용해야 합니다. worktree 생성과 `workstream new` 기록 사이에는 좁은 create↔record TOCTOU가 남아 있고, v1은 project-level reservation·claim retirement·ownership transfer를 구현하거나 보장하지 않습니다. 중복 claim은 fail-closed이고 orphan 정리는 proposal-only입니다.
+
+무인 실행은 canonical project root와 불변 run id를 한 번 provision한 뒤 매 tick에 두 값을 함께 전달합니다:
+
+```text
+node "<absolute-deep-loop-root>/scripts/hooks-impl/drive-headless.mjs" --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
 ## 호환성 및 복구 계약
 
 새 run은 Claude Code, Codex CLI, Codex App 모두 `workstream-session`과 `spawn_style='interactive'`로 시작합니다. active host conversation은 정확한 `bound_workstream_first_terminal` 이벤트까지 하나의 bound Workstream을 소유합니다. compaction은 그 대화 안에서 처리하고, normal child handoff는 first-terminal 경계에서만 발행합니다. **No unattended mid-Workstream respawn**이 계약입니다. 따라서 기본 연속성은 interactive이고 `/deep-loop-resume` 또는 `$deep-loop:deep-loop-resume`을 이용한 **manual resume**은 오류 전용 폴백이 아닌 일급 지원 경로입니다.
@@ -50,9 +67,9 @@ PreCompact는 bounded checkpoint를 발행하고 source/matcher가 `compact`인 
 
 PostCompact는 bounded 256 KiB host event를 받은 뒤 trusted common field만 projection하여 bounded 4096-byte trusted payload를 fenced public `checkpoint observe` CLI에 전달하며 adapter는 restore나 continue를 수행하지 않습니다. Observation receipt는 compaction 발생을 입증하지만 절대 provider-evidence mismatch를 덮어쓰지 않습니다. `prepared` checkpoint는 inspection evidence일 뿐 절대 automatic 자동 복원 권한을 부여하지 않습니다. Unattended tick이 open bound Workstream 안에 있으면 `next-action`은 normal action을 유지하고 no compact advice 및 no cap handoff를 보장합니다. Terminal run에서는 `checkpoint observe`와 `checkpoint restore`를 durable byte 변경 전에 거부합니다.
 
-visible/desktop launch는 터미널 감지만으로 추론하지 않습니다. 사람이 현재 lease와 executable diagnosis를 확인한 후 `attended-launch approve --style visible --confirm ...`을 명시적으로 실행해야 합니다. desktop은 nonce-bound `spawn-style offer-desktop ...` 뒤 `spawn-style confirm-desktop ...` 흐름을 사용합니다. 예산 소진과 latch된 breaker도 사람 확인을 기다리며, 확인된 `budget extend ...`와 `breaker reset --confirm ...`만 run을 복구할 수 있습니다. autonomous skill은 어떤 승인도 대신하지 않습니다.
+visible/desktop launch는 터미널 감지만으로 추론하지 않습니다. 사람이 선택한 run의 lease와 executable diagnosis를 확인한 후 `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" attended-launch approve --style visible --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>`를 명시적으로 실행해야 합니다. desktop은 nonce-bound `spawn-style offer-desktop ...` 뒤 `spawn-style confirm-desktop ...` 흐름을 사용합니다. 예산 소진과 latch된 breaker는 서로 독립적인 relief route입니다. Budget extend와 breaker reset은 independent relief routes입니다. 확인된 `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" budget extend --turns <positive_turn_delta> --reason "<human_confirmed_reason>" --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>`는 예산 소진 때, `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" breaker reset --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>`는 latch된 breaker 때 각각 사용합니다. autonomous skill은 어떤 승인도 대신하지 않습니다.
 
-host 상실 복구도 human-only입니다. 먼저 preserve-pause하고, 확인된 affinity supersession이 capsule을 발행하면 fresh process는 반환된 정확한 `recovery acquire --capsule ...`만 실행합니다. 프로젝트 이동 시 read-only `root diagnose --candidate-project-root ...`를 실행합니다. binding 변경은 diagnosis가 반환한 정확한 `root rebind ...` 또는 `root recover ...`만 허용하고, replacement process는 반환된 `root recovery acquire --capsule ...`을 사용합니다. `project.binding_generation`이 **root epoch**입니다. 모든 state command와 **relative locator**는 그 epoch, root digest, run id, lease owner/generation에 묶입니다. **Stale root-bound commands** are rejected by the epoch fence and are **never edited in place**; fresh command가 필요하면 다시 diagnose합니다.
+host 상실 복구도 human-only입니다. 먼저 preserve-pause하고, 확인된 affinity supersession이 capsule을 발행하면 fresh process는 반환된 정확한 `recovery acquire --capsule ...`를 그대로 실행합니다. 프로젝트 이동 시 read-only `root diagnose --candidate-project-root ...`를 실행하고 descriptor를 검토합니다. 그 뒤 diagnosis가 반환한 public-kernel command를 정확히 그대로 실행합니다(예: 반환된 root rebind 또는 root recovery acquire --capsule ...). recovery command를 합성·축약·수정하지 않습니다. `project.binding_generation`이 **root epoch**입니다. 모든 state command와 **relative locator**는 그 epoch, root digest, run id, lease owner/generation에 묶입니다. **Stale root-bound commands** are rejected by the epoch fence and are **never edited in place**; fresh command가 필요하면 다시 diagnose합니다.
 
 `.deep-loop/runs/<run-id>/`의 durable artifact inventory는 다음을 포함합니다.
 
@@ -86,7 +103,7 @@ WAL은 일반 read/mutation 전에 reconcile됩니다. incomplete, invalid, iden
 없이 진행 권한을 회복한다. 규약은 **생성 → 호출자 쪽 durable 영속화 → acquire** 순서이며,
 호출 후 기록은 "호출은 성공했는데 기록 전에 죽는" 창을 남기므로 **금지**한다 — 지키지 않은
 호출자에게는 이 보증이 적용되지 않는다. 재시도는 같은 값을 재사용한다(새 값은 다른 시도다).
-replay 자신은 아무것도 쓰지 않는다. 사람이 개시한 `pause --mode preserve`는 이미 부여된 시도의
+replay 자신은 아무것도 쓰지 않는다. 사람이 개시한 `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" pause --mode preserve --reason "host-session-lost" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>`는 이미 부여된 시도의
 진행 권한을 **취소**한다 — replay는 run이 `running`일 때만 성립한다.
 
 `resume-command`에 **acquired 브랜치**가 생겼다. 소비 이후에도 영수증만으로(read-only) "이 예약이
@@ -214,7 +231,7 @@ cron 또는 CI 사용을 위해 `scripts/hooks-impl/drive-headless.mjs` 포함:
 
 ```bash
 # 헤드리스로 1 틱 실행 (측정불가 시 fail-closed: exit 1)
-DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs
+DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs --project-root "<canonical_project_root>" --run-id <run_id>
 
 # cron/GitHub Actions 템플릿은 recipes/automation/ 참조
 ```
@@ -222,7 +239,7 @@ DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs
 ```powershell
 # Native Windows PowerShell
 $env:DEEP_LOOP_UNATTENDED = '1'
-node scripts/hooks-impl/drive-headless.mjs
+node scripts/hooks-impl/drive-headless.mjs --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 **Claude** 경로는 bounded `claude -p --output-format json` 출력을 파싱합니다. 승인된 **Codex** runtime은 인증된 격리 `CODEX_HOME`, shell-free `codex exec --json`, incremental JSONL 파싱을 사용합니다. 두 경로 모두 정확히 한 turn의 측정 usage를 기록하며 timeout, non-zero exit, malformed output, 측정불가 usage에서 fail-closed합니다. 교차 런타임 fallback은 하지 않습니다. **The isolated Codex child disables plugins and hooks**(Apps·원격 capability도 비활성화)하므로 absolute resume skill workflow를 inline 실행하고 durable state와 측정된 process exit에 의존합니다.

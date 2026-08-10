@@ -33,7 +33,11 @@ import {
 } from '../scripts/lib/project-root.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
-import { appendAnchored, verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
+import {
+  appendAnchored,
+  verifyHead,
+  verifyLog,
+} from '../scripts/lib/integrity.mjs';
 import {
   codexCheckerClaimHash,
   extendBudget,
@@ -74,6 +78,7 @@ async function recoveryApi() {
   assert.equal(typeof api.rebindProjectRoot, 'function', 'rebindProjectRoot must be exported');
   assert.equal(typeof api.recoverRelocatedRoot, 'function', 'recoverRelocatedRoot must be exported');
   assert.equal(typeof api.acquireRootRecovery, 'function', 'acquireRootRecovery must be exported');
+  assert.equal(typeof api.diagnoseVerifiedProjectRoot, 'function', 'diagnoseVerifiedProjectRoot must be exported');
   return api;
 }
 
@@ -503,6 +508,47 @@ function runCliAsync(args, cwd = REPO_ROOT) {
   });
 }
 
+function lockBusyResult(result) {
+  const stderr = String(result?.stderr || '').replace(/\u001b\[[0-9;]*m/g, '').trim();
+  return result?.status === 1 && /^\[deep-loop:error\] LOCK_BUSY(?::[^\r\n]*)?$/.test(stderr);
+}
+
+test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => {
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '\u001b[31m[deep-loop:error]\u001b[0m LOCK_BUSY: run-a\n',
+  }), true);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] LOCK_BUSY: run-a\n',
+  }), true);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] OTHER_ERROR: run-a\n',
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 2,
+    stderr: '[deep-loop:error] LOCK_BUSY: run-a\n',
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: 'prefix [deep-loop:error] LOCK_BUSY: run-a\n',
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] LOCK_BUSY: run-a\n[deep-loop:error] STATE_TAMPERED\n',
+  }), false);
+});
+
+async function retryLockBusyDiagnose(result, args, cwd) {
+  let current = result;
+  for (let attempt = 0; attempt < 5 && lockBusyResult(current); attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    current = await runCliAsync(args, cwd);
+  }
+  return current;
+}
+
 function durableSnapshot(root, runId) {
   const dir = runDir(root, runId);
   const eventPath = join(dir, 'event-log.jsonl');
@@ -693,6 +739,33 @@ test('only an unresolvable stored root is diagnosed as rebindable', async () => 
   assert.equal(diagnosed.topology, 'quiescent');
   assert.equal(diagnosed.current_root_digest, projectRootDigest(storedRoot));
   assert.deepEqual(diagnosed.fence, { owner: runId, generation: 1 });
+});
+
+test('verified root-recovery capture diagnoses a moved root from immutable bytes without mutation', async () => {
+  const moved = movedRun('dl-root-verified-recovery-');
+  const before = durableSnapshot(moved.candidateRoot, moved.runId);
+  const { diagnoseVerifiedProjectRoot } = await recoveryApi();
+  const diagnosis = diagnoseVerifiedProjectRoot(moved.candidateRoot, moved.runId);
+  assert.equal(diagnosis.action, 'rebind');
+  assert.equal(diagnosis.current_root_digest, projectRootDigest(moved.storedRoot));
+  assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), before);
+});
+
+test('verified root diagnosis discards the result when the run vector drifts after evidence sampling', async () => {
+  const moved = movedRun('dl-root-verified-drift-');
+  const { diagnoseVerifiedProjectRoot } = await recoveryApi();
+  const result = diagnoseVerifiedProjectRoot(moved.candidateRoot, moved.runId, {
+    afterEvidence: () => {
+      const path = join(runDir(moved.candidateRoot, moved.runId), 'loop.json');
+      const loop = JSON.parse(readFileSync(path, 'utf8'));
+      loop.goal = 'intentional diagnosis drift';
+      writeFileSync(path, JSON.stringify(loop, null, 2));
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'integrity-invalid');
+  assert.equal(result.partial_discarded, true);
+  assert.equal(Object.hasOwn(result, 'action'), false);
 });
 
 test('a stopped original still fences diagnosis and rebind while its stored root resolves', async () => {
@@ -948,7 +1021,7 @@ test('Task 13 relocation topology matrix rejects plain rebind and creates one fr
 });
 
 test('Task 13 active checker is invalidated exactly and a live headless producer makes diagnosis wait', async () => {
-  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const { diagnoseProjectRoot, diagnoseVerifiedProjectRoot, recoverRelocatedRoot } = await recoveryApi();
   const moved = seedRelocationTopology('open-affinity', 'codex', 'dl-root-review-headless-');
   const { data } = readStateForRootRecovery(moved.candidateRoot, moved.runId);
   const claim = {
@@ -982,6 +1055,9 @@ test('Task 13 active checker is invalidated exactly and a live headless producer
     pid: process.pid,
     started_at_ms: FIXED_NOW.getTime(),
   }));
+  const verifiedWaiting = diagnoseVerifiedProjectRoot(moved.candidateRoot, moved.runId);
+  assert.equal(verifiedWaiting.action, 'wait');
+  assert.equal(verifiedWaiting.blocker, 'live-headless-producer');
   const waiting = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
   assert.equal(waiting.action, 'wait');
   assert.equal(waiting.blocker, 'live-headless-producer');
@@ -1003,7 +1079,7 @@ test('Task 13 active checker is invalidated exactly and a live headless producer
 });
 
 test('Task 13 verified orphan accounting settles once while malformed receipts fail closed', async () => {
-  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const { diagnoseProjectRoot, diagnoseVerifiedProjectRoot, recoverRelocatedRoot } = await recoveryApi();
   const moved = movedRunWithProcessReceipt();
   const result = recoverRelocatedRoot(
     moved.candidateRoot,
@@ -1068,6 +1144,14 @@ test('Task 13 verified orphan accounting settles once while malformed receipts f
     /PROJECT_ROOT_RELOCATION_WAIT/,
   );
   assert.deepEqual(durableSnapshot(live.candidateRoot, live.runId), beforeLive);
+
+  const unmeasurable = movedRunWithProcessReceipt({ unmeasurable: true });
+  const verifiedAccounting = diagnoseVerifiedProjectRoot(
+    unmeasurable.candidateRoot,
+    unmeasurable.runId,
+  );
+  assert.equal(verifiedAccounting.action, 'wait');
+  assert.equal(verifiedAccounting.blocker, 'project-root-accounting');
 });
 
 test('Task 13 post-candidate retry is proof-bound and forged root-operation receipts fail closed', async () => {
@@ -1225,13 +1309,16 @@ test('Task 13 plain and replacement root publications roll forward exactly once 
         route === 'plain' ? 'claude' : 'codex',
         `dl-root-crash-${route}-${barrier.replaceAll(':', '-')}-`,
       );
+      const retryOptions = relocationOptions(moved);
       assert.throws(
-        () => mutate(moved.candidateRoot, moved.runId, relocationOptions(moved, {
+        () => mutate(moved.candidateRoot, moved.runId, {
+          ...retryOptions,
           faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
-        })),
+        }),
         /TRANSACTION_PENDING|TRANSACTION_RECONCILIATION_REQUIRED/,
         `${route}/${barrier}`,
       );
+      mutate(moved.candidateRoot, moved.runId, retryOptions);
       const reopened = invoke([
         'root', 'diagnose',
         '--candidate-project-root', moved.candidateRoot,
@@ -1517,13 +1604,16 @@ test('Round1 acceptance RED: every relocation topology replays every artifact an
         'codex',
         `dl-root-r1-crash-${topology}-${barrier.replaceAll(':', '-')}-`,
       );
+      const retryOptions = relocationOptions(moved);
       assert.throws(
-        () => recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved, {
+        () => recoverRelocatedRoot(moved.candidateRoot, moved.runId, {
+          ...retryOptions,
           faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
-        })),
+        }),
         /TRANSACTION_PENDING|TRANSACTION_RECONCILIATION_REQUIRED/,
         `${topology}/${barrier}`,
       );
+      recoverRelocatedRoot(moved.candidateRoot, moved.runId, retryOptions);
       const reopened = invoke([
         'root', 'diagnose',
         '--candidate-project-root', moved.candidateRoot,
@@ -1581,12 +1671,20 @@ test('Round1 acceptance RED: retention removes commit-oldest only and concurrent
     'commit-oldest unreferenced receipts must be pruned first',
   );
 
-  const concurrent = await Promise.all(Array.from({ length: 4 }, () => runCliAsync([
+  const diagnoseArgs = [
     'root', 'diagnose',
     '--candidate-project-root', currentRoot,
     '--run-id', runId,
-  ], freshRoot('dl-root-r1-retention-cwd-'))));
-  assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0]);
+  ];
+  const concurrentInitial = await Promise.all(Array.from({ length: 4 }, () => {
+    const cwd = freshRoot('dl-root-r1-retention-cwd-');
+    return runCliAsync(diagnoseArgs, cwd).then(result => ({ result, cwd }));
+  }));
+  const concurrent = await Promise.all(concurrentInitial.map(({ result, cwd }) => (
+    retryLockBusyDiagnose(result, diagnoseArgs, cwd)
+  )));
+  assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0],
+    JSON.stringify(concurrent.map(result => ({ status: result.status, stderr: result.stderr }))));
   assert.deepEqual(
     concurrent.map(result => JSON.parse(result.stdout).operation_id),
     Array(4).fill(operationIds.at(-1)),

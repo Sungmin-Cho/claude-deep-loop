@@ -120,6 +120,12 @@ function withCurrentPointer(root, runId) {
   writeFileSync(join(root, '.deep-loop', 'current'), runId);
 }
 
+function mutatingCli(root, runId, args, options = {}) {
+  return execFileSync('node', [CLI, ...args, '--project-root', root, '--run-id', runId], {
+    encoding: 'utf8', ...options,
+  });
+}
+
 // ── lib: offerDesktop / confirmDesktop / declineDesktop ──────────────────────
 
 test('confirm without pending nonce is rejected', () => {
@@ -531,7 +537,7 @@ test('CLI spawn-style probe-desktop needs no run/owner/generation (works with no
 test('CLI spawn-style reset-desktop transitions desktop -> visible (exit 0)', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
   withCurrentPointer(root, runId);
-  const out = execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  const out = mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   assert.equal(JSON.parse(out).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
 });
@@ -541,7 +547,7 @@ test('CLI spawn-style reset-desktop wrong generation exits 3 (fence)', () => {
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', '99', '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', '99']);
   } catch (e) { code = e.status; }
   assert.equal(code, 3);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a fenced-out reset must not mutate spawn_style');
@@ -552,7 +558,7 @@ test('CLI spawn-style reset-desktop when spawn_style is not desktop exits 1 (SOU
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   } catch (e) { code = e.status; }
   assert.equal(code, 1);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
@@ -566,7 +572,7 @@ test('CLI spawn-style reset-desktop when spawn_style is not desktop exits 1 (SOU
 test('CLI spawn-style reset-desktop succeeds while status=paused and lease.state=releasing (exit 0)', () => {
   const { root, runId, expect } = seedPausedReleasingDesktop();
   withCurrentPointer(root, runId);
-  const out = execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  const out = mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   assert.equal(JSON.parse(out).ok, true);
   const after = readState(root, runId).data;
   assert.equal(after.autonomy.spawn_style, 'visible');
@@ -578,7 +584,7 @@ test('CLI spawn-style reset-desktop wrong owner while paused+releasing still exi
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', 'wrong-owner', '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', 'wrong-owner', '--generation', String(expect.generation)]);
   } catch (e) { code = e.status; }
   assert.equal(code, 3);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a fenced-out reset must not mutate spawn_style');
@@ -592,7 +598,7 @@ test('CLI spawn-style reset-desktop on a RELEASED lease exits 3 (fence) — no m
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   } catch (e) { code = e.status; }
   assert.equal(code, 3);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a released-lease reset must not mutate spawn_style');
@@ -603,7 +609,7 @@ test('CLI spawn-style reset-desktop on a COMPLETED (terminal) run exits 1 (RUN_T
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   } catch (e) { code = e.status; }
   assert.equal(code, 1);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a terminal-run reset must not mutate spawn_style');
@@ -614,7 +620,7 @@ test('CLI spawn-style reset-desktop during a healthy in-flight handoff (running+
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   } catch (e) { code = e.status; }
   assert.equal(code, 1);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'reset during an in-flight handoff must not mutate spawn_style');
@@ -633,9 +639,9 @@ test('CLI spawn-style reset-desktop during a healthy in-flight handoff (running+
 test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spawn_style=desktop)', { skip: !desktopProbeVerified }, () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
-  const outOffer = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });
+  const outOffer = mutatingCli(root, runId, ['spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0)]);
   assert.equal(JSON.parse(outOffer).ok, true);
-  const outConfirm = execFileSync('node', [CLI, 'spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0 + 1000), '--project-root', root], { encoding: 'utf8' });
+  const outConfirm = mutatingCli(root, runId, ['spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0 + 1000)]);
   assert.equal(JSON.parse(outConfirm).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
 });
@@ -643,8 +649,8 @@ test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spaw
 test('CLI spawn-style decline-desktop clears pending (exit 0)', () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
-  execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--project-root', root], { encoding: 'utf8' });
-  execFileSync('node', [CLI, 'spawn-style', 'decline-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  mutatingCli(root, runId, ['spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1']);
+  mutatingCli(root, runId, ['spawn-style', 'decline-desktop', '--owner', expect.owner, '--generation', String(expect.generation)]);
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined);
 });
 
@@ -653,7 +659,7 @@ test('CLI spawn-style confirm-desktop with no pending exits 1 (rejection, not fe
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1']);
   } catch (e) { code = e.status; }
   assert.equal(code, 1);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
@@ -664,7 +670,7 @@ test('CLI spawn-style confirm-desktop wrong generation exits 3', () => {
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', '99', '--nonce', 'n1', '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', '99', '--nonce', 'n1']);
   } catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
@@ -674,7 +680,7 @@ test('CLI spawn-style missing --owner/--generation exits 3', () => {
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'offer-desktop']);
   } catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
@@ -684,7 +690,7 @@ test('CLI spawn-style unknown verb exits 2 (with a valid fence)', () => {
   withCurrentPointer(root, runId);
   let code = 0;
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'bogus-verb', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'bogus-verb', '--owner', expect.owner, '--generation', String(expect.generation)]);
   } catch (e) { code = e.status; }
   assert.equal(code, 2);
 });
@@ -696,7 +702,7 @@ test('CLI spawn-style offer-desktop --ttl-sec notanumber exits 1 (INVALID_TTL_SE
   withCurrentPointer(root, runId);
   let code = 0, stderr = '';
   try {
-    execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--ttl-sec', 'notanumber', '--project-root', root], { encoding: 'utf8' });
+    mutatingCli(root, runId, ['spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--ttl-sec', 'notanumber']);
   } catch (e) { code = e.status; stderr = String(e.stderr || ''); }
   assert.equal(code, 1);
   assert.match(stderr, /INVALID_TTL_SEC/);
@@ -709,13 +715,13 @@ test('CLI spawn-style offer-desktop --ttl-sec notanumber exits 1 (INVALID_TTL_SE
 test('CLI spawn-style offer-desktop --ttl-sec 120 succeeds and the persisted expiry reflects 120s (not the 600s default)', { skip: !desktopProbeVerified }, () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
-  const out = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--ttl-sec', '120', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });
+  const out = mutatingCli(root, runId, ['spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--ttl-sec', '120', '--now', String(T0)]);
   assert.equal(JSON.parse(out).ok, true);
   const pending = readState(root, runId).data.autonomy.spawn_style_optin_pending;
   assert.equal(pending.nonce, 'n1');
   assert.equal(Date.parse(pending.expires_at), T0 + 120 * 1000, 'expiry must reflect the --ttl-sec 120 override, not the 600s default');
   // a confirm within the 120s window still succeeds (end-to-end proof the threaded ttlSec is usable).
-  const outConfirm = execFileSync('node', [CLI, 'spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0 + 60000), '--project-root', root], { encoding: 'utf8' });
+  const outConfirm = mutatingCli(root, runId, ['spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0 + 60000)]);
   assert.equal(JSON.parse(outConfirm).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
 });

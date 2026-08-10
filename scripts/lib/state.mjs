@@ -428,6 +428,7 @@ export function withLock(root, runId, fn, {
   durableWriteFn = durableAtomicWrite,
   flushDirectoryFn = flushDirectory,
   platform = process.platform,
+  deadlineAtMs,
 } = {}) {
   const lexicalRunDir = runDir(root, runId);
   const lockedRunDir = (() => {
@@ -443,7 +444,17 @@ export function withLock(root, runId, fn, {
   const token = String(tokenFactory()).toLowerCase();
   if (!LOCK_TOKEN.test(token) || !Number.isSafeInteger(pid) || pid <= 0
     || !Number.isInteger(ttlMs) || ttlMs < 0 || !Number.isInteger(retries) || retries < 1
-    || !Number.isFinite(backoffMs) || backoffMs < 0) throw new Error('LOCK_OPTIONS_INVALID');
+    || !Number.isFinite(backoffMs) || backoffMs < 0
+    || (deadlineAtMs !== undefined && !Number.isFinite(Number(deadlineAtMs)))) {
+    throw new Error('LOCK_OPTIONS_INVALID');
+  }
+  const deadline = deadlineAtMs === undefined ? null : Number(deadlineAtMs);
+  const remainingDeadlineMs = () => deadline === null ? null : deadline - boundedTime(nowFn());
+  const requireDeadline = () => {
+    const remaining = remainingDeadlineMs();
+    if (remaining !== null && remaining <= 0) throw new Error('LOCK_DEADLINE_EXCEEDED');
+    return remaining;
+  };
   let acquired = false;
   let lockIdentity = null;
   let owner = null;
@@ -540,6 +551,7 @@ export function withLock(root, runId, fn, {
   };
 
   for (let i = 0; i < retries && !acquired; i++) {
+    requireDeadline();
     resumeReclaim();
     try {
       mkdirFn(lock, { mode: 0o700 });
@@ -549,9 +561,14 @@ export function withLock(root, runId, fn, {
       if (error?.code !== 'EEXIST') throw error;
     }
     if (tryReclaim()) continue;
-    sleepFn(backoffMs);
+    if (i + 1 >= retries) break;
+    const remaining = requireDeadline();
+    sleepFn(remaining === null ? backoffMs : Math.min(backoffMs, remaining));
   }
-  if (!acquired) throw new Error(`LOCK_BUSY: ${runId}`);
+  if (!acquired) {
+    requireDeadline();
+    throw new Error(`LOCK_BUSY: ${runId}`);
+  }
   try {
     lockIdentity = captureStableFileIdentity(lock, { lstatFn });
     const acquiredAt = boundedTime(nowFn());
@@ -567,6 +584,7 @@ export function withLock(root, runId, fn, {
     durableWriteFn(ownerPath, JSON.stringify(owner), { platform });
     faultAt('acquire:owner-durable');
     if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+    requireDeadline();
 
     const assertRunBinding = (expectedRunDir) => {
       if (expectedRunDir === undefined) return;
@@ -611,6 +629,47 @@ export function withLock(root, runId, fn, {
       } catch { /* ownership loss preserves evidence and never removes a successor */ }
     }
   }
+}
+
+// Read-side callers get the same per-run non-reentrant lock, but no mutation
+// callback or writer capability.  The allowlisted options keep injected clock
+// and retry behavior available without turning a verified read into a mutation
+// boundary.
+export function withReadLock(root, runId, fn, options = {}) {
+  if (typeof fn !== 'function') throw new Error('READ_CALLBACK_REQUIRED');
+  const {
+    ttlMs,
+    retries,
+    backoffMs,
+    nowFn,
+    hostnameFn,
+    pid,
+    tokenFactory,
+    probePid,
+    sleepFn,
+    platform,
+    deadlineAtMs,
+    deadlineMs,
+  } = options;
+  // A read-set supplies one absolute deadline to every per-run lock.  Accept a
+  // relative form here as a convenience for callers that do not yet have an
+  // aggregate clock boundary, but never recompute it on retry.
+  const effectiveDeadlineAtMs = deadlineAtMs === undefined && deadlineMs !== undefined
+    ? boundedTime((typeof nowFn === 'function' ? nowFn : Date.now)()) + Number(deadlineMs)
+    : deadlineAtMs;
+  return withLock(root, runId, fn, {
+    ...(ttlMs === undefined ? {} : { ttlMs }),
+    ...(retries === undefined ? {} : { retries }),
+    ...(backoffMs === undefined ? {} : { backoffMs }),
+    ...(nowFn === undefined ? {} : { nowFn }),
+    ...(hostnameFn === undefined ? {} : { hostnameFn }),
+    ...(pid === undefined ? {} : { pid }),
+    ...(tokenFactory === undefined ? {} : { tokenFactory }),
+    ...(probePid === undefined ? {} : { probePid }),
+    ...(sleepFn === undefined ? {} : { sleepFn }),
+    ...(platform === undefined ? {} : { platform }),
+    ...(effectiveDeadlineAtMs === undefined ? {} : { deadlineAtMs: effectiveDeadlineAtMs }),
+  });
 }
 
 // Two-mode safety pause (spec §9 / §1.2). Uses appendAnchored for event-log consistency.

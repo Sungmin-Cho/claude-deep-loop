@@ -5,6 +5,25 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.14.0] — 2026-08-06
+
+### Added
+
+- **경로 해석을 커널 소유 인터페이스로 통합했다.** 실행-plane skill이 반복하던 프로젝트/런 경로
+  판단을 project-root-fenced resolver로 옮겨, 동일한 입력이 모든 host에서 같은 결과와 오류 계약을
+  갖는다.
+- **artifact 경로 오류에 수정 가능한 진단을 제공한다.** anchored `preCheck`와 default-deny 분류는
+  유지하면서, 거부된 artifact가 어떤 기준을 위반했고 어떤 경로를 제출해야 하는지 구조화해 반환한다.
+- **통합 `--session-profile '<json>'` 입력을 추가했다.** 기존 개별 옵션과 동등한 검증·lease fence를
+  적용하고, 빈 객체는 상태와 event log를 바꾸지 않는 명시적 no-op으로 처리한다.
+
+### Fixed
+
+- **Codex checker review import의 post-commit `LOCK_BUSY`를 제거했다.** review proof가 이미 anchored
+  transaction으로 커밋된 뒤 cleanup만을 위해 두 번째 lock을 다시 얻지 않는다. committed journal은
+  다음 canonical mutation이 같은 lock에서 reconcile·retire하므로, bounded importer timeout과 I/O
+  부하가 겹쳐도 proof를 보존하면서 dead-owner lock을 남기지 않는다.
+
 ## [1.13.1] — 2026-08-01
 
 ### Fixed

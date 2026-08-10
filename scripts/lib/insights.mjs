@@ -1,12 +1,27 @@
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  opendirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import {
   captureReconciledRunSet,
   captureReconciledRunSnapshot,
 } from './state.mjs';
-import { verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import {
+  captureVerifiedRunSet,
+  verifyLines,
+  verifyHeadLines,
+  appendAnchored,
+  MUTATION_TURN_FLOOR,
+} from './integrity.mjs';
 import { contentHash, wrap, unwrap, ulid, atomicWrite, renameAtomicWithRetry } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
+import { captureStableFileIdentity, matchingStableFileIdentity } from './fs-safe.mjs';
 
 export const INSIGHTS_SCHEMA_VERSION = 1;
 
@@ -326,6 +341,48 @@ const nonExemptEvent = e => !(e.type === 'cost'
 
 export { captureReconciledRunSet };
 
+function projectVerifiedRunSet(captured) {
+  if (!captured || typeof captured !== 'object') {
+    return { ok: false, kind: 'insights-run-set-integrity', phase: 'run-set', partial_discarded: true };
+  }
+  if (captured.ok === false) {
+    if (captured.kind === 'run-set-bound-exceeded' || captured.reason === 'run-set-bound-exceeded') {
+      return {
+        ok: false,
+        kind: 'run-set-bound-exceeded',
+        phase: captured.phase || 'run-set',
+        max_run_ids: captured.max_run_ids ?? 64,
+        deadline_ms: captured.deadline_ms ?? 500,
+        observed_count: captured.observed_count ?? 0,
+        total_is_lower_bound: captured.total_is_lower_bound ?? false,
+        partial_discarded: true,
+      };
+    }
+    return { ok: false, kind: 'insights-run-set-integrity', phase: 'run-set', partial_discarded: true };
+  }
+  const runs = Object.fromEntries(captured.runIds.map(runId => [
+    runId,
+    captured.runs[runId]?.snapshot || captured.runs[runId],
+  ]));
+  if (Object.keys(captured.errors || {}).length > 0) {
+    return { ok: false, kind: 'insights-run-set-integrity', phase: 'run-set', partial_discarded: true };
+  }
+  return Object.freeze({ ...captured, runs: Object.freeze(runs) });
+}
+
+export function captureVerifiedInsightsRunSet(root, options = {}) {
+  return projectVerifiedRunSet(captureVerifiedRunSet(root, {
+    runIds: options.runIds,
+    maxRunIds: options.maxRunIds ?? 64,
+    deadlineMs: options.deadlineMs ?? 500,
+    deadlineAtMs: options.deadlineAtMs,
+    nowFn: options.nowFn,
+    sleepFn: options.sleepFn,
+    lockOptions: options.lockOptions,
+    opendirFn: options.opendirFn,
+  }));
+}
+
 // (a) suspicious_active 판정 — raw(비검증) 읽기 기반의 **라벨**이지 신뢰 판단이 아니다(집계 제외 원칙은
 // terminal-only 불변; spec §2 판정 표를 위에서 아래로 첫 매치). paused 는 preserve-pause 사람-대기 정상
 // 상태라 최우선 제외. releasing 인데 expires_at 부재/파싱불가는 규약 밖(정상 커널은 releasing 전이 시 반드시
@@ -443,36 +500,178 @@ export function emitInsights(root, runId, {
     suspicious_active: payload.suspicious_active, post_finish_mutated: payload.post_finish_mutated };
 }
 
-export function captureLatestInsightsSet(root, { afterEnumeration } = {}) {
+export function captureLatestInsightsSet(root, {
+  afterEnumeration,
+  maxArtifacts = 64,
+  deadlineMs = 500,
+  deadlineAtMs,
+  nowFn = () => Date.now(),
+  sleepFn,
+  opendirFn = opendirSync,
+  readFileFn = readFileSync,
+  lstatFn = lstatSync,
+  identityFn = path => captureStableFileIdentity(path, { lstatFn }),
+} = {}) {
+  const now = () => {
+    const value = nowFn();
+    return value instanceof Date ? value.getTime() : Number(value);
+  };
+  const absoluteDeadline = deadlineAtMs ?? now() + deadlineMs;
+  const bound = (phase, observedArtifacts) => ({
+    ok: false,
+    kind: 'insights-artifact-set-bound-exceeded',
+    phase,
+    max_artifacts: maxArtifacts,
+    deadline_ms: deadlineMs,
+    observed_artifacts: observedArtifacts,
+    partial_discarded: true,
+  });
+  const checkDeadline = (phase, observedArtifacts = 0) => {
+    if (!Number.isFinite(absoluteDeadline) || now() >= absoluteDeadline) return bound(phase, observedArtifacts);
+    return null;
+  };
   const dir = insightsDir(root);
-  const artifactNames = Object.freeze(!existsSync(dir) ? [] : readdirSync(dir)
-    .filter(f => f.endsWith('-insights.json') && !f.startsWith('.tmp-')).sort().reverse());
+  let artifactNames;
+  let directory;
+  let directoryIdentity = null;
+  let directoryPresent = false;
+  const directoryStable = () => {
+    let stat;
+    try { stat = lstatFn(dir, { bigint: true }); } catch { return false; }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    let identity;
+    try { identity = identityFn(dir); } catch { return false; }
+    return directoryIdentity !== null
+      ? matchingStableFileIdentity(directoryIdentity, identity)
+      : false;
+  };
+  try {
+    const early = checkDeadline('enumeration');
+    if (early) return early;
+    const names = [];
+    if (existsSync(dir)) {
+      directoryPresent = true;
+      let stat;
+      try { stat = lstatFn(dir, { bigint: true }); } catch { return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'enumeration', partial_discarded: true }; }
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'enumeration', partial_discarded: true };
+      directoryIdentity = identityFn(dir);
+      directory = opendirFn(dir);
+      while (true) {
+        const beforeRead = checkDeadline('enumeration', names.length);
+        if (beforeRead) return beforeRead;
+        const entry = directory.readSync();
+        if (entry === null) break;
+        if (!entry.isFile() || !entry.name.endsWith('-insights.json') || entry.name.startsWith('.tmp-')) continue;
+        names.push(entry.name);
+        if (names.length > maxArtifacts) return bound('enumeration', names.length);
+      }
+    }
+    names.sort().reverse();
+    artifactNames = Object.freeze(names);
+  } catch {
+    return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'enumeration', partial_discarded: true };
+  } finally {
+    try { directory?.closeSync(); } catch { /* enumeration failure is already structured */ }
+  }
   afterEnumeration?.(artifactNames);
+  const afterEnumerationDeadline = checkDeadline('post-enumeration', artifactNames.length);
+  if (afterEnumerationDeadline) return afterEnumerationDeadline;
+  if ((directoryPresent && !directoryStable()) || (!directoryPresent && existsSync(dir))) {
+    return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true };
+  }
   const artifacts = Object.create(null);
   const producerIds = [];
   for (const name of artifactNames) {
+    const early = checkDeadline('artifact-read', artifactNames.length);
+    if (early) return early;
+    if ((directoryPresent && !directoryStable()) || (!directoryPresent && existsSync(dir))) {
+      return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true };
+    }
     try {
-      const bytes = Buffer.from(readFileSync(join(dir, name)));
+      const path = join(dir, name);
+      const beforeStat = lstatFn(path, { bigint: true });
+      if (beforeStat.isSymbolicLink() || !beforeStat.isFile()) throw new Error('INSIGHTS_ARTIFACT_NOT_REGULAR');
+      const before = identityFn(path);
+      const bytes = Buffer.from(readFileFn(path));
+      const afterStat = lstatFn(path, { bigint: true });
+      const after = identityFn(path);
+      if (afterStat.isSymbolicLink() || !afterStat.isFile()
+        || !matchingStableFileIdentity(before, after)) {
+        throw new Error('INSIGHTS_ARTIFACT_IDENTITY_DRIFT');
+      }
+      // The file identity check alone does not bind the pathname to the
+      // enumerated parent. A concurrent parent rename/symlink swap must be
+      // rejected before retaining the bytes we just read.
+      if ((directoryPresent && !directoryStable()) || (!directoryPresent && existsSync(dir))) {
+        return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true };
+      }
       artifacts[name] = Object.freeze({ state: 'present', bytes, sha256: contentHash(bytes) });
       const parsed = JSON.parse(bytes.toString('utf8'));
       const producer = parsed?.envelope?.run_id;
       if (typeof producer === 'string') producerIds.push(producer);
-    } catch (error) {
-      artifacts[name] = Object.freeze({ state: 'error', error: String(error?.message || error) });
+    } catch {
+      if ((directoryPresent && !directoryStable()) || (!directoryPresent && existsSync(dir))) {
+        return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true };
+      }
+      return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-read', partial_discarded: true };
     }
+    const afterReadDeadline = checkDeadline('artifact-read-after', artifactNames.length);
+    if (afterReadDeadline) return afterReadDeadline;
   }
-  const runSet = captureReconciledRunSet(root, { runIds: producerIds });
-  return Object.freeze({ root, artifactNames, artifacts, runSet });
+  if ((directoryPresent && !directoryStable()) || (!directoryPresent && existsSync(dir))) {
+    return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'artifact-directory', partial_discarded: true };
+  }
+  const runSet = captureVerifiedInsightsRunSet(root, {
+    runIds: producerIds,
+    deadlineAtMs: absoluteDeadline,
+    deadlineMs,
+    nowFn,
+    sleepFn,
+    lockOptions: { nowFn, sleepFn },
+  });
+  if (runSet.ok === false) {
+    if (runSet.kind === 'run-set-bound-exceeded') {
+      return {
+        ok: false,
+        kind: 'insights-artifact-set-bound-exceeded',
+        phase: 'producer-snapshot',
+        max_artifacts: maxArtifacts,
+        deadline_ms: deadlineMs,
+        observed_artifacts: artifactNames.length,
+        partial_discarded: true,
+      };
+    }
+    return { ok: false, kind: 'insights-artifact-set-integrity', phase: 'producer-snapshot', partial_discarded: true };
+  }
+  const afterProducerDeadline = checkDeadline('post-producer-snapshot', artifactNames.length);
+  if (afterProducerDeadline) return afterProducerDeadline;
+  return Object.freeze({ root, artifactNames, artifacts, runSet, deadlineAtMs: absoluteDeadline, nowFn, deadlineMs, maxArtifacts });
 }
 
 export function latestInsights(snapshotSet) {
+  if (snapshotSet?.ok === false) return snapshotSet;
   if (!snapshotSet || typeof snapshotSet !== 'object' || !Array.isArray(snapshotSet.artifactNames)
     || !snapshotSet.artifacts || !snapshotSet.runSet) throw new Error('INSIGHTS_SNAPSHOT_REQUIRED');
+  const now = typeof snapshotSet.nowFn === 'function' ? snapshotSet.nowFn : () => Date.now();
+  const deadline = snapshotSet.deadlineAtMs;
+  const bound = phase => ({ ok: false, kind: 'insights-artifact-set-bound-exceeded', phase,
+    max_artifacts: snapshotSet.maxArtifacts ?? 64, deadline_ms: snapshotSet.deadlineMs ?? 500,
+    observed_artifacts: snapshotSet.artifactNames.length, partial_discarded: true });
+  const deadlineExpired = () => deadline !== undefined && Number(now()) >= Number(deadline);
+  const integrityFailure = phase => ({
+    ok: false,
+    kind: 'insights-artifact-set-integrity',
+    phase,
+    partial_discarded: true,
+  });
+  if (deadlineExpired()) return bound('selection');
   for (const f of snapshotSet.artifactNames) {
+    if (deadlineExpired()) return bound('selection');
     try {
       const artifact = snapshotSet.artifacts[f];
       if (artifact?.state !== 'present') continue;
       const raw = artifact.bytes.toString('utf8');
+      if (deadlineExpired()) return bound('artifact-verify');
       const obj = unwrap(JSON.parse(raw), { producer: 'deep-loop', artifact_kind: 'loop-insights' });
       if (!obj) continue;
       if ((obj.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) { process.stderr.write(`[deep-loop:warn] insights ${f}: newer schema — skipped\n`); continue; }
@@ -483,8 +682,9 @@ export function latestInsights(snapshotSet) {
       // catch → fail-soft skip.
       const rid = obj.envelope.run_id;
       const producerSnapshot = snapshotSet.runSet.runs[rid];
-      if (!producerSnapshot) throw new Error(`producer run ${rid} unavailable`);
+      if (!producerSnapshot) return integrityFailure('producer-anchor');
       const producerData = producerSnapshot.data;
+      if (deadlineExpired()) return bound('producer-verify');
       // Phase6 ITEM-4: finish는 proof 검증 **이전**에 insights emit을 실행하므로, proof 미충족으로
       // finish가 실패하면 status=running인 run의 insights가 검증 통과 상태로 latest에 남아 다음
       // init/hill-climb이 소비할 수 있다 — computeInsights가 타 run에 적용하는 terminal-only 원칙
@@ -498,30 +698,35 @@ export function latestInsights(snapshotSet) {
       const lines = producerSnapshot.logLines;
       const vl = verifyLines(lines);
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
+      if (deadlineExpired()) return bound('log-verify');
       const vh = verifyHeadLines(lines, anchor);
       if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
       // (b) 앵커는 path-binding을 통과시킨 바로 그 이벤트 — artifact의 path와 정확 일치. 동일 path 매칭이
       // 2개 이상이면 fail-closed(정상 경로에서 파일명 ULID가 유일하므로 중복은 규약 밖; spec §3 r3 리뷰).
       const matches = lines.filter(e => e.type === 'insights-emitted' && e.data.path === rel);
-      if (matches.length === 0) continue;                   // path-binding: 이벤트의 path와 정확 일치 필수
-      if (matches.length > 1) { process.stderr.write(`[deep-loop:warn] insights ${f}: ${matches.length} insights-emitted events match path — skipped\n`); continue; }
+      if (matches.length === 0) return integrityFailure('anchor');
+      if (matches.length > 1) return integrityFailure('anchor');
       const ev = matches[0];
-      if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
+      if (deadlineExpired()) return bound('anchor-verify');
+      if (ev.data.sha256 !== contentHash(raw)) return integrityFailure('artifact-hash');
       // (b) finish-edge: 앵커 이후 non-exempt 이벤트가 정확히 finish 하나(=마지막 non-exempt)여야 신뢰
       // (spec §3, r2 리뷰 🔴 2/2 일치) — mid-run emit(뒤에 business/명시 cost 이벤트)과 post-finish
       // mutation(finish 뒤 non-exempt) 로그의 pre-finish payload를 모두 skip한다. 회복 경로는 재-emit.
       const after = lines.filter(e => e.seq > ev.seq && nonExemptEvent(e));
-      if (after.length !== 1 || after[0].type !== 'finish') {
-        process.stderr.write(`[deep-loop:warn] insights ${f}: no clean finish edge after emit (non-exempt after: ${after.length ? after.map(e => e.type).join(',') : 'none'}) — skipped\n`);
-        continue;
-      }
+      if (after.length !== 1 || after[0].type !== 'finish') return integrityFailure('finish-edge');
+      if (deadlineExpired()) return bound('finish-edge');
       // sha256: anchored insights-emitted 이벤트에 기록된 값(위에서 contentHash(raw) 일치 검증 완료) —
       // 소비자(dispatchReview evidence 등)가 artifact 동일성을 재검증 없이 인용할 수 있게 노출한다 (codex r2).
+      if (deadlineExpired()) return bound('selection');
       return { path: rel, envelope: obj, sha256: ev.data.sha256 };
     } catch (e) {
+      if (String(e?.message || e).startsWith('LOG_TAMPERED')) {
+        return integrityFailure('producer-verification');
+      }
       process.stderr.write(`[deep-loop:warn] insights ${f}: ${String(e?.message || e)} — skipped\n`);   // fail-soft
     }
   }
+  if (deadlineExpired()) return bound('selection');
   return null;
 }
 
