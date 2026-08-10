@@ -334,7 +334,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/activation-secret.mjs:242",
+            "scripts/lib/activation-secret.mjs:256",
             "scripts/lib/lease.mjs:566"
           ]
         },
@@ -346,7 +346,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/activation-secret.mjs:242",
+            "scripts/lib/activation-secret.mjs:256",
             "scripts/lib/lease.mjs:566"
           ]
         }

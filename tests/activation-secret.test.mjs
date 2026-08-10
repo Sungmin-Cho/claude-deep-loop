@@ -213,3 +213,30 @@ test('exclusive publish race discards the losing candidate and reuses the valida
   assert.deepEqual(activateStoredLease(ROOT, RUN, BINDING, deps), { ok: true, reason: 'activated' });
   assert.equal(observed, winner);
 });
+
+test('stored activation preserves authorized kernel taxonomy and sanitizes unknown kernel errors', () => {
+  for (const message of [
+    'LEASE_FENCED: owner-mismatch',
+    'RUNTIME_FENCED: expected=claude actual=codex',
+    'PROJECT_ROOT_FENCED: candidate differs',
+    'STATE_INVALID: fixture state',
+    'INVALID_RUNTIME_STATE: fixture runtime',
+    'ACTIVATION_DEADLINE_INVALID',
+    'RUN_TERMINAL',
+  ]) {
+    const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-kernel-error-'));
+    assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, linuxDeps(stateRoot, {
+      activateLeaseFn() { throw new Error(message); },
+    })), error => error?.message === message, message);
+  }
+
+  const marker = '/SECRET/attacker/chosen/kernel-cause';
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-kernel-unknown-'));
+  assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, linuxDeps(stateRoot, {
+    activateLeaseFn() { throw new Error(marker); },
+  })), error => {
+    assert.equal(error.message, 'STATE_INVALID: stored activation kernel failure');
+    assert.doesNotMatch(error.message, /SECRET|attacker|chosen|kernel-cause/);
+    return true;
+  });
+});

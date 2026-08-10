@@ -143,6 +143,16 @@ function mapError(error) {
   return closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
 }
 
+const AUTHORIZED_KERNEL_ERROR = /^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED|INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE|CHECKPOINT_[A-Z_]+|INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID|ACTIVATION_DEADLINE_INVALID|RUN_TERMINAL)(?::|$)/;
+
+function mapKernelError(error) {
+  const message = String(error?.message || error);
+  if (AUTHORIZED_KERNEL_ERROR.test(message)) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  return new Error('STATE_INVALID: stored activation kernel failure');
+}
+
 export function activateStoredLease(root, runId, {
   owner, generation, runtime, attemptId, now,
 } = {}, deps = {}) {
@@ -165,6 +175,7 @@ export function activateStoredLease(root, runId, {
   const windowsExecutor = deps.windowsExecutor ?? spawnSync;
   const windowsExecutableLstatFn = deps.windowsExecutableLstatFn ?? lstatSync;
   const windowsExecutableRealpathFn = deps.windowsExecutableRealpathFn ?? (realpathSync.native || realpathSync);
+  let token;
 
   try {
     if (typeof runId !== 'string' || !SAFE_ID.test(runId)
@@ -206,7 +217,6 @@ export function activateStoredLease(root, runId, {
     };
     const key = digest([canonicalRoot, runId, owner, String(generation), runtime, attemptId].join('\0'));
     const path = join(canonicalDirectory, `${key}.json`);
-    let token;
     if (existsSync(path)) {
       token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
     } else {
@@ -239,11 +249,15 @@ export function activateStoredLease(root, runId, {
         if (!published) { try { unlinkFn(temp); } catch { /* preserve primary failure */ } }
       }
     }
+  } catch (error) {
+    throw mapError(error);
+  }
+  try {
     const result = activateLeaseFn(root, runId, {
       owner, generation, runtime, attemptId, activationToken: token, now,
     });
     return { ok: result?.ok === true, reason: result?.reason };
   } catch (error) {
-    throw mapError(error);
+    throw mapKernelError(error);
   }
 }

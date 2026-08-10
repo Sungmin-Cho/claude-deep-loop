@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -726,6 +726,26 @@ function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime
   ]);
 }
 
+function storedActivateCli(f, {
+  root = f.root, owner = f.owner, generation = f.gen, runtime = 'claude', privateHome,
+} = {}) {
+  const home = privateHome || mkdtempSync(join(tmpdir(), 'dl-stored-fence-home-'));
+  const result = spawnSync(process.execPath, [
+    CLI, 'lease', 'activate', '--stored-token', '--owner', owner,
+    '--generation', String(generation), '--runtime', runtime, '--attempt-id', f.attemptId,
+    '--run-id', f.runId, '--project-root', root,
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_STATE_HOME: join(home, '.state'),
+      LOCALAPPDATA: join(home, 'AppData', 'Local'),
+    },
+  });
+  return { ...result, privateHome: home };
+}
+
 function reapCli(f, extra = [], owner = f.owner, generation = f.gen) {
   return run(f.root, [
     'lease', 'reap', '--owner', owner, '--generation', String(generation),
@@ -923,6 +943,34 @@ test('stored-token mode is bare exactly once and mutually exclusive with raw-tok
     assert.match(result.stderr, /stored-token/);
     assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
   }
+});
+
+test('stored-token activation preserves owner, generation, and runtime fences as exit 3 without mutation', () => {
+  for (const [label, overrides, expected] of [
+    ['owner', { owner: 'STALEOWNER' }, /LEASE_FENCED: owner-mismatch/],
+    ['generation', { generation: 999 }, /LEASE_FENCED: generation-mismatch/],
+    ['runtime', { runtime: 'codex' }, /RUNTIME_FENCED/],
+  ]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = storedActivateCli(f, overrides);
+    assert.equal(result.status, 3, `${label}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, expected, label);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, label);
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(result.privateHome), label);
+  }
+});
+
+test('stored-token activation preserves a copied-root project fence as exit 3 without mutation', () => {
+  const f = seedActivationCli();
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-stored-project-fence-'));
+  cpSync(join(f.root, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  const before = terminalDurableBytes(candidateRoot, f.runId);
+  const result = storedActivateCli(f, { root: candidateRoot });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
+  assert.deepEqual(terminalDurableBytes(candidateRoot, f.runId), before);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(result.privateHome));
 });
 
 test('SLICE-004 CLI expired activation is structured exit zero and mutation-free', () => {
