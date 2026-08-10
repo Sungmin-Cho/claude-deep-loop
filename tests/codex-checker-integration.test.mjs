@@ -264,6 +264,30 @@ test('blockIndependentReview rejects a raw-field persistence mutant before event
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
+test('blockIndependentReview rejects missing stdout and impossible reason-phase pairs without mutation', () => {
+  for (const [label, mutate] of [
+    ['missing stdout', value => { delete value.stdout; }],
+    ['impossible pair', value => { value.process_phase = 'receipt-write'; }],
+  ]) {
+    const f = seed();
+    claim(f);
+    const before = events(f.root, f.runId).length;
+    const mutant = processDiagnostic();
+    mutate(mutant);
+    assert.throws(() => blockIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerId,
+      attemptId: 'attempt-01',
+      reason: 'checker-process-failed',
+      processDiagnostic: mutant,
+      fence: f.fence,
+    }), /REVIEW_BLOCK_DIAGNOSTIC_INVALID/, label);
+    assert.equal(events(f.root, f.runId).length, before, label);
+    const checker = readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId);
+    assert.equal(checker.status, 'in_progress', label);
+    assert.equal(checker.checker_process_diagnostic, undefined, label);
+  }
+});
+
 test('claimed import binds attempt and claim-time artifact bytes, then records attempt in envelope/event', () => {
   const f = seed();
   assert.throws(() => importReviewOutcome(f.root, f.runId, {
@@ -610,6 +634,35 @@ test('malformed checker diagnostic fails closed without copying attacker fields 
   assert.equal(JSON.stringify({ loop, log: events(f.root, f.runId) }).includes('checker secret'), false);
   assert.equal(JSON.stringify({ loop, log: events(f.root, f.runId) }).includes('/tmp/private'), false);
   assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts);
+});
+
+test('host normalizes missing stdout and impossible pairs before durable event-state reconciliation', () => {
+  for (const [label, mutate] of [
+    ['missing stdout', value => { delete value.stdout; }],
+    ['impossible pair', value => { value.process_phase = 'receipt-write'; }],
+  ]) {
+    const f = seed();
+    const deps = hostDeps(f);
+    const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+    const mutant = processDiagnostic();
+    mutate(mutant);
+    const result = driveHeadlessRun({
+      root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+      checkerRunFn: () => ({ ok: false, reason: 'exit-7', process_diagnostic: mutant }),
+    });
+    assert.equal(result.action, 'checker-blocked', label);
+    const reconciled = captureReconciledRunSnapshot(f.root, f.runId);
+    const checker = reconciled.data.episodes.find(e => e.id === f.checkerId);
+    const blocked = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
+    assert.deepEqual(checker.checker_process_diagnostic, {
+      reason_code: 'diagnostic-invalid',
+      process_phase: 'checker-adapter',
+      stderr: { sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false },
+      stdout: { sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false },
+    }, label);
+    assert.deepEqual(checker.checker_process_diagnostic, blocked.data.checker_process_diagnostic, label);
+    assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts, label);
+  }
 });
 
 test('headless checker immutable prompt carries anchored contract and evidence from the durable claim', () => {

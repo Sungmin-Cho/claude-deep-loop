@@ -84,10 +84,12 @@ test('checker process diagnostic is backward-compatible but exact, closed, and p
   assert.equal(validate(present).ok, true);
 
   const mutants = [
+    ['missing stdout', value => { delete value.stdout; }],
     ['raw stderr', value => { value.stderr.raw = 'SECRET'; }],
     ['attacker path', value => { value.path = '/tmp/secret'; }],
     ['extra argv', value => { value.argv = ['--secret']; }],
     ['open reason', value => { value.reason_code = 'exit-37:/secret'; }],
+    ['prototype reason', value => { value.reason_code = 'toString'; }],
     ['open phase', value => { value.process_phase = 'attacker-phase'; }],
     ['negative count', value => { value.stderr.byte_count = -1; }],
     ['non-canonical hash', value => { value.stderr.sha256 = 'A'.repeat(64); }],
@@ -97,6 +99,46 @@ test('checker process diagnostic is backward-compatible but exact, closed, and p
     const candidate = structuredClone(present);
     mutate(candidate.episodes[0].checker_process_diagnostic);
     assert.equal(validate(candidate).ok, false, label);
+  }
+
+  const validPairs = [
+    ['process-config-invalid', 'request'],
+    ['child-spawn-failed', 'child-spawn'],
+    ['child-timeout', 'child-execution'],
+    ['child-nonzero-exit', 'child-execution'],
+    ['child-stdin-failed', 'child-stdin'],
+    ['child-output-overflow', 'child-protocol'],
+    ['child-protocol-invalid', 'child-protocol'],
+    ['usage-unmeasurable', 'usage-parse'],
+    ['usage-receipt-write-failed', 'receipt-write'],
+    ['worker-request-invalid', 'request'],
+    ['worker-request-overflow', 'request'],
+    ['worker-spawn-failed', 'worker-spawn'],
+    ['worker-timeout', 'worker-transport'],
+    ['worker-result-overflow', 'worker-transport'],
+    ['worker-terminated', 'worker-transport'],
+    ['worker-nonzero-exit', 'worker-transport'],
+    ['worker-protocol-invalid', 'worker-transport'],
+    ['checker-worker-invalid', 'checker-adapter'],
+    ['checker-usage-invalid', 'checker-adapter'],
+    ['checker-final-message-invalid', 'final-message'],
+    ['checker-process-error', 'checker-adapter'],
+    ['diagnostic-invalid', 'checker-adapter'],
+  ];
+  assert.deepEqual(CHECKER_PROCESS_REASON_CODES, validPairs.map(([reason]) => reason));
+  for (const [reason_code, process_phase] of validPairs) {
+    assert.equal(validCheckerProcessDiagnostic({ ...diagnostic, reason_code, process_phase }), true,
+      `${reason_code}/${process_phase}`);
+  }
+
+  for (const [reason_code, process_phase] of [
+    ['usage-receipt-write-failed', 'child-execution'],
+    ['child-nonzero-exit', 'receipt-write'],
+    ['worker-protocol-invalid', 'final-message'],
+    ['checker-final-message-invalid', 'checker-adapter'],
+  ]) {
+    assert.equal(validCheckerProcessDiagnostic({ ...diagnostic, reason_code, process_phase }), false,
+      `impossible pair ${reason_code}/${process_phase}`);
   }
 });
 

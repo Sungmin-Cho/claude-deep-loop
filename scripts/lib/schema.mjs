@@ -43,42 +43,35 @@ function portableRel(value, prefix = null) {
 
 const REVIEW_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-export const CHECKER_PROCESS_REASON_CODES = Object.freeze([
-  'process-config-invalid',
-  'child-spawn-failed',
-  'child-timeout',
-  'child-nonzero-exit',
-  'child-stdin-failed',
-  'child-output-overflow',
-  'child-protocol-invalid',
-  'usage-unmeasurable',
-  'usage-receipt-write-failed',
-  'worker-request-invalid',
-  'worker-request-overflow',
-  'worker-spawn-failed',
-  'worker-timeout',
-  'worker-result-overflow',
-  'worker-terminated',
-  'worker-nonzero-exit',
-  'worker-protocol-invalid',
-  'checker-worker-invalid',
-  'checker-usage-invalid',
-  'checker-final-message-invalid',
-  'checker-process-error',
-  'diagnostic-invalid',
-]);
+export const CHECKER_PROCESS_REASON_PHASES = Object.freeze({
+  'process-config-invalid': Object.freeze(['request']),
+  'child-spawn-failed': Object.freeze(['child-spawn']),
+  'child-timeout': Object.freeze(['child-execution']),
+  'child-nonzero-exit': Object.freeze(['child-execution']),
+  'child-stdin-failed': Object.freeze(['child-stdin']),
+  'child-output-overflow': Object.freeze(['child-protocol']),
+  'child-protocol-invalid': Object.freeze(['child-protocol']),
+  'usage-unmeasurable': Object.freeze(['usage-parse']),
+  'usage-receipt-write-failed': Object.freeze(['receipt-write']),
+  'worker-request-invalid': Object.freeze(['request']),
+  'worker-request-overflow': Object.freeze(['request']),
+  'worker-spawn-failed': Object.freeze(['worker-spawn']),
+  'worker-timeout': Object.freeze(['worker-transport']),
+  'worker-result-overflow': Object.freeze(['worker-transport']),
+  'worker-terminated': Object.freeze(['worker-transport']),
+  'worker-nonzero-exit': Object.freeze(['worker-transport']),
+  'worker-protocol-invalid': Object.freeze(['worker-transport']),
+  'checker-worker-invalid': Object.freeze(['checker-adapter']),
+  'checker-usage-invalid': Object.freeze(['checker-adapter']),
+  'checker-final-message-invalid': Object.freeze(['final-message']),
+  'checker-process-error': Object.freeze(['checker-adapter']),
+  'diagnostic-invalid': Object.freeze(['checker-adapter']),
+});
+export const CHECKER_PROCESS_REASON_CODES = Object.freeze(
+  Object.keys(CHECKER_PROCESS_REASON_PHASES),
+);
 export const CHECKER_PROCESS_PHASES = Object.freeze([
-  'request',
-  'worker-spawn',
-  'worker-transport',
-  'child-spawn',
-  'child-execution',
-  'child-stdin',
-  'child-protocol',
-  'usage-parse',
-  'receipt-write',
-  'checker-adapter',
-  'final-message',
+  ...new Set(Object.values(CHECKER_PROCESS_REASON_PHASES).flat()),
 ]);
 
 export function validProcessStreamMetadata(value) {
@@ -90,11 +83,11 @@ export function validProcessStreamMetadata(value) {
 }
 
 export function validCheckerProcessDiagnostic(value) {
-  return exactObject(value, ['reason_code', 'process_phase', 'stderr'], ['stdout'])
-    && CHECKER_PROCESS_REASON_CODES.includes(value.reason_code)
-    && CHECKER_PROCESS_PHASES.includes(value.process_phase)
+  return exactObject(value, ['reason_code', 'process_phase', 'stderr', 'stdout'])
+    && Object.hasOwn(CHECKER_PROCESS_REASON_PHASES, value.reason_code)
+    && CHECKER_PROCESS_REASON_PHASES[value.reason_code].includes(value.process_phase)
     && validProcessStreamMetadata(value.stderr)
-    && (!Object.hasOwn(value, 'stdout') || validProcessStreamMetadata(value.stdout));
+    && validProcessStreamMetadata(value.stdout);
 }
 const FROZEN_REVIEW_CLAIM_KEYS = Object.freeze([
   'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
