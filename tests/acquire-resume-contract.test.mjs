@@ -1388,6 +1388,12 @@ function replayFixtureStep(step, bindings, counters) {
     : ['--project-root', bindings.$ROOT, '--run-id', bindings.$RUN];
   const result = spawnSync(process.execPath, [CLI, ...argv, ...implicit], {
     cwd: REPO_ROOT, encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: bindings.$USER_STATE,
+      XDG_STATE_HOME: bindings.$USER_STATE,
+      LOCALAPPDATA: bindings.$USER_STATE,
+    },
   });
   const label = argv.join(' ');
   if (step.expect?.exit !== undefined) {
@@ -1420,7 +1426,7 @@ test('T4 the conformance fixture replays deterministically through the public CL
   assert.equal(fixture.orderings.length, 5 + 1);
   for (const ordering of fixture.orderings) {
     const root = mkdtempSync(join(tmpdir(), `dl-conformance-${ordering.id}-`));
-    const bindings = { $ROOT: root };
+    const bindings = { $ROOT: root, $USER_STATE: mkdtempSync(join(tmpdir(), `dl-conformance-state-${ordering.id}-`)) };
     // fixture 의 now_binding 규칙: 시각은 **재생 시점 기준 상대 오프셋**으로 바인딩한다. recovery safety 는
     // lock 안에서 실제 clock 을 샘플하므로(주입 불가) 절대 과거 시각에 고정하면 재생 시점에 따라 응답이
     // 갈린다. 오프셋 바인딩은 응답 계약을 시각 독립적으로 만든다 — fixture 는 타임스탬프를 비교하지 않는다.
@@ -1448,6 +1454,31 @@ test('T4 the conformance fixture replays deterministically through the public CL
     }
     if (ordering.id === 'duplicate') {
       assert.equal(counters.proceed, 1, 'duplicate ordering grants proceed exactly once');
+    }
+  }
+});
+
+test('T4 fixture activates every continuing acquired owner through stored-token mode', () => {
+  const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'));
+  for (const ordering of fixture.orderings) {
+    const acquired = ordering.steps
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => step.op === 'cli' && step.argv[0] === 'lease'
+        && step.argv[1] === 'acquire' && step.expect?.json?.proceed === true);
+    for (const { index } of acquired) {
+      const later = ordering.steps.slice(index + 1).find(step => step.op === 'cli');
+      const step = ordering.steps[index];
+      if (step.actor === 'wrapper' || step.actor === 'dying-principal') continue;
+      const attemptIndex = step.argv.indexOf('--attempt-id');
+      const attempt = step.argv[attemptIndex + 1];
+      const sameAttemptReplay = ordering.steps.slice(index + 1).some(candidate =>
+        candidate.op === 'cli' && candidate.argv[0] === 'lease' && candidate.argv[1] === 'acquire'
+        && candidate.expect?.json?.proceed === true
+        && candidate.argv[candidate.argv.indexOf('--attempt-id') + 1] === attempt);
+      if (sameAttemptReplay) continue;
+      assert.deepEqual(later?.argv.slice(0, 3), ['lease', 'activate', '--stored-token'],
+        `${ordering.id}: first CLI after proceed:true must stored-activate`);
+      assert.equal(later.argv.includes('--activation-token'), false, ordering.id);
     }
   }
 });
@@ -1865,11 +1896,13 @@ test('SLICE-004 F12 two pre-t1 replayers produce one activation winner and one t
   const winner = activateLease(f.root, f.runId, {
     owner, generation: 2, runtime: 'claude', attemptId,
     activationToken: 'F12WinnerToken_01', now: Date.parse(T2) + 1,
+    clock: () => Date.parse(T2) + 1,
   });
   const beforeLoser = anchoredBytes(f.root, f.runId);
   const loser = activateLease(f.root, f.runId, {
     owner, generation: 2, runtime: 'claude', attemptId,
     activationToken: 'F12LoserToken_002', now: Date.parse(T2) + 2,
+    clock: () => Date.parse(T2) + 2,
   });
   assert.deepEqual(winner, { ok: true, reason: 'activated' });
   assert.deepEqual(loser, { ok: false, reason: 'activation-token-mismatch' });

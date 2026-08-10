@@ -869,6 +869,62 @@ test('SLICE-004 CLI lease activate records --now and returns activated', () => {
   assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
 });
 
+test('stored-token activation creates a private secret, activates, reuses it, and leaks no raw token', () => {
+  const f = seedActivationCli();
+  const privateHome = mkdtempSync(join(tmpdir(), 'dl-stored-home-'));
+  const argv = [
+    CLI, 'lease', 'activate', '--stored-token', '--owner', f.owner,
+    '--generation', String(f.gen), '--runtime', 'claude', '--attempt-id', f.attemptId,
+    '--run-id', f.runId, '--project-root', f.root,
+  ];
+  const invoke = () => spawnSync(process.execPath, argv, {
+    encoding: 'utf8', env: { ...process.env, HOME: privateHome },
+  });
+  const first = invoke();
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.deepEqual(JSON.parse(first.stdout), { ok: true, reason: 'activated' });
+  const second = invoke();
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.deepEqual(JSON.parse(second.stdout), { ok: true, reason: 'already-activated' });
+
+  const directory = process.platform === 'darwin'
+    ? join(privateHome, 'Library', 'Application Support', 'deep-loop', 'activation-secrets')
+    : join(privateHome, '.local', 'state', 'deep-loop', 'activation-secrets');
+  const files = readdirSync(directory);
+  assert.equal(files.length, 1);
+  const secret = JSON.parse(readFileSync(join(directory, files[0]), 'utf8')).token;
+  assert.match(secret, /^[A-Za-z0-9_-]{43}$/);
+  assert.doesNotMatch(first.stdout + first.stderr + second.stdout + second.stderr, new RegExp(secret));
+  const durable = terminalDurableBytes(f.root, f.runId);
+  for (const bytes of Object.values(durable).filter(Boolean)) {
+    assert.equal(bytes.includes(Buffer.from(secret)), false, 'raw token leaked into kernel durable bytes');
+  }
+  for (const entry of readdirSync(f.root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const bytes = readFileSync(join(entry.parentPath, entry.name));
+    assert.equal(bytes.includes(Buffer.from(secret)), false,
+      `raw token leaked into project artifact ${relative(f.root, join(entry.parentPath, entry.name))}`);
+  }
+  assert.equal(readState(f.root, f.runId).data.session_chain.lease.activation.activation_token_digest,
+    contentHash(secret));
+});
+
+test('stored-token mode is bare exactly once and mutually exclusive with raw-token mode', () => {
+  for (const flags of [
+    ['--stored-token=true'],
+    ['--stored-token', '--stored-token'],
+    ['--stored-token', '--activation-token', 'CliCompatibilityToken_01'],
+    ['--stored-token', '--secret-root', '/attacker/path'],
+  ]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = activateCli(f, ['--attempt-id', f.attemptId, ...flags]);
+    assert.equal(result.status, 2, `${flags.join(' ')}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /stored-token/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
 test('SLICE-004 CLI expired activation is structured exit zero and mutation-free', () => {
   const f = seedActivationCli();
   const { data } = readState(f.root, f.runId);

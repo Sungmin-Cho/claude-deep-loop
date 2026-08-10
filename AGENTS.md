@@ -126,8 +126,12 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    terminal-rejected. That receipt is completion bookkeeping, so pre-finish insights
    remain a valid snapshot that intentionally excludes the final process measurement.
 7. **`withLock` is non-reentrant** — never take a lock inside a locked callback.
-   Kernel durable writes are confined to `<root>/.deep-loop/`; `/deep-loop-finish` may
-   delegate to deep-memory's and deep-wiki's own skills. PreCompact and SessionStart
+   Kernel durable writes are confined to `<root>/.deep-loop/`. The sole carve-out is
+   `scripts/lib/activation-secret.mjs`: the execution-child stored-activation client
+   may write only its internally derived OS user-state `deep-loop/activation-secrets`
+   directory. It accepts no caller path, never writes a raw token to project/kernel
+   state or output, and fails closed on unsafe identity/permissions/ACL.
+   `/deep-loop-finish` may delegate to deep-memory's and deep-wiki's own skills. PreCompact and SessionStart
    glue stay **emit-only** and never spawn: PreCompact emits either a compact
    checkpoint or a handoff according to policy/headless precedence, SessionStart emits
    restore context only, and every exception is best-effort and non-blocking.

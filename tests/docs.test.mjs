@@ -28,6 +28,20 @@ test('README.ko mirrors commands', () => {
   for (const c of SKILL_CMDS) assert.ok(s.includes(c), `README.ko missing ${c}`);
 });
 
+test('READMEs document stored activation custody, compatibility boundary, and deferred cleanup', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /lease activate --stored-token/);
+    assert.match(source, /ACTIVATION_PENDING/);
+    assert.match(source, /activation-secrets/);
+    assert.match(source, /0700/);
+    assert.match(source, /0600/);
+    assert.match(source, /raw[^\n]*compat|raw[^\n]*호환/i);
+    assert.match(source, /TTL[^\n]*(forbid|금지)|(?:forbid|금지)[^\n]*TTL/i);
+    assert.match(source, /generation[^\n]*(supersed|교체|종료)|terminal[^\n]*(proof|증거)/i);
+  }
+});
+
 test('user docs publish Claude Code, Codex CLI, and Codex App install and invocation tables', () => {
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');

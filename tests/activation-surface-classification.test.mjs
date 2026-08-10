@@ -52,8 +52,8 @@ test('STEP0-3 guard 4 link-only extractor reports every scripts namespace withou
   assert.equal(result.stderr, '');
   const output = JSON.parse(result.stdout);
   assert.equal(output.schema_version, 1);
-  assert.equal(output.file_count, 58);
-  assert.equal(output.raw_export_name_count, 319);
+  assert.equal(output.file_count, 59);
+  assert.equal(output.raw_export_name_count, 320);
   assert.equal(output.failures.length, 0);
   const linkedIds = output.files.flatMap((file) =>
     file.export_names.map((name) => `${file.module}#${name}`)).sort(byteSort);
@@ -113,24 +113,25 @@ test('STEP0-3 guard 1 rejects the approved non-mjs reversal instead of silently 
   }]);
 });
 
-test('STEP0-3 static export parser matches the measured 319 raw and 311 canonical surface', async () => {
+test('STEP0-3 static export parser matches the measured 320 raw and 312 canonical surface', async () => {
   const analyzer = await import(STATIC_ANALYZER);
   const result = analyzer.extractExportSurface({ files: recursiveFiles(join(ROOT, 'scripts')) });
   assert.deepEqual(result.failures, []);
-  assert.equal(result.raw_ids.length, 319);
-  assert.equal(result.canonical_ids.length, 311);
+  assert.equal(result.raw_ids.length, 320);
+  assert.equal(result.canonical_ids.length, 312);
 });
 
-test('STEP0-3 live overlay closes the measured eleven-id delta with a disjoint 311-row partition', async () => {
+test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 312-row partition', async () => {
   const analyzer = await import(STATIC_ANALYZER);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
   assert.deepEqual(live.counts, {
-    L: 28, B: 7, X: 32, E2: 116, E3: 12, E4: 16, E5: 1, E7: 73, E8: 26,
+    L: 28, B: 7, X: 33, E2: 116, E3: 12, E4: 16, E5: 1, E7: 73, E8: 26,
   });
-  assert.equal(live.rows.size, 311);
+  assert.equal(live.rows.size, 312);
   assert.deepEqual([...live.rows.entries()].filter(([id]) => [
+    'activation-secret.mjs#activateStoredLease',
     'headless-host.mjs#acquireHeadlessHostLock',
     'lease.mjs#activateLease',
     'lease.mjs#reapLease',
@@ -143,6 +144,7 @@ test('STEP0-3 live overlay closes the measured eleven-id delta with a disjoint 3
     'schema.mjs#validCheckerProcessDiagnostic',
     'schema.mjs#validProcessStreamMetadata',
   ].includes(id)), [
+    ['activation-secret.mjs#activateStoredLease', { classification: 'X', reason: 'enforcement-origin' }],
     ['headless-host.mjs#acquireHeadlessHostLock', { classification: 'E4', reason: 'non-run-state-durable-write' }],
     ['lease.mjs#activateLease', { classification: 'X', reason: 'enforcement-origin' }],
     ['lease.mjs#reapLease', { classification: 'X', reason: 'enforcement-origin' }],
@@ -169,7 +171,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
 
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.violations, []);
-  assert.equal(result.rows.length, 311);
+  assert.equal(result.rows.length, 312);
   assert.deepEqual(result.rows.find(({ id }) => id === 'session-profile.mjs#setSessionProfile'), {
     id: 'session-profile.mjs#setSessionProfile',
     classification: 'L',
@@ -299,7 +301,7 @@ test('STEP0-3 tracked evidence matrix is canonical and exactly matches source re
     'candidate_ids_sha256', 'candidate_ids', 'rows',
   ]);
   assert.equal(evidence.schema_version, 1);
-  assert.equal(evidence.design_sha256, '7d989eb688dfc92f6d68a588685c181e908071ef2bef55b28e3460980f8209e4');
+  assert.equal(evidence.design_sha256, '5b89254ca6816e4d907180d4171e96be5da5e0ff44c75ee6e43370c8b9d91d9b');
   assert.equal(evidence.seed_sha256, sha256(seedBytes));
   assert.equal(evidence.live_classification_sha256, sha256(liveBytes));
   assert.equal(evidence.candidate_ids_sha256,

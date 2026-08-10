@@ -32,6 +32,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 `status`, `goal`, `protocol`, `created_at`, 적용 중인 continuation policy(`autonomy.continuation_policy`), `session_spawn.reason`(visible continuation 비활성 사유)을 출력한다.
 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 얻는다. read-only 조회에는 fence가 없고, 사람 전용 mutation만 이 current fence와 불변 `<run_id>`를 함께 쓴다.
 
+lease가 `activation_deadline_at` nonnull이면 새 owner는 아직 `ACTIVATION_PENDING`이다. acquire의
+`proceed:true`를 받은 execution child는 같은 attempt/new generation으로
+`lease activate --stored-token`을 완료해야 하며 raw `--activation-token`을 안내하지 않는다.
+
 ### 2. 예산 확인
 
 ```

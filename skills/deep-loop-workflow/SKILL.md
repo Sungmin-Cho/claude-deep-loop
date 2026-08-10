@@ -20,6 +20,10 @@ user-invocable: false
 
 `<run_id>`는 descriptor/current run이 정한 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. mutation 직전 `<owner_run_id>`는 fresh `session_chain.lease.owner_run_id`, `<generation>`은 fresh `session_chain.lease.generation`에서 읽는다. owner 세션이 바뀌어도 `<run_id>`를 재바인딩하지 않는다. 유일한 예외인 `lease acquire`는 예약된 `<child_run_id>`를 owner 인자로 쓰고 **응답의 `proceed:true` 뒤에만** 그 값을 current `<owner_run_id>`로 승격한다 — `ok:true`는 멱등 `already-owned`(`proceed:false`)에도 나오므로 승격 조건이 될 수 없다.
 
+`proceed:true`만으로는 아직 업무 권한이 없다. `proceed:true`인 execution child가 같은 attempt와 새 generation으로
+`lease activate --stored-token`을 호출해 `activated|already-activated`를 확인한 뒤에만 승격한다.
+그 전 business mutation은 `ACTIVATION_PENDING`이며 raw `--activation-token`은 production skill에서 금지한다.
+
 ## 어댑터(adapter) 4-verb 개요
 
 프로토콜 어댑터는 4가지 verb로 구성된다. **Execution LLM이** 직접 수행하며, 커널은 호출하지 않는다(§1.1):

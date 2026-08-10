@@ -19,6 +19,7 @@ import {
 import {
   leaseCheck, acquireLease, activateLease, reapLease, releaseLease, sameBoundaryEvent,
 } from './lib/lease.mjs';
+import { activateStoredLease } from './lib/activation-secret.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
@@ -272,6 +273,9 @@ function classifyKernelError(e) {
     return { code: 1, message };
   }
   if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
+  if (/^ACTIVATION_SECRET_(?:ROOT_INVALID|UNSAFE|MALFORMED|BINDING_MISMATCH|IO_UNAVAILABLE)$/.test(message)) {
     return { code: 1, message };
   }
   if (/^(?:RUNTIME_EXECUTABLE_|LAUNCHER_EXECUTABLE_|CODEX_HOME_)(?:[A-Z_]+)(?::|$)/.test(message)) {
@@ -907,6 +911,31 @@ const handlers = {
       if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
         error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
         return 1;
+      }
+      const storedOccurrences = flagOccurrences(rest, 'stored-token');
+      const rawOccurrences = flagOccurrences(rest, 'activation-token');
+      if (storedOccurrences > 0) {
+        if (storedOccurrences !== 1 || f['stored-token'] !== true || rawOccurrences !== 0) {
+          error('USAGE: --stored-token must be bare, appear exactly once, and exclude --activation-token');
+          return 2;
+        }
+        if (!knownFlagVocabulary(rest, new Set([
+          'stored-token', 'owner', 'generation', 'runtime', 'attempt-id', 'now',
+          'project-root', 'run-id',
+        ]))) {
+          error('USAGE: stored-token activation accepts binding flags only');
+          return 2;
+        }
+        try {
+          json(activateStoredLease(root, runId, {
+            owner, generation, runtime, attemptId, now: parseExplicitNow(f),
+          }));
+          return 0;
+        } catch (e) {
+          const classified = classifyKernelError(e);
+          if (classified) { error(classified.message); return classified.code; }
+          error('ACTIVATION_SECRET_IO_UNAVAILABLE'); return 1;
+        }
       }
       const activationToken = reqStr(f, 'activation-token');
       if (!activationToken) {

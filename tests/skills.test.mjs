@@ -492,6 +492,41 @@ test('resume/respawn prose: promote only on proceed:true and persist the attempt
     'resume must document the fenced preserve-pause misuse recovery');
 });
 
+test('resume and respawn prescribe stored activation before promotion with fail-closed retry custody', () => {
+  const sources = [
+    ['deep-loop-resume', _rf(skillPath('deep-loop-resume'), 'utf8')],
+    ['handoff-respawn', _rf(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8')],
+  ];
+  for (const [name, source] of sources) {
+    assert.match(source, /lease activate --stored-token/, `${name}: stored activation command`);
+    assert.doesNotMatch(source, /node [^\n]*lease activate[^\n]*--activation-token/, `${name}: raw token command forbidden`);
+    assert.match(source, /ACTIVATION_SECRET_/, `${name}: closed secret failure taxonomy`);
+    assert.match(source, /activated[^\n]*already-activated|already-activated[^\n]*activated/,
+      `${name}: exact accepted reasons`);
+    assert.match(source, /같은[^\n]*(attempt|token)|same[^\n]*(attempt|token)/i,
+      `${name}: retry must reuse custody`);
+    assert.match(source, /환경 변수[^\n]*덮어쓰지|must not override[^\n]*environment/i,
+      `${name}: ambient state-root override forbidden`);
+    const acquire = source.indexOf('lease acquire');
+    const stored = source.indexOf('lease activate --stored-token');
+    const promote = source.indexOf('activation 성공', stored);
+    assert.ok(acquire >= 0 && stored > acquire, `${name}: activation follows acquire`);
+    assert.ok(promote > stored, `${name}: activation precedes promotion`);
+  }
+});
+
+test('status and workflow references make activation a required post-acquire gate', () => {
+  for (const path of [
+    skillPath('deep-loop-status'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'SKILL.md'),
+  ]) {
+    const source = _rf(path, 'utf8');
+    assert.match(source, /lease activate --stored-token/);
+    assert.match(source, /ACTIVATION_PENDING/);
+    assert.doesNotMatch(source, /node [^\n]*lease activate[^\n]*--activation-token/);
+  }
+});
+
 test('worktree-aware skills: action-keyed entry in continue; resume defers; handoff no entry; verify unchanged', () => {
   const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
   // continue §1.5 must key entry on action.workstream_id (not blind active workstream pick)
@@ -935,6 +970,11 @@ test('lease-fenced argv keeps the immutable logical run id separate from the cur
           `${file}: lease acquire CASes the freshly read current generation: ${line}`);
         assert.doesNotMatch(line, /--generation\s+<new_generation>/,
           `${file}: the next generation is returned by the kernel, not supplied by the skill: ${line}`);
+      } else if (/\blease activate --stored-token\b/.test(line)) {
+        assert.match(line, /--owner\s+<child_run_id>/,
+          `${file}: pre-promotion stored activation uses the acquired child owner: ${line}`);
+        assert.match(line, /--generation\s+<new_generation>/,
+          `${file}: pre-promotion stored activation uses the returned generation: ${line}`);
       } else {
         assert.match(line, /--owner\s+<owner_run_id>/,
           `${file}: non-acquire commands use the freshly read lease owner: ${line}`);

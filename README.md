@@ -86,6 +86,21 @@ Every successful acquire also writes a durable **acquisition receipt** to
 It is a superset of the `consumed` payload, so a replay response is a field copy rather than
 a derivation, and it exists even for an owner that has no session entry.
 
+### Stored activation after acquire
+
+`proceed:true` is not yet business-write authority. The execution child immediately runs
+`lease activate --stored-token` with the same attempt, returned owner/generation, and runtime;
+only `activated` or `already-activated` permits promotion and continuation. Until then the
+kernel rejects business writes with `ACTIVATION_PENDING`.
+
+Stored mode publishes a child-generated 32-byte token under the OS user-state
+`deep-loop/activation-secrets` directory. Directories/files are private 0700/0600 on POSIX;
+Windows requires a verified current-user-only ACL. Skills never override the trusted state-root
+environment or copy the raw token/path to descriptors, handoffs, env, receipts, stdout, or logs.
+Lost responses reuse the same attempt and stored token. The raw-token CLI remains compatibility-only;
+production skills use stored mode. Automatic cleanup and TTL are forbidden: retain the secret until
+future GC has durable generation-superseded or terminal proof.
+
 **Attempt nonce — `lease acquire --attempt-id <token>`** (optional,
 `^[A-Za-z0-9_-]{8,128}$`; a malformed value is exit 1, an omitted one is not a violation).
 A caller whose response was lost but which is still alive re-sends the **same** value and
