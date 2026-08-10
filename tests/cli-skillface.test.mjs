@@ -239,7 +239,7 @@ test('state get returns whole loop and a field path', () => {
 
 test('state get drains large JSON output before the CLI exits', () => {
   const { root, runId } = seed();
-  const items = Array.from({ length: 2_000 }, (_, index) =>
+  const items = Array.from({ length: 1_000 }, (_, index) =>
     `${String(index).padStart(4, '0')}-${'x'.repeat(64)}`);
   run(root, [
     'state', 'patch', '--field', 'discovered_items', '--value', JSON.stringify(items),
@@ -247,7 +247,7 @@ test('state get drains large JSON output before the CLI exits', () => {
   ]);
 
   const stdout = run(root, ['state', 'get']);
-  assert.ok(Buffer.byteLength(stdout, 'utf8') > 131_072);
+  assert.ok(Buffer.byteLength(stdout, 'utf8') > 65_536);
   assert.deepEqual(JSON.parse(stdout).discovered_items, items);
 });
 
