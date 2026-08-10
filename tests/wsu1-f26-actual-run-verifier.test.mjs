@@ -148,7 +148,12 @@ function fixture() {
     maker_episode_id: makerId,
     checker_episode_id: checkerId,
     cwd: projectRoot,
-    argv: [process.execPath, join(worktree, 'scripts', 'hooks-impl', 'drive-headless.mjs')],
+    argv: [
+      process.execPath,
+      join(worktree, 'scripts', 'hooks-impl', 'drive-headless.mjs'),
+      '--run-id',
+      runId,
+    ],
     env: { DEEP_LOOP_UNATTENDED: '1' },
     started_at: '2026-08-10T00:00:00.000Z',
     finished_at: '2026-08-10T00:01:00.000Z',
@@ -263,8 +268,20 @@ negative('F26-ACTUAL-NEG-OBSERVATION-SHAPE', 'WSU1_F26_OBSERVATION_SHAPE', (fx) 
 negative('F26-ACTUAL-NEG-OBSERVATION-RUN-MISMATCH', 'WSU1_F26_OBSERVATION_RUN', (fx) => {
   fx.observation.run_id = '01DIFFERENTRUN00000000000000'; fx.writeObservation();
 });
-negative('F26-ACTUAL-NEG-OBSERVATION-COMMAND-MISMATCH', 'WSU1_F26_OBSERVATION_COMMAND', (fx) => {
-  fx.observation.cwd = fx.worktree; fx.writeObservation();
+test('F26-ACTUAL-NEG-OBSERVATION-COMMAND-MISMATCH', () => {
+  const cases = [
+    ['wrong-cwd', (fx) => { fx.observation.cwd = fx.worktree; }],
+    ['old-no-run-id', (fx) => { fx.observation.argv = fx.observation.argv.slice(0, 2); }],
+    ['missing-run-id-value', (fx) => { fx.observation.argv = fx.observation.argv.slice(0, 3); }],
+    ['wrong-run-id', (fx) => { fx.observation.argv[3] = '01WRONGRUN00000000000000000'; }],
+  ];
+  for (const [name, mutate] of cases) {
+    const fx = fixture();
+    mutate(fx);
+    fx.writeObservation();
+    const result = invoke(fx);
+    assert.equal(result.stderr, 'WSU1_F26_OBSERVATION_COMMAND\n', name);
+  }
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-RESULT-MISMATCH', 'WSU1_F26_OBSERVATION_RESULT', (fx) => {
   fx.observation.exit_code = 1; fx.writeObservation();

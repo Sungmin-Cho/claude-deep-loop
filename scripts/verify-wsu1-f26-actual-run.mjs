@@ -226,7 +226,12 @@ function validateObservation(observation, context) {
     || observation.run_id !== context.runId || observation.workstream_id !== context.workstream.id
     || observation.point !== context.point || observation.maker_episode_id !== context.maker.id
     || observation.checker_episode_id !== context.checker.id) fail('WSU1_F26_OBSERVATION_RUN');
-  const expectedArgv = [process.execPath, join(context.worktree, 'scripts', 'hooks-impl', 'drive-headless.mjs')];
+  const expectedArgv = [
+    process.execPath,
+    join(context.worktree, 'scripts', 'hooks-impl', 'drive-headless.mjs'),
+    '--run-id',
+    context.runId,
+  ];
   if (observation.cwd !== context.projectRoot || !same(observation.argv, expectedArgv)
     || !same(observation.env, { DEEP_LOOP_UNATTENDED: '1' })) fail('WSU1_F26_OBSERVATION_COMMAND');
   let result;

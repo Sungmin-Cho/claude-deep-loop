@@ -1906,11 +1906,23 @@ export function driveHeadlessRun(options = {}) {
 
 export function driveHeadless({
   root = findRoot(process.cwd()),
-  driveRun = driveHeadlessRun,
+  runId: explicitRunId, driveRun = driveHeadlessRun,
   ...options
 } = {}) {
-  const currentPath = join(root, '.deep-loop', 'current');
-  const runId = existsSync(currentPath) ? readFileSync(currentPath, 'utf8').trim() : null;
-  if (!runId) return { ok: true, action: 'no-run' };
-  return driveRun({ root, runId, ...options });
+  const selected = selectHeadlessRun(root, explicitRunId);
+  if (selected.error) return { ok: false, action: 'fail-closed', reason: selected.error };
+  if (!selected.runId) return { ok: true, action: 'no-run' };
+  return driveRun({ root, runId: selected.runId, ...options });
+}
+
+function selectHeadlessRun(root, explicitRunId) {
+  if (explicitRunId === undefined) {
+    const currentPath = join(root, '.deep-loop', 'current');
+    return { runId: existsSync(currentPath) ? readFileSync(currentPath, 'utf8').trim() : null };
+  }
+  let exactRunDir;
+  try { exactRunDir = runDir(root, explicitRunId); }
+  catch { return { error: 'run-id-invalid' }; }
+  if (!existsSync(join(exactRunDir, 'loop.json'))) return { error: 'run-not-found' };
+  return { runId: explicitRunId };
 }

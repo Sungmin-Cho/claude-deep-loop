@@ -721,6 +721,46 @@ test('drive-headless direct execution writes one JSON result and imports with mi
   }
 });
 
+test('drive-headless CLI forwards one exact --run-id and keeps legacy no-arg routing compatible', () => {
+  const explicit = seed();
+  writeFileSync(join(explicit.root, '.deep-loop', 'current'), '01WRONGCURRENT0000000000000000');
+  const explicitResult = runNode([DRIVE_HOOK, '--run-id', explicit.runId], { cwd: explicit.root });
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(explicitResult.stderr, '');
+  assert.equal(JSON.parse(explicitResult.stdout).action, 'no-pending-handoff');
+
+  const legacy = seed();
+  const legacyResult = runNode([DRIVE_HOOK], { cwd: legacy.root });
+  assert.equal(legacyResult.status, 0, legacyResult.stderr);
+  assert.equal(legacyResult.stderr, '');
+  assert.equal(JSON.parse(legacyResult.stdout).action, 'no-pending-handoff');
+});
+
+test('drive-headless CLI rejects malformed argument shapes before durable run mutation', () => {
+  const cases = [
+    ['missing-value', ['--run-id']],
+    ['empty-value', ['--run-id', '']],
+    ['duplicate', ['--run-id', 'run-one', '--run-id', 'run-two']],
+    ['unknown', ['--unknown', 'value']],
+    ['malformed-id', ['--run-id', '../escape']],
+  ];
+  for (const [name, argv] of cases) {
+    const fixture = seed();
+    const before = snapshotRunTree(fixture.root, fixture.runId);
+    const currentBefore = rf(join(fixture.root, '.deep-loop', 'current'));
+    const result = runNode([DRIVE_HOOK, ...argv], { cwd: fixture.root });
+    assert.equal(result.status, 1, `${name}: ${result.stderr}`);
+    assert.equal(result.stderr, '', name);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      action: 'fail-closed',
+      reason: 'arguments-invalid',
+    }, name);
+    assert.deepEqual(snapshotRunTree(fixture.root, fixture.runId), before, name);
+    assert.deepEqual(rf(join(fixture.root, '.deep-loop', 'current')), currentBefore, name);
+  }
+});
+
 test('precompact invalid JSON exits zero with one fixed bounded diagnostic', () => {
   const result = runNode([PRECOMPACT_HOOK], { cwd: mkdtempSync(join(tmpdir(), 'dl-pc-json-')), input: '{' });
   assert.equal(result.status, 0);

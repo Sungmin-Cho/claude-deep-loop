@@ -1203,6 +1203,43 @@ test('driveHeadless is a current-run compatibility wrapper over the injected cor
   assert.equal(called, false);
 });
 
+test('driveHeadless explicit runId selects only that existing run without consulting current', () => {
+  const { root, runId } = seedClaudeHandoff();
+  const currentPath = join(root, '.deep-loop', 'current');
+  writeFileSync(currentPath, '01WRONGCURRENT0000000000000000');
+  let captured = null;
+  const sentinel = { ok: true, action: 'explicit-core' };
+  const result = driveHeadless({
+    root,
+    runId,
+    driveRun: (options) => {
+      captured = options;
+      return sentinel;
+    },
+  });
+  assert.equal(result, sentinel);
+  assert.equal(captured.runId, runId);
+
+  unlinkSync(currentPath);
+  mkdirSync(currentPath);
+  assert.equal(driveHeadless({ root, runId, driveRun: () => sentinel }), sentinel,
+    'an explicit runId must not read even an unreadable current compatibility pointer');
+});
+
+test('driveHeadless rejects malformed or nonexistent explicit runId before the injected core', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-explicit-invalid-')));
+  let calls = 0;
+  const driveRun = () => { calls += 1; return { ok: true }; };
+  for (const runId of ['', '.', '..', '../escape', 'missing-safe-run']) {
+    assert.deepEqual(driveHeadless({ root, runId, driveRun }), {
+      ok: false,
+      action: 'fail-closed',
+      reason: runId === 'missing-safe-run' ? 'run-not-found' : 'run-id-invalid',
+    }, runId);
+  }
+  assert.equal(calls, 0);
+});
+
 test('a host policy override never bypasses fail-closed human resume intent', () => {
   const { root, runId } = seedClaudeHandoff();
   const { data } = readState(root, runId);
