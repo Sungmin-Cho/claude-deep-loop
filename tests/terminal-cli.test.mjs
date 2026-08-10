@@ -727,12 +727,13 @@ function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime
 }
 
 function storedActivateCli(f, {
-  root = f.root, owner = f.owner, generation = f.gen, runtime = 'claude', privateHome,
+  root = f.root, owner = f.owner, generation = f.gen, runtime = 'claude',
+  attemptId = f.attemptId, privateHome,
 } = {}) {
   const home = privateHome || mkdtempSync(join(tmpdir(), 'dl-stored-fence-home-'));
   const result = spawnSync(process.execPath, [
     CLI, 'lease', 'activate', '--stored-token', '--owner', owner,
-    '--generation', String(generation), '--runtime', runtime, '--attempt-id', f.attemptId,
+    '--generation', String(generation), '--runtime', runtime, '--attempt-id', attemptId,
     '--run-id', f.runId, '--project-root', root,
   ], {
     encoding: 'utf8',
@@ -744,6 +745,12 @@ function storedActivateCli(f, {
     },
   });
   return { ...result, privateHome: home };
+}
+
+function privateActivationRoot(home) {
+  return process.platform === 'darwin'
+    ? join(home, 'Library', 'Application Support', 'deep-loop')
+    : join(home, '.state', 'deep-loop');
 }
 
 function reapCli(f, extra = [], owner = f.owner, generation = f.gen) {
@@ -957,6 +964,8 @@ test('stored-token activation preserves owner, generation, and runtime fences as
     assert.equal(result.status, 3, `${label}\n${result.stdout}${result.stderr}`);
     assert.match(result.stderr, expected, label);
     assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, label);
+    assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+      `${label}: rejected fence must leave no private-store residue`);
     assert.doesNotMatch(result.stdout + result.stderr, new RegExp(result.privateHome), label);
   }
 });
@@ -970,7 +979,65 @@ test('stored-token activation preserves a copied-root project fence as exit 3 wi
   assert.equal(result.status, 3, result.stdout + result.stderr);
   assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
   assert.deepEqual(terminalDurableBytes(candidateRoot, f.runId), before);
+  assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+    'project fence must leave no private-store residue');
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(result.privateHome));
+});
+
+test('stored-token structured and invalid-state rejections leave no private-store residue', () => {
+  for (const [label, mutate, overrides, status, expected] of [
+    ['paused', data => { data.status = 'paused'; data.pause_reason = 'human-hold'; }, {}, 0, /RUN_PAUSED/],
+    ['terminal', data => { data.status = 'completed'; }, {}, 0, /RUN_TERMINAL/],
+    ['attempt mismatch', () => {}, { attemptId: 'OTHERATTEMPT0001' }, 0, /attempt-mismatch/],
+    ['expired', data => { data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z'; }, {}, 0, /activation-deadline-expired/],
+    ['malformed deadline', data => { data.session_chain.lease.activation_deadline_at = 'not-an-iso-deadline'; }, {}, 1, /ACTIVATION_DEADLINE_INVALID/],
+  ]) {
+    const f = seedActivationCli();
+    const { data } = readState(f.root, f.runId);
+    mutate(data);
+    const raw = JSON.stringify(data, null, 2);
+    writeFileSync(join(runDir(f.root, f.runId), 'loop.json'), raw);
+    writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = storedActivateCli(f, overrides);
+    assert.equal(result.status, status, `${label}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stdout + result.stderr, expected, label);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, label);
+    assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+      `${label}: rejection must leave no private-store residue`);
+  }
+});
+
+test('stored-token private-store IO failure is exit 1 with kernel mutation zero', () => {
+  if (process.platform === 'win32') return; // Windows ACL polarity is injected in activation-secret.test.mjs.
+  const f = seedActivationCli();
+  const privateHome = mkdtempSync(join(tmpdir(), 'dl-stored-io-home-'));
+  const base = process.platform === 'darwin'
+    ? join(privateHome, 'Library', 'Application Support')
+    : join(privateHome, '.state');
+  mkdirSync(dirname(base), { recursive: true });
+  writeFileSync(base, 'not-a-directory');
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = storedActivateCli(f, { privateHome });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ACTIVATION_SECRET_IO_UNAVAILABLE/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(privateHome));
+});
+
+test('stored-token retry never creates a replacement token after activation is already durable', () => {
+  const f = seedActivationCli();
+  const activated = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'RawCompatibilityToken_01',
+  ]);
+  assert.equal(activated.status, 0, activated.stdout + activated.stderr);
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = storedActivateCli(f);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ACTIVATION_SECRET_IO_UNAVAILABLE/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+    'an activated generation without its original store must not mint a replacement token');
 });
 
 test('SLICE-004 CLI expired activation is structured exit zero and mutation-free', () => {

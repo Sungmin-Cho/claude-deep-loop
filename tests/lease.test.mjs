@@ -1050,6 +1050,31 @@ test('SLICE-004 first activation commits the exact seven-key receipt and clears 
   assert.equal(current.activation_deadline_at, null);
 });
 
+test('SLICE-004 activation token provider runs only after fresh in-lock eligibility', () => {
+  const f = seedActivationPending();
+  let calls = 0;
+  assert.deepEqual(activate(f, {
+    activationToken: undefined,
+    activationTokenProvider({ guard }) {
+      guard.assertOwned();
+      calls += 1;
+      return ACTIVATION_TOKEN;
+    },
+  }), { ok: true, reason: 'activated' });
+  assert.equal(calls, 1);
+  assert.equal(readState(f.root, f.runId).data.session_chain.lease.activation.activation_token_digest,
+    contentHash(ACTIVATION_TOKEN));
+
+  const stale = seedActivationPending();
+  let staleCalls = 0;
+  assert.throws(() => activate(stale, {
+    activationToken: undefined,
+    owner: 'STALEOWNER',
+    activationTokenProvider() { staleCalls += 1; return ACTIVATION_TOKEN; },
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.equal(staleCalls, 0);
+});
+
 test('SLICE-004 first activation uses the safety clock while public future now remains receipt-only', () => {
   const f = seedActivationPending();
   const publicFuture = Date.parse('2999-01-01T00:00:00.000Z');

@@ -334,8 +334,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/activation-secret.mjs:256",
-            "scripts/lib/lease.mjs:566"
+            "scripts/lib/activation-secret.mjs:269",
+            "scripts/lib/lease.mjs:584"
           ]
         },
         {
@@ -346,8 +346,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/activation-secret.mjs:256",
-            "scripts/lib/lease.mjs:566"
+            "scripts/lib/activation-secret.mjs:269",
+            "scripts/lib/lease.mjs:584"
           ]
         }
       ]
@@ -2265,7 +2265,7 @@
           "coordinates": [
             "scripts/lib/handoff.mjs:466",
             "scripts/lib/handoff.mjs:322",
-            "scripts/lib/lease.mjs:747"
+            "scripts/lib/lease.mjs:768"
           ]
         }
       ]
@@ -2666,7 +2666,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/integrity.mjs:920"
+            "scripts/lib/integrity.mjs:930"
           ]
         },
         {
@@ -2676,7 +2676,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/integrity.mjs:920"
+            "scripts/lib/integrity.mjs:930"
           ]
         }
       ]
@@ -3012,7 +3012,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:566"
+            "scripts/lib/lease.mjs:584"
           ]
         },
         {
@@ -3022,7 +3022,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:566"
+            "scripts/lib/lease.mjs:584"
           ]
         }
       ]
@@ -3041,7 +3041,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:792"
+            "scripts/lib/lease.mjs:813"
           ]
         },
         {
@@ -3051,7 +3051,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:792"
+            "scripts/lib/lease.mjs:813"
           ]
         }
       ]
@@ -3124,7 +3124,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:649"
+            "scripts/lib/lease.mjs:670"
           ]
         },
         {
@@ -3134,7 +3134,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:649"
+            "scripts/lib/lease.mjs:670"
           ]
         }
       ]
@@ -3153,7 +3153,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:684"
+            "scripts/lib/lease.mjs:705"
           ]
         }
       ]
@@ -3172,7 +3172,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:747"
+            "scripts/lib/lease.mjs:768"
           ]
         }
       ]
@@ -3191,7 +3191,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:823"
+            "scripts/lib/lease.mjs:844"
           ]
         }
       ]
@@ -3210,7 +3210,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:875"
+            "scripts/lib/lease.mjs:896"
           ]
         },
         {
@@ -3220,7 +3220,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/lease.mjs:875"
+            "scripts/lib/lease.mjs:896"
           ]
         }
       ]
@@ -3409,7 +3409,7 @@
             "scripts/hooks-impl/precompact-handoff.mjs:178",
             "scripts/lib/handoff.mjs:466",
             "scripts/lib/handoff.mjs:322",
-            "scripts/lib/lease.mjs:747"
+            "scripts/lib/lease.mjs:768"
           ]
         }
       ]
@@ -3434,7 +3434,7 @@
             "scripts/hooks-impl/precompact-handoff.mjs:178",
             "scripts/lib/handoff.mjs:466",
             "scripts/lib/handoff.mjs:322",
-            "scripts/lib/lease.mjs:747"
+            "scripts/lib/lease.mjs:768"
           ]
         }
       ]

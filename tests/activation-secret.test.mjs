@@ -24,9 +24,12 @@ function linuxDeps(stateRoot, overrides = {}) {
     platform: 'linux', env: { XDG_STATE_HOME: stateRoot }, homedirFn: () => '/unused',
     canonicalProjectRootFn: value => value,
     randomBytesFn: () => Buffer.alloc(32, 0x5a),
-    activateLeaseFn: (_root, _runId, options) => ({
-      ok: true, reason: 'activated', observedToken: options.activationToken,
-    }),
+    activateLeaseFn: (_root, _runId, options) => {
+      const token = options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: true,
+      });
+      return { ok: true, reason: 'activated', observedToken: token };
+    },
     ...overrides,
   };
 }
@@ -54,7 +57,9 @@ test('stored activation publishes one opaque private exact-schema secret and reu
   const seen = [];
   const deps = linuxDeps(stateRoot, {
     activateLeaseFn: (_root, _runId, options) => {
-      seen.push(options.activationToken);
+      seen.push(options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: seen.length === 0,
+      }));
       return { ok: true, reason: seen.length === 1 ? 'activated' : 'already-activated' };
     },
   });
@@ -82,6 +87,25 @@ test('stored activation publishes one opaque private exact-schema secret and reu
     },
     token: seen[0],
   });
+});
+
+test('stored activation defers every private-store write until the kernel commit callback', () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-deferred-'));
+  const directory = join(stateRoot, 'deep-loop', 'activation-secrets');
+  let observed;
+  const deps = linuxDeps(stateRoot, {
+    activateLeaseFn(_root, _runId, options) {
+      assert.equal(readdirSync(stateRoot).length, 0, 'no private directory before kernel eligibility');
+      assert.equal(typeof options.activationTokenProvider, 'function');
+      observed = options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: true,
+      });
+      assert.equal(readdirSync(directory).length, 1, 'provider publishes exactly one final secret');
+      return { ok: true, reason: 'activated' };
+    },
+  });
+  assert.deepEqual(activateStoredLease(ROOT, RUN, BINDING, deps), { ok: true, reason: 'activated' });
+  assert.match(observed, /^[A-Za-z0-9_-]{43}$/);
 });
 
 test('stored activation rejects malformed, mismatched, unsafe and symlink entries without replacement', () => {
@@ -187,7 +211,13 @@ test('stored activation maps filesystem failures to closed codes without raw pat
   let activated = false;
   const cleanupDeps = linuxDeps(mkdtempSync(join(tmpdir(), 'dl-secret-cleanup-')), {
     unlinkFn() { throw Object.assign(new Error(marker), { code: 'EIO' }); },
-    activateLeaseFn() { activated = true; return { ok: true, reason: 'activated' }; },
+    activateLeaseFn(_root, _runId, options) {
+      options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: true,
+      });
+      activated = true;
+      return { ok: true, reason: 'activated' };
+    },
   });
   assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, cleanupDeps),
     error => error?.message === 'ACTIVATION_SECRET_IO_UNAVAILABLE');
@@ -206,12 +236,30 @@ test('exclusive publish race discards the losing candidate and reuses the valida
       throw Object.assign(new Error('race'), { code: 'EEXIST' });
     },
     activateLeaseFn(_root, _runId, options) {
-      observed = options.activationToken;
+      observed = options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: true,
+      });
       return { ok: true, reason: 'activated' };
     },
   });
   assert.deepEqual(activateStoredLease(ROOT, RUN, BINDING, deps), { ok: true, reason: 'activated' });
   assert.equal(observed, winner);
+});
+
+test('post-publication kernel crash preserves the explicit cross-filesystem residue seam', () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-crash-seam-'));
+  const marker = '/SECRET/kernel-crash-cause';
+  assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, linuxDeps(stateRoot, {
+    activateLeaseFn(_root, _runId, options) {
+      options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: true,
+      });
+      throw new Error(marker);
+    },
+  })), error => error?.message === 'STATE_INVALID: stored activation kernel failure');
+  const directory = join(stateRoot, 'deep-loop', 'activation-secrets');
+  assert.equal(readdirSync(directory).length, 1,
+    'publication before a kernel append crash is an acknowledged durable residue seam');
 });
 
 test('stored activation preserves authorized kernel taxonomy and sanitizes unknown kernel errors', () => {

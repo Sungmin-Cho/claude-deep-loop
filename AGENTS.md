@@ -130,7 +130,12 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    `scripts/lib/activation-secret.mjs`: the execution-child stored-activation client
    may write only its internally derived OS user-state `deep-loop/activation-secrets`
    directory. It accepts no caller path, never writes a raw token to project/kernel
-   state or output, and fails closed on unsafe identity/permissions/ACL. On Windows,
+   state or output, and fails closed on unsafe identity/permissions/ACL. It publishes
+   only from `appendAnchored`'s owned-lock, post-eligibility/pre-append callback; an
+   explicit fence or structured rejection therefore leaves no private-store residue.
+   This is a cooperative-but-fallible execution-child contract, not physical-principal
+   attestation: no local UID/PID/env/file mechanism distinguishes a malicious same-UID
+   parent or replacement child. On Windows,
    trusted ambient `SystemRoot` must bind the exact
    `System32/WindowsPowerShell/v1.0/powershell.exe`; PATH resolution is forbidden.
    `/deep-loop-finish` may delegate to deep-memory's and deep-wiki's own skills. PreCompact and SessionStart

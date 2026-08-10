@@ -479,6 +479,7 @@ export function activateLease(root, runId, {
   runtime,
   attemptId,
   activationToken,
+  activationTokenProvider,
   now,
   clock = Date.now,
   __testFaultAt,
@@ -487,13 +488,17 @@ export function activateLease(root, runId, {
   if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
     throw new Error('INVALID_ATTEMPT_ID');
   }
-  if (typeof activationToken !== 'string'
-    || !/^[A-Za-z0-9_-]{8,128}$/.test(activationToken)) {
+  const hasRawToken = activationToken !== undefined;
+  const hasProvider = activationTokenProvider !== undefined;
+  if (hasRawToken === hasProvider
+    || (hasRawToken && (typeof activationToken !== 'string'
+      || !/^[A-Za-z0-9_-]{8,128}$/.test(activationToken)))
+    || (hasProvider && typeof activationTokenProvider !== 'function')) {
     throw new Error('INVALID_ACTIVATION_TOKEN');
   }
 
-  const tokenDigest = contentHash(activationToken);
   const receiptData = {};
+  let existingActivation;
   let outcome = null;
   const preCheck = (data) => {
     const runtimeResult = runtimeFence(data, runtime);
@@ -520,40 +525,53 @@ export function activateLease(root, runId, {
       throw activateHalt({ ok: false, reason: 'attempt-mismatch' });
     }
 
-    if (lease.activation !== undefined) {
-      throw activateHalt(lease.activation.activation_token_digest === tokenDigest
+    existingActivation = lease.activation;
+
+    if (existingActivation === undefined) {
+      if (lease.state !== 'active'
+        || lease.handoff_phase !== 'acquired'
+        || lease.activation_deadline_at === null
+        || lease.activation_deadline_at === undefined) {
+        throw activateHalt({ ok: false, reason: 'not-activation-pending' });
+      }
+
+      const deadlineAtMs = Date.parse(lease.activation_deadline_at);
+      if (!Number.isSafeInteger(deadlineAtMs)
+        || new Date(deadlineAtMs).toISOString() !== lease.activation_deadline_at) {
+        throw new Error('ACTIVATION_DEADLINE_INVALID');
+      }
+      const safetyNow = lockedSafetyTime(clock, 'lease activation deadline');
+      if (safetyNow >= deadlineAtMs) {
+        throw activateHalt({ ok: false, reason: 'activation-deadline-expired' });
+      }
+      const lockedNow = now === undefined
+        ? safetyNow
+        : lockedTime(now, clock, 'lease activation');
+      Object.assign(receiptData, {
+        owner_run_id: owner,
+        generation,
+        from_generation: acquisition.from_generation,
+        to_generation: acquisition.to_generation,
+        attempt_id: attemptId,
+        activated_at: new Date(lockedNow).toISOString(),
+      });
+    }
+  };
+
+  const beforeDurableCommit = ({ guard }) => {
+    const token = hasProvider
+      ? activationTokenProvider({ guard, allowCreate: existingActivation === undefined })
+      : activationToken;
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(token)) {
+      throw new Error('INVALID_ACTIVATION_TOKEN');
+    }
+    const tokenDigest = contentHash(token);
+    if (existingActivation !== undefined) {
+      throw activateHalt(existingActivation.activation_token_digest === tokenDigest
         ? { ok: true, reason: 'already-activated' }
         : { ok: false, reason: 'activation-token-mismatch' });
     }
-
-    if (lease.state !== 'active'
-      || lease.handoff_phase !== 'acquired'
-      || lease.activation_deadline_at === null
-      || lease.activation_deadline_at === undefined) {
-      throw activateHalt({ ok: false, reason: 'not-activation-pending' });
-    }
-
-    const deadlineAtMs = Date.parse(lease.activation_deadline_at);
-    if (!Number.isSafeInteger(deadlineAtMs)
-      || new Date(deadlineAtMs).toISOString() !== lease.activation_deadline_at) {
-      throw new Error('ACTIVATION_DEADLINE_INVALID');
-    }
-    const safetyNow = lockedSafetyTime(clock, 'lease activation deadline');
-    if (safetyNow >= deadlineAtMs) {
-      throw activateHalt({ ok: false, reason: 'activation-deadline-expired' });
-    }
-    const lockedNow = now === undefined
-      ? safetyNow
-      : lockedTime(now, clock, 'lease activation');
-    Object.assign(receiptData, {
-      owner_run_id: owner,
-      generation,
-      from_generation: acquisition.from_generation,
-      to_generation: acquisition.to_generation,
-      attempt_id: attemptId,
-      activation_token_digest: tokenDigest,
-      activated_at: new Date(lockedNow).toISOString(),
-    });
+    receiptData.activation_token_digest = tokenDigest;
   };
 
   const mutate = (data) => {
@@ -567,7 +585,10 @@ export function activateLease(root, runId, {
       type: 'lease-activated',
       data: receiptData,
       now,
-    }, mutate, preCheck, __testFaultAt ? { faultAt: __testFaultAt } : {});
+    }, mutate, preCheck, {
+      beforeDurableCommit,
+      ...(__testFaultAt ? { faultAt: __testFaultAt } : {}),
+    });
   } catch (error) {
     if (error?.message !== ACTIVATE_HALT) throw error;
     return error.payload;

@@ -167,6 +167,22 @@ test('appendAnchored: non-terminal finish transition + auto-floor cost still com
   assert.ok(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').includes('auto_floor'));
 });
 
+test('appendAnchored runs the private before-durable-commit hook under the owned lock after eligibility', () => {
+  const { root, runId } = seededRun();
+  const order = [];
+  appendAnchored(root, runId, { type: 'x-before-commit', data: {} },
+    () => { order.push('mutate'); },
+    () => { order.push('precheck'); },
+    {
+      beforeDurableCommit({ guard }) {
+        guard.assertOwned();
+        order.push('before-durable-commit');
+      },
+    });
+  assert.deepEqual(order, ['precheck', 'before-durable-commit', 'mutate']);
+  assert.equal(readLines(root, runId).filter(event => event.type === 'x-before-commit').length, 1);
+});
+
 function transientRenameOptions(renameFn) {
   let now = 0;
   return {

@@ -147,6 +147,7 @@ const AUTHORIZED_KERNEL_ERROR = /^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|
 
 function mapKernelError(error) {
   const message = String(error?.message || error);
+  if (CLOSED.has(message)) return error instanceof Error ? error : new Error(message);
   if (AUTHORIZED_KERNEL_ERROR.test(message)) {
     return error instanceof Error ? error : new Error(message);
   }
@@ -175,86 +176,98 @@ export function activateStoredLease(root, runId, {
   const windowsExecutor = deps.windowsExecutor ?? spawnSync;
   const windowsExecutableLstatFn = deps.windowsExecutableLstatFn ?? lstatSync;
   const windowsExecutableRealpathFn = deps.windowsExecutableRealpathFn ?? (realpathSync.native || realpathSync);
-  let token;
-
-  try {
-    if (typeof runId !== 'string' || !SAFE_ID.test(runId)
-      || typeof owner !== 'string' || owner.length === 0
-      || !Number.isSafeInteger(generation) || generation < 1
-      || !['claude', 'codex'].includes(runtime)
-      || typeof attemptId !== 'string' || !SAFE_ID.test(attemptId)) {
-      throw closed('ACTIVATION_SECRET_BINDING_MISMATCH');
-    }
-    const windowsExecutable = platform === 'win32'
-      ? trustedWindowsPowerShell({
-        env, lstatFn: windowsExecutableLstatFn, realpathFn: windowsExecutableRealpathFn,
-      })
-      : null;
-    const windowsAclFn = deps.windowsAclFn
-      ?? (options => defaultWindowsAcl(options, windowsExecutor, windowsExecutable));
-    const canonicalRoot = canonicalProjectRootFn(root);
-    const base = stateRoot({ platform, env, homedirFn, testStateRoot: deps.testStateRoot });
-    if (typeof base !== 'string' || !isAbsolute(base)) throw closed('ACTIVATION_SECRET_ROOT_INVALID');
-    mkdirFn(base, { recursive: true, mode: 0o700 });
-    const baseStat = lstatFn(base);
-    if (!baseStat.isDirectory() || baseStat.isSymbolicLink()) {
-      throw closed('ACTIVATION_SECRET_UNSAFE');
-    }
-    const canonicalBase = realpathFn(base);
-    const parent = join(canonicalBase, 'deep-loop');
-    const directory = join(parent, 'activation-secrets');
-    ensureDirectory(parent, { platform, mkdirFn, lstatFn, realpathFn, windowsAclFn });
-    ensureDirectory(directory, { platform, mkdirFn, lstatFn, realpathFn, windowsAclFn });
-    const canonicalDirectory = realpathFn(directory);
-    const rel = relative(canonicalBase, canonicalDirectory);
-    if (rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel)) {
-      throw closed('ACTIVATION_SECRET_UNSAFE');
-    }
-
-    const binding = {
-      project_root_sha256: digest(canonicalRoot), run_id: runId, owner_run_id: owner,
-      generation, runtime, attempt_id: attemptId,
-    };
-    const key = digest([canonicalRoot, runId, owner, String(generation), runtime, attemptId].join('\0'));
-    const path = join(canonicalDirectory, `${key}.json`);
-    if (existsSync(path)) {
-      token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
-    } else {
-      const candidate = randomBytesFn(32).toString('base64url');
-      if (!TOKEN.test(candidate)) throw closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
-      const value = `${JSON.stringify({ schema_version: '1.0', binding, token: candidate })}\n`;
-      const temp = join(canonicalDirectory, `.tmp-${process.pid}-${randomBytesFn(8).toString('hex')}`);
-      let published = false;
-      try {
-        writeFn(temp, value, { flag: 'wx', mode: 0o600 });
-        if (platform === 'win32' && !windowsAclFn({ path: temp, kind: 'file' })) {
-          throw closed('ACTIVATION_SECRET_UNSAFE');
-        }
-        let fd;
-        try { fd = openFn(temp, constants.O_RDONLY); fsyncFn(fd); } finally { if (fd !== undefined) closeFn(fd); }
-        try {
-          linkFn(temp, path);
-          published = true;
-        } catch (error) {
-          if (error?.code !== 'EEXIST') throw error;
-        }
-        unlinkFn(temp);
-        let dirFd;
-        try { dirFd = openFn(canonicalDirectory, constants.O_RDONLY); fsyncFn(dirFd); }
-        catch (error) {
-          if (platform !== 'win32' || !['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM'].includes(error?.code)) throw error;
-        } finally { if (dirFd !== undefined) closeFn(dirFd); }
-        token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
-      } finally {
-        if (!published) { try { unlinkFn(temp); } catch { /* preserve primary failure */ } }
+  const activationTokenProvider = ({ guard, allowCreate }) => {
+    let token;
+    try {
+      guard.assertOwned();
+      if (typeof runId !== 'string' || !SAFE_ID.test(runId)
+        || typeof owner !== 'string' || owner.length === 0
+        || !Number.isSafeInteger(generation) || generation < 1
+        || !['claude', 'codex'].includes(runtime)
+        || typeof attemptId !== 'string' || !SAFE_ID.test(attemptId)) {
+        throw closed('ACTIVATION_SECRET_BINDING_MISMATCH');
       }
+      const windowsExecutable = platform === 'win32'
+        ? trustedWindowsPowerShell({
+          env, lstatFn: windowsExecutableLstatFn, realpathFn: windowsExecutableRealpathFn,
+        })
+        : null;
+      const windowsAclFn = deps.windowsAclFn
+        ?? (options => defaultWindowsAcl(options, windowsExecutor, windowsExecutable));
+      const canonicalRoot = canonicalProjectRootFn(root);
+      const base = stateRoot({ platform, env, homedirFn, testStateRoot: deps.testStateRoot });
+      if (typeof base !== 'string' || !isAbsolute(base)) {
+        throw closed('ACTIVATION_SECRET_ROOT_INVALID');
+      }
+      if (!allowCreate && !existsSync(base)) throw closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
+      mkdirFn(base, { recursive: true, mode: 0o700 });
+      const baseStat = lstatFn(base);
+      if (!baseStat.isDirectory() || baseStat.isSymbolicLink()) {
+        throw closed('ACTIVATION_SECRET_UNSAFE');
+      }
+      const canonicalBase = realpathFn(base);
+      const parent = join(canonicalBase, 'deep-loop');
+      const directory = join(parent, 'activation-secrets');
+      if (!allowCreate && (!existsSync(parent) || !existsSync(directory))) {
+        throw closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
+      }
+      ensureDirectory(parent, { platform, mkdirFn, lstatFn, realpathFn, windowsAclFn });
+      ensureDirectory(directory, { platform, mkdirFn, lstatFn, realpathFn, windowsAclFn });
+      const canonicalDirectory = realpathFn(directory);
+      const rel = relative(canonicalBase, canonicalDirectory);
+      if (rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel)) {
+        throw closed('ACTIVATION_SECRET_UNSAFE');
+      }
+
+      const binding = {
+        project_root_sha256: digest(canonicalRoot), run_id: runId, owner_run_id: owner,
+        generation, runtime, attempt_id: attemptId,
+      };
+      const key = digest([canonicalRoot, runId, owner, String(generation), runtime, attemptId].join('\0'));
+      const path = join(canonicalDirectory, `${key}.json`);
+      if (existsSync(path)) {
+        token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
+      } else {
+        if (!allowCreate) throw closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
+        const candidate = randomBytesFn(32).toString('base64url');
+        if (!TOKEN.test(candidate)) throw closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
+        const value = `${JSON.stringify({ schema_version: '1.0', binding, token: candidate })}\n`;
+        const temp = join(canonicalDirectory, `.tmp-${process.pid}-${randomBytesFn(8).toString('hex')}`);
+        let published = false;
+        try {
+          writeFn(temp, value, { flag: 'wx', mode: 0o600 });
+          if (platform === 'win32' && !windowsAclFn({ path: temp, kind: 'file' })) {
+            throw closed('ACTIVATION_SECRET_UNSAFE');
+          }
+          let fd;
+          try { fd = openFn(temp, constants.O_RDONLY); fsyncFn(fd); } finally { if (fd !== undefined) closeFn(fd); }
+          try {
+            linkFn(temp, path);
+            published = true;
+          } catch (error) {
+            if (error?.code !== 'EEXIST') throw error;
+          }
+          unlinkFn(temp);
+          let dirFd;
+          try { dirFd = openFn(canonicalDirectory, constants.O_RDONLY); fsyncFn(dirFd); }
+          catch (error) {
+            if (platform !== 'win32' || !['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM'].includes(error?.code)) throw error;
+          } finally { if (dirFd !== undefined) closeFn(dirFd); }
+          token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
+        } finally {
+          if (!published) { try { unlinkFn(temp); } catch { /* preserve primary failure */ } }
+        }
+      }
+      guard.renew();
+      guard.assertOwned();
+      return token;
+    } catch (error) {
+      throw mapError(error);
     }
-  } catch (error) {
-    throw mapError(error);
-  }
+  };
   try {
     const result = activateLeaseFn(root, runId, {
-      owner, generation, runtime, attemptId, activationToken: token, now,
+      owner, generation, runtime, attemptId, activationTokenProvider, now,
     });
     return { ok: result?.ok === true, reason: result?.reason };
   } catch (error) {
