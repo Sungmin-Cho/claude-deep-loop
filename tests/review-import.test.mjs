@@ -90,7 +90,7 @@ test('review import schema artifact is exact and closed', () => {
   assert.deepEqual(schema.required, ['schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id', 'verdict', 'report_body', 'artifacts']);
   assert.equal(schema.properties.attempt_id.maxLength, 128);
   assert.equal(schema.properties.attempt_id.pattern, '^[A-Za-z0-9][A-Za-z0-9._-]*$');
-  assert.equal(schema.properties.schema_version.const, '1.0');
+  assert.deepEqual(schema.properties.schema_version, { type: 'string', const: '1.0' });
   assert.deepEqual(schema.properties.verdict.enum, ['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
   assert.equal(schema.properties.report_body.maxLength, REVIEW_REPORT_BODY_MAX_BYTES);
   assert.equal(schema.properties.artifacts.maxItems, REVIEW_IMPORT_MAX_ARTIFACTS);
@@ -122,6 +122,7 @@ test('parseReviewImport manually enforces exact keys, schema, types, enums, and 
     ['top-level array', JSON.stringify([]), /REVIEW_IMPORT_OBJECT_INVALID/],
     ['extra top key', JSON.stringify(validImport({ review_source: 'recorded-path' })), /REVIEW_IMPORT_PROPERTY_INVALID/],
     ['schema', JSON.stringify(validImport({ schema_version: '2.0' })), /REVIEW_IMPORT_SCHEMA_INVALID/],
+    ['schema wrong type', JSON.stringify(validImport({ schema_version: 1 })), /REVIEW_IMPORT_SCHEMA_INVALID/],
     ['reviewer', JSON.stringify(validImport({ reviewer_id: '' })), /REVIEW_IMPORT_REVIEWER_INVALID/],
     ['checker', JSON.stringify(validImport({ checker_episode_id: 1 })), /REVIEW_IMPORT_CHECKER_INVALID/],
     ['maker', JSON.stringify(validImport({ target_maker: null })), /REVIEW_IMPORT_TARGET_INVALID/],
