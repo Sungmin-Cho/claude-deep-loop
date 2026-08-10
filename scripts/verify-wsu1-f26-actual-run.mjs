@@ -107,12 +107,20 @@ function sourceArtifacts(worktree) {
   const files = [];
   const scripts = join(worktree, 'scripts');
   canonicalDirectory(scripts, 'WSU1_F26_WORKTREE_K');
-  for (const entry of readdirSync(scripts, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const path = resolve(entry.parentPath, entry.name);
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isFile()) fail('WSU1_F26_WORKTREE_K');
-    files.push(path);
+  const directories = [scripts];
+  while (directories.length > 0) {
+    const parent = directories.pop();
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      const path = join(parent, entry.name);
+      if (entry.isDirectory()) {
+        directories.push(path);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || !stat.isFile()) fail('WSU1_F26_WORKTREE_K');
+      files.push(path);
+    }
   }
   for (const name of [
     'activation-pending-classification.seed.md',

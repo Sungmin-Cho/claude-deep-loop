@@ -31,16 +31,20 @@ function fixture() {
   const runDir = join(projectRoot, '.deep-loop', 'runs', runId);
   const reviews = join(runDir, 'reviews');
   const fixtures = join(worktree, 'tests', 'fixtures');
-  mkdirSync(join(worktree, 'scripts'), { recursive: true });
+  const scripts = join(worktree, 'scripts');
+  mkdirSync(join(scripts, 'nested'), { recursive: true });
   mkdirSync(fixtures, { recursive: true });
   mkdirSync(reviews, { recursive: true });
-  writeFileSync(join(worktree, 'scripts', 'surface.mjs'), 'export function surface() {}\n');
+  writeFileSync(join(scripts, 'surface.mjs'), 'export function surface() {}\n');
+  writeFileSync(join(scripts, 'nested', 'surface-nested.mjs'), 'export const nested = true;\n');
+  symlinkSync('surface.mjs', join(scripts, 'surface-decoy.mjs'));
   writeFileSync(join(fixtures, 'activation-pending-classification.seed.md'), 'seed\n');
   writeFileSync(join(fixtures, 'activation-pending-classification.md'), 'live\n');
   writeFileSync(join(fixtures, 'activation-pending-classification-evidence.json'), '{"rows":[]}\n');
 
   const relativeArtifacts = [
     'scripts/surface.mjs',
+    'scripts/nested/surface-nested.mjs',
     'tests/fixtures/activation-pending-classification.seed.md',
     'tests/fixtures/activation-pending-classification.md',
     'tests/fixtures/activation-pending-classification-evidence.json',
@@ -300,6 +304,12 @@ test('STEP0-3 verifier test fixture guards the exact external-observation 20-key
     'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id', 'cwd', 'argv', 'env',
     'started_at', 'finished_at', 'exit_code', 'stdout', 'stderr', 'checker_terminal_status',
   ]), true);
+});
+
+test('STEP0-3 verifier source uses only baseline Node20 Dirent fields and non-recursive readdir', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  assert.doesNotMatch(source, /\.parentPath\b/);
+  assert.doesNotMatch(source, /readdirSync\([^)]*recursive\s*:\s*true/);
 });
 
 test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production checksum chain', () => {
