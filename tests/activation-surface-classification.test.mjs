@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { baselineNode20RegularFiles } from './helpers/baseline-node20-walk.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -15,12 +16,7 @@ const FIXTURES = join(HERE, 'fixtures');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const byteSort = (left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right));
 
-function recursiveFiles(root) {
-  return readdirSync(root, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => resolve(entry.parentPath, entry.name))
-    .sort(byteSort);
-}
+const recursiveFiles = baselineNode20RegularFiles;
 
 function exactKeys(value, keys) {
   return value != null && typeof value === 'object' && !Array.isArray(value)

@@ -3,15 +3,23 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync,
+  lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tokenize } from './helpers/wsu1-f26-static-analyzer.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const VERIFIER = join(ROOT, 'scripts', 'verify-wsu1-f26-actual-run.mjs');
+const NODE20_TRAVERSAL_SOURCES = [
+  VERIFIER,
+  join(HERE, 'helpers', 'baseline-node20-walk.mjs'),
+  join(HERE, 'helpers', 'wsu1-f26-link-only-extractor.mjs'),
+  join(HERE, 'activation-surface-classification.test.mjs'),
+  join(HERE, 'terminal-cli.test.mjs'),
+];
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const exactKeys = (value, keys) => Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
 
@@ -21,6 +29,30 @@ function checksumFor(seq, ts, type, data, prev) {
 
 function nulChecksumFor(seq, ts, type, data, prev) {
   return sha256(Buffer.from(`${seq}\0${ts}\0${type}\0${JSON.stringify(data)}\0${prev}`));
+}
+
+function baselineNode20TraversalViolations(source, file = '<source>') {
+  const tokens = tokenize(source, file);
+  const violations = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].value === 'parentPath') violations.push('Dirent.parentPath');
+    if (tokens[index].value !== 'readdirSync' || tokens[index + 1]?.value !== '(') continue;
+    let depth = 0;
+    let close = -1;
+    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+      if (tokens[cursor].value === '(') depth += 1;
+      if (tokens[cursor].value === ')') depth -= 1;
+      if (depth === 0) { close = cursor; break; }
+    }
+    assert.notEqual(close, -1, `${file}: unbalanced readdirSync call`);
+    for (let cursor = index + 2; cursor < close; cursor += 1) {
+      if (tokens[cursor].value === 'recursive' && tokens[cursor + 1]?.value === ':') {
+        violations.push('recursive readdirSync');
+      }
+    }
+    index = close;
+  }
+  return violations;
 }
 
 function fixture() {
@@ -38,6 +70,10 @@ function fixture() {
   writeFileSync(join(scripts, 'surface.mjs'), 'export function surface() {}\n');
   writeFileSync(join(scripts, 'nested', 'surface-nested.mjs'), 'export const nested = true;\n');
   symlinkSync('surface.mjs', join(scripts, 'surface-decoy.mjs'));
+  const outsideScripts = join(projectRoot, 'outside-scripts');
+  mkdirSync(outsideScripts);
+  writeFileSync(join(outsideScripts, 'outside.mjs'), 'export const outside = true;\n');
+  symlinkSync(outsideScripts, join(scripts, 'directory-decoy'), process.platform === 'win32' ? 'junction' : 'dir');
   writeFileSync(join(fixtures, 'activation-pending-classification.seed.md'), 'seed\n');
   writeFileSync(join(fixtures, 'activation-pending-classification.md'), 'live\n');
   writeFileSync(join(fixtures, 'activation-pending-classification-evidence.json'), '{"rows":[]}\n');
@@ -306,10 +342,24 @@ test('STEP0-3 verifier test fixture guards the exact external-observation 20-key
   ]), true);
 });
 
-test('STEP0-3 verifier source uses only baseline Node20 Dirent fields and non-recursive readdir', () => {
-  const source = readFileSync(VERIFIER, 'utf8');
-  assert.doesNotMatch(source, /\.parentPath\b/);
-  assert.doesNotMatch(source, /readdirSync\([^)]*recursive\s*:\s*true/);
+test('STEP0-3 traversal sources use only baseline Node20 Dirent fields and non-recursive readdir', () => {
+  const unsafe = NODE20_TRAVERSAL_SOURCES.flatMap((file) =>
+    baselineNode20TraversalViolations(readFileSync(file, 'utf8'), file)
+      .map((violation) => ({ file: file.slice(ROOT.length + 1), violation })));
+  assert.deepEqual(unsafe, []);
+  assert.deepEqual(baselineNode20TraversalViolations(
+    'readdirSync(nested(root), { withFileTypes: true, recursive: true })',
+  ), ['recursive readdirSync']);
+});
+
+test('STEP0-3 verifier does not follow a directory-symlink script decoy', () => {
+  const fx = fixture();
+  assert.equal(lstatSync(join(fx.worktree, 'scripts', 'directory-decoy')).isSymbolicLink(), true);
+  assert.equal(fx.input.artifacts.some(({ path }) => path.includes('outside.mjs')), false);
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 });
 
 test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production checksum chain', () => {

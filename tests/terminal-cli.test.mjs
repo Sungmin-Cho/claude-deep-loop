@@ -12,6 +12,7 @@ import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { baselineNode20RegularFiles } from './helpers/baseline-node20-walk.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -926,11 +927,10 @@ test('stored-token activation creates a private secret, activates, reuses it, an
   for (const bytes of Object.values(durable).filter(Boolean)) {
     assert.equal(bytes.includes(Buffer.from(secret)), false, 'raw token leaked into kernel durable bytes');
   }
-  for (const entry of readdirSync(f.root, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const bytes = readFileSync(join(entry.parentPath, entry.name));
+  for (const file of baselineNode20RegularFiles(f.root)) {
+    const bytes = readFileSync(file);
     assert.equal(bytes.includes(Buffer.from(secret)), false,
-      `raw token leaked into project artifact ${relative(f.root, join(entry.parentPath, entry.name))}`);
+      `raw token leaked into project artifact ${relative(f.root, file)}`);
   }
   assert.equal(readState(f.root, f.runId).data.session_chain.lease.activation.activation_token_digest,
     contentHash(secret));

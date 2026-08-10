@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import vm from 'node:vm';
-import { readdirSync, readFileSync, lstatSync } from 'node:fs';
+import { readFileSync, lstatSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { baselineNode20RegularFiles } from './baseline-node20-walk.mjs';
 
 function fail(message, details = {}) {
   process.stderr.write(`${JSON.stringify({ error: message, ...details })}\n`);
@@ -20,19 +21,12 @@ function byteSort(left, right) {
   return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
-function regularFiles(root) {
-  return readdirSync(root, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => resolve(entry.parentPath, entry.name))
-    .sort(byteSort);
-}
-
 async function main() {
   if (typeof vm.SourceTextModule !== 'function') {
     throw new Error('VM_MODULES_UNAVAILABLE: run with --experimental-vm-modules');
   }
   const scriptsRoot = parseArgs(process.argv.slice(2));
-  const allFiles = regularFiles(scriptsRoot);
+  const allFiles = baselineNode20RegularFiles(scriptsRoot);
   const invalidExtensions = allFiles.filter((file) => !file.endsWith('.mjs'));
   if (invalidExtensions.length > 0) {
     throw new Error(`NON_MJS_SCRIPTS: ${invalidExtensions.join(',')}`);
