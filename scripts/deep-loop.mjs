@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { error } from './lib/log.mjs';
@@ -883,9 +883,11 @@ const handlers = {
         return 1;
       }
       let canonicalBodyCwd;
+      let exactBodyCwd;
       let mappedBodyRoot;
       let canonicalArgRoot;
       try {
+        exactBodyCwd = realpathSync(body.cwd);
         canonicalBodyCwd = canonicalProjectRoot(body.cwd);
         mappedBodyRoot = canonicalProjectRoot(findRoot(canonicalBodyCwd));
         canonicalArgRoot = canonicalProjectRoot(root);
@@ -894,7 +896,7 @@ const handlers = {
         return 1;
       }
       if (resolve(body.cwd) !== body.cwd
-        || canonicalBodyCwd !== body.cwd
+        || exactBodyCwd !== body.cwd
         || mappedBodyRoot !== canonicalArgRoot) {
         error('OBSERVE_TRUSTED_CONTEXT_INVALID');
         return 1;
