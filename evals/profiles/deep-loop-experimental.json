@@ -1,0 +1,1 @@
+{"id":"deep-loop-experimental","driver":"agent","model":"experimental","harness":"deep-loop","allowed_effects":["read-only"],"record":{"transcript":true,"observables":["exit","effects"]}}

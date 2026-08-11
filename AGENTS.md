@@ -177,6 +177,11 @@ node --test tests/<x>.test.mjs   # single file
   packs English and Korean trigger phrases; detect the user's language and respond in
   kind.
 
+## Fixture evaluation
+
+Run the offline fixture bank separately from preflight:
+`npm run eval:fixture -- --out ./evals/results/local --now 2026-08-10T00:00:00Z`.
+
 ## Release — post-merge deep-suite sync
 
 Only after this repo's PR merges **and a separate post-merge sync approval is granted**:

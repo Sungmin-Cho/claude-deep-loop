@@ -8,6 +8,8 @@
   "scripts": {
     "test": "node --test",
     "validate": "node scripts/deep-loop.mjs validate",
-    "preflight": "npm run validate && npm test"
+    "preflight": "npm run validate && npm test",
+    "eval:fixture": "node scripts/eval-deep-loop.mjs --mode fixture",
+    "eval:report": "node scripts/eval-deep-loop.mjs --mode fixture --report"
   }
 }

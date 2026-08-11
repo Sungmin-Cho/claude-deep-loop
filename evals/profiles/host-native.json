@@ -1,0 +1,1 @@
+{"id":"host-native","driver":"agent","model":"host","harness":"native","allowed_effects":["read-only"],"record":{"transcript":true,"observables":["exit","effects"]}}

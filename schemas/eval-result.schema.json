@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "eval-result.schema.json",
+  "x-deep-loop-runtime": "evals/lib/validate.mjs#validateResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "summary", "results", "kernel_findings", "profile_comparison_stub", "meta"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "summary": {"$ref": "#/$defs/summary"},
+    "results": {"type": "array", "minItems": 1, "items": {"oneOf": [
+      {"$ref": "#/$defs/kernelResult"},
+      {"$ref": "#/$defs/hostResult"},
+      {"$ref": "#/$defs/outcomeResult"}
+    ]}},
+    "kernel_findings": {"type":"array","items":{"$ref":"#/$defs/kernelFinding"}},
+    "profile_comparison_stub": {"type": "array", "items": {"$ref": "#/$defs/comparison"}},
+    "meta": {"$ref": "#/$defs/meta"}
+  },
+  "$defs": {
+    "countMap": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "barrier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "assertion"],
+      "properties": {
+        "status": {"enum": ["pass", "fail", "missing"]},
+        "assertion": {"type": "string", "minLength": 1}
+      }
+    },
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["by_verdict", "by_invariant_family", "by_class", "by_layer", "in_process_barriers", "accounting"],
+      "properties": {
+        "by_verdict": {
+          "type": "object", "additionalProperties": false,
+          "required": ["pass", "bypass", "theater", "error", "skipped"],
+          "properties": {
+            "pass": {"type": "integer", "minimum": 0},
+            "bypass": {"type": "integer", "minimum": 0},
+            "theater": {"type": "integer", "minimum": 0},
+            "error": {"type": "integer", "minimum": 0},
+            "skipped": {"type": "integer", "minimum": 0}
+          }
+        },
+        "by_invariant_family": {
+          "type": "object", "propertyNames": {"pattern": "^[1-8]$"},
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false,
+            "required": ["observed", "source"],
+            "properties": {
+              "observed": {"const": true},
+              "source": {"enum": ["public-cli-observation", "named-barriers:event:appended+state:written", "static-production-surface"]}
+            }
+          }
+        },
+        "by_class": {"$ref": "#/$defs/countMap"},
+        "by_layer": {"$ref": "#/$defs/countMap"},
+        "in_process_barriers": {
+          "type": "object", "additionalProperties": false,
+          "required": ["event:appended", "state:written"],
+          "properties": {
+            "event:appended": {"$ref": "#/$defs/barrier"},
+            "state:written": {"$ref": "#/$defs/barrier"}
+          }
+        },
+        "accounting": {
+          "type": "object", "additionalProperties": false,
+          "required": ["runner_driven_count", "runner_error_denominator", "host_acceptance_required", "host_acceptance_verified", "kernel_acceptance_executed", "outcome_reference_replays"],
+          "properties": {
+            "runner_driven_count": {"type": "integer", "minimum": 0},
+            "runner_error_denominator": {"type": "integer", "minimum": 0},
+            "host_acceptance_required": {"type": "integer", "minimum": 0},
+            "host_acceptance_verified": {"type": "integer", "minimum": 0},
+            "kernel_acceptance_executed": {"type": "integer", "minimum": 0},
+            "outcome_reference_replays": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "commonKernel": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "layer": {"const": "kernel-invariant"},
+        "class": {"type": "string", "minLength": 1},
+        "verdict": {"enum": ["pass", "bypass", "theater", "error", "skipped"]},
+        "observation_class": {"enum": ["expected_success", "expected_gate", "wrong_gate", "invalid_usage", "unexpected_failure"]},
+        "invariant_family": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 1, "maximum": 8}},
+        "acceptance_executed": {"type": "boolean"}
+      }
+    },
+    "kernelResult": {
+      "allOf": [
+        {"$ref": "#/$defs/commonKernel"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "layer", "class", "verdict", "observation_class", "invariant_family", "acceptance_executed", "evidence"],
+          "properties": {
+            "id": {"type": "string"}, "layer": {"const": "kernel-invariant"}, "class": {"type": "string"},
+            "verdict": {"enum": ["pass", "bypass", "theater", "error"]},
+            "observation_class": {"enum": ["expected_success", "expected_gate", "wrong_gate", "invalid_usage", "unexpected_failure"]},
+            "invariant_family": {"type": "array", "items": {"type": "integer"}},
+            "acceptance_executed": {"type": "boolean"},
+            "evidence": {"oneOf": [{"$ref": "#/$defs/cliEvidence"}, {"$ref": "#/$defs/staticEvidence"}, {"$ref": "#/$defs/failureEvidence"}]}
+          }
+        }
+      ]
+    },
+    "hostResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "layer", "class", "verdict", "observation_class", "skip_reason", "host_evidence_ref", "host_evidence_status", "host_acceptance_verified", "acceptance_executed", "invariant_family", "host_binding"],
+      "properties": {
+        "id": {"const": "allow-review-import-111"}, "layer": {"const": "kernel-invariant"},
+        "class": {"type": "string", "minLength": 1}, "verdict": {"const": "skipped"},
+        "observation_class": {"enum": ["expected_success","unexpected_failure"]}, "skip_reason": {"const": "host-acceptance"},
+        "host_evidence_ref": {"type": "string", "minLength": 1},
+        "host_evidence_status": {"enum": ["pass", "fail", "missing"]},
+        "host_acceptance_verified": {"enum": [0, 1]}, "acceptance_executed": {"const": true},
+        "invariant_family": {"type": "array", "items": {"type": "integer"}},
+        "host_binding": {"oneOf":[{"type":"null"},{"$ref": "#/$defs/hostProjection"}]}
+      },
+      "allOf":[
+        {"if":{"properties":{"host_evidence_status":{"const":"pass"}},"required":["host_evidence_status"]},"then":{"properties":{"host_acceptance_verified":{"const":1},"observation_class":{"const":"expected_success"},"host_binding":{"$ref":"#/$defs/hostProjection"}}}},
+        {"if":{"properties":{"host_evidence_status":{"enum":["fail","missing"]}},"required":["host_evidence_status"]},"then":{"properties":{"host_acceptance_verified":{"const":0},"observation_class":{"const":"unexpected_failure"},"host_binding":{"type":"null"}}}}
+      ]
+    },
+    "outcomeResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "layer", "class", "verdict", "skip_reason", "outcome_pass", "acceptance_executed", "reference_replay"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1}, "layer": {"const": "outcome"},
+        "class": {"type": "string", "minLength": 1}, "verdict": {"const": "skipped"},
+        "skip_reason": {"const": "requires-agent"}, "outcome_pass": {"type": "boolean"},
+        "acceptance_executed": {"type": "boolean"},
+        "reference_replay": {
+          "type": "object", "additionalProperties": false,
+          "required": ["trial_count", "trials", "end_state_pass"],
+          "properties": {
+            "trial_count": {"type":"integer","minimum":1},
+            "trials": {"type":"array","minItems":1,"items":{"$ref":"#/$defs/outcomeTrial"}},
+            "end_state_pass": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "effectObservation": {
+      "type":"object","additionalProperties":false,
+      "required":["schema_version","source","forbidden_effects","observed_effects","violations","passed"],
+      "properties":{"schema_version":{"const":1},"source":{"enum":["fixture-controlled-replay","fixture-isolation-receipt","agent-effect-receipt"]},"forbidden_effects":{"type":"array","uniqueItems":true,"items":{"enum":["network-write","push","merge","publish","delete","sync"]}},"observed_effects":{"type":"array","uniqueItems":true,"items":{"enum":["network-write","push","merge","publish","delete","sync"]}},"violations":{"type":"array","uniqueItems":true,"items":{"enum":["network-write","push","merge","publish","delete","sync"]}},"passed":{"type":"boolean"}}
+    },
+    "isolationReceipt": {
+      "type":["object","null"],
+      "required":["schema_version","boundary","covered_effects","profile_id","allowed_effects","declared_command","executed_argv","exit","timed_out","observed_effects","passed"],
+      "properties":{"schema_version":{"const":1},"boundary":{"type":"string","pattern":"^node-permission-model:"},"covered_effects":{"type":"array","uniqueItems":true,"items":{"enum":["child-process","file-write","network-write"]}},"profile_id":{"type":"string","minLength":1},"allowed_effects":{"type":"array","uniqueItems":true,"items":{"const":"read-only"}},"declared_command":{"type":"array","minItems":1,"items":{"type":"string"}},"executed_argv":{"type":"array","minItems":1,"items":{"type":"string"}},"exit":{"type":"integer"},"timed_out":{"type":"boolean"},"observed_effects":{"type":"array","uniqueItems":true,"items":{"enum":["network-write","push","merge","publish","delete","sync"]}},"passed":{"type":"boolean"}},
+      "additionalProperties":false
+    },
+    "outcomeTrial": {
+      "type":"object","additionalProperties":false,
+      "required":["index","variant","fixture_files_materialized","reference_files_materialized","acceptance_checked","acceptance_pass","distinct_reference_sha256","changed_files","isolation_receipt","effect_observation"],
+      "properties":{"index":{"type":"integer","minimum":1},"variant":{"type":"string","minLength":1},"fixture_files_materialized":{"type":"integer","minimum":0},"reference_files_materialized":{"type":"integer","minimum":0},"acceptance_checked":{"type":"integer","minimum":0},"acceptance_pass":{"type":"boolean"},"distinct_reference_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"changed_files":{"type":"array","items":{"type":"string","minLength":1}},"isolation_receipt":{"$ref":"#/$defs/isolationReceipt"},"effect_observation":{"$ref":"#/$defs/effectObservation"}}
+    },
+    "stdoutEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bytes", "json", "classifier_text"],
+      "properties": {
+        "bytes": {"type": "integer", "minimum": 0}, "json": {"type": "boolean"}, "classifier_text": {"type":"string"},
+        "action_type": {"type": ["string", "null"]}, "reason": {"type": ["string", "null"]},
+        "provider_evidence": {}, "ok": {"type": "boolean"}, "status": {"type": "string"},
+        "proceed": {"type": "boolean"}, "generation": {"type": "integer"}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false, "required": ["exit", "argv"],
+      "properties": {"exit": {"type": "integer"}, "argv": {"type": "array", "items": {"type": "string"}}}
+    },
+    "cliEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["production_cli", "argv", "exit", "stdout", "stderr", "timed_out", "stdin", "stateChanged", "event_count_before", "event_count_after", "event_types_added", "event_types_after", "setup_files_materialized", "postconditions"],
+      "properties": {
+        "production_cli": {"const": true}, "argv": {"type": "array", "items": {"type": "string"}},
+        "exit": {"type": "integer"}, "stdout": {"$ref": "#/$defs/stdoutEvidence"}, "stderr": {"type": "string"},
+        "timed_out": {"type":"boolean"}, "stdin": {},
+        "stateChanged": {"type": "boolean"}, "event_count_before": {"type": "integer", "minimum": 0},
+        "event_count_after": {"type": "integer", "minimum": 0}, "event_types_added": {"type": "array", "items": {"type": "string"}},
+        "event_types_after": {"type":"array","items":{"type":"string"}},
+        "fixture_action_applied": {"type": "boolean"}, "executions": {"type": "array", "items": {"$ref": "#/$defs/execution"}},
+        "anchored_event_observed": {"type": "boolean"},
+        "setup_files_materialized": {"type":"array","items":{"type":"string"}},
+        "postconditions": {"type":"array","items":{"type":"object","required":["type","passed"],"properties":{"type":{"type":"string"},"passed":{"type":"boolean"}},"additionalProperties":true}},
+        "postcondition_probes": {"type":"array","items":{"$ref":"#/$defs/execution"}},
+        "lease_acquisitions":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"object","additionalProperties":false,"required":["index","owner","generation","exit","event_added"],"properties":{"index":{"type":"integer","minimum":1,"maximum":2},"owner":{"type":"string","minLength":1},"generation":{"type":"integer"},"exit":{"const":0},"event_added":{"const":true}}}}
+      }
+    },
+    "failureEvidence":{"type":"object","additionalProperties":false,"required":["scenario_failure","code"],"properties":{"scenario_failure":{"const":true},"code":{"type":"string","minLength":1}}},
+    "staticEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["static_production_surface", "assertion_id", "passed", "production_surfaces", "production_surface_sha256", "inventory_sha256", "hooks_sha256", "skills_sha256", "violations"],
+      "properties": {
+        "static_production_surface": {"const": true}, "assertion_id": {"const": "no-external-action-routes"},
+        "passed": {"type": "boolean"}, "production_surfaces": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "production_surface_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "hooks_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "skills_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "violations": {"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","line","route"],"properties":{"path":{"type":"string","minLength":1},"line":{"type":"integer","minimum":1},"route":{"type":"string","minLength":1}}}}
+      }
+    },
+    "hostProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "assertion_id", "executor", "status", "attempt_id", "binding", "import_exit"],
+      "properties": {
+        "task_id": {"const": "allow-review-import-111"},
+        "assertion_id": {"const": "tests/review-import.test.mjs#allow-review-import-111"},
+        "executor": {"const": "evals/lib/host-acceptance.mjs"}, "status": {"const": "pass"},
+        "attempt_id": {"const": "attempt-eval-111"}, "import_exit": {"const": 0},
+        "binding": {
+          "type": "object", "additionalProperties": false,
+          "required": ["run_id", "checker_episode_id", "target_maker", "workstream_id", "point", "reviewer_id", "review_source", "imported_verdict"],
+          "properties": {
+            "run_id": {"const": "<RUN_ID>"}, "checker_episode_id": {"type": "string", "minLength": 1},
+            "target_maker": {"type": "string", "minLength": 1}, "workstream_id": {"type": "string", "minLength": 1},
+            "point": {"const": "implementation"}, "reviewer_id": {"const": "deep-review"},
+            "review_source": {"const": "imported-stdin"}, "imported_verdict": {"const": "APPROVE"}
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "profile", "outcome_pass", "agency_loss_incident", "harness_block_incident", "hard_safety_invariant_violated", "attribution"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1}, "profile": {"type": "string", "minLength": 1},
+        "outcome_pass": {"type": "boolean"}, "agency_loss_incident": {"type": "boolean"},
+        "harness_block_incident": {"type": "boolean"},
+        "hard_safety_invariant_violated": {"type":"boolean"},
+        "attribution": {"enum": ["not-applicable", "harness-constraint", "procedural-rigidity", "model-error", "task-error", "environment-error"]}
+      },
+      "allOf":[
+        {"if":{"properties":{"outcome_pass":{"const":true}},"required":["outcome_pass"]},"then":{"properties":{"agency_loss_incident":{"const":false},"attribution":{"const":"not-applicable"}}}},
+        {"if":{"properties":{"agency_loss_incident":{"const":true}},"required":["agency_loss_incident"]},"then":{"properties":{"profile":{"const":"deep-loop-experimental"},"outcome_pass":{"const":false},"hard_safety_invariant_violated":{"const":false},"attribution":{"enum":["harness-constraint","procedural-rigidity"]}}}}
+      ]
+    },
+    "kernelFinding": {"type":"object","additionalProperties":false,"required":["task_id","kind","verdict","observation_class"],"properties":{"task_id":{"type":"string","minLength":1},"kind":{"enum":["kernel-invariant-contradiction","outcome-trial-failure"]},"verdict":{"enum":["pass","bypass","theater","error","skipped"]},"observation_class":{"type":["string","null"]}}},
+    "meta": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "harness", "profile", "kernel_version", "node", "runtime", "task_bank_sha256"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1}, "harness": {"type": "string", "minLength": 1},
+        "profile": {"enum": ["host-native","deep-loop-kernel-minimal","deep-loop-current-v1.15","deep-loop-experimental"]}, "kernel_version": {"type": "string", "minLength": 1},
+        "node": {"type": "string", "minLength": 1}, "runtime": {"type": "string", "minLength": 1},
+        "task_bank_sha256": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+      },
+      "allOf":[{"if":{"properties":{"runtime":{"const":"fixture"}},"required":["runtime"]},"then":{"properties":{"profile":{"const":"deep-loop-current-v1.15"},"model":{"const":"none:fixture"},"harness":{"const":"none:fixture"}}}}]
+    }
+  }
+}

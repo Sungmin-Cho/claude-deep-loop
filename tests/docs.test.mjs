@@ -23,6 +23,15 @@ test('README lists all commands + architecture + safety', () => {
   assert.match(s, /standalone|독립/i);
 });
 
+test('AGENTS keeps the fixture command under its own development heading', () => {
+  const source = readFileSync(join(R, 'AGENTS.md'), 'utf8');
+  const heading = source.indexOf('## Fixture evaluation');
+  const command = source.indexOf('npm run eval:fixture -- --out ./evals/results/local --now 2026-08-10T00:00:00Z');
+  const release = source.indexOf('## Release — post-merge deep-suite sync');
+  assert.ok(heading >= 0 && command > heading, 'fixture command must follow its own heading');
+  assert.ok(release < 0 || command < release, 'fixture command must not be nested under release');
+});
+
 test('English/Korean docs publish bounded multi-run identity and the remaining TOCTOU', () => {
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');
