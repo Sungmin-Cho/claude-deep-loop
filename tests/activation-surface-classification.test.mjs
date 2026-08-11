@@ -383,6 +383,19 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
   assert.equal(conditionalRows.length, 10);
   assert.equal(conditionalRows.every(({ evidence }) =>
     evidence.some(({ kind }) => kind === 'conditional-dominance')), true);
+  const dualPendingBlockIds = [
+    'breaker.mjs#recordReviewVerdict',
+    'comprehension.mjs#ack',
+    'state.mjs#patch',
+  ];
+  for (const id of dualPendingBlockIds) {
+    const row = result.rows.find((candidate) => candidate.id === id);
+    assert.equal(row.activation_pending_block_dominance, 'dominates', id);
+    assert.equal(row.evidence.some(({ kind }) => kind === 'activation-pending-block-dominance'), true, id);
+  }
+  assert.equal(conditionalRows.filter(({ activation_pending_block_dominance }) =>
+    activation_pending_block_dominance !== 'dominates').length, 7,
+  'only seven conditional L rows still require public-wiring human review');
   const stored = result.rows.find(({ id }) => id === 'activation-secret.mjs#activateStoredLease');
   assert.equal(stored.write_reachability, 'reaches');
   assert.equal(stored.leasecheck_dominance, 'does-not-dominate');
@@ -392,6 +405,63 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
     && path.at(-1) === 'integrity.mjs#appendAnchored'), true);
   assert.equal(stored.evidence.some(({ kind }) => kind === 'no-path'), false,
     'default dependency aliases must not seal stale no-path evidence');
+});
+
+test('STEP0-3 dual pending-block proof rejects missing, misplaced, conditional, and partial guards', async () => {
+  const analyzer = await import(STATIC_ANALYZER);
+  const liveRow = (id) => ({ rows: new Map([[id, {
+    classification: 'L', reason: 'leasecheck-dominated',
+  }]]) });
+  const analyzeMutant = (id, source) => {
+    const scratch = mkdtempSync(join(tmpdir(), 'wsu1-f26-pending-block-'));
+    const file = join(scratch, id.slice(0, id.indexOf('#')));
+    writeFileSync(file, source);
+    return analyzer.analyzeClassification({ files: [file], live: liveRow(id), requireExactSurface: false });
+  };
+  const targets = [
+    ['state.mjs#patch', readFileSync(join(ROOT, 'scripts/lib/state.mjs'), 'utf8')],
+    ['breaker.mjs#recordReviewVerdict', readFileSync(join(ROOT, 'scripts/lib/breaker.mjs'), 'utf8')],
+    ['comprehension.mjs#ack', readFileSync(join(ROOT, 'scripts/lib/comprehension.mjs'), 'utf8')],
+  ];
+  for (const [id, source] of targets) {
+    const guard = /\s*else if \([^\n]*activation_deadline_at != null\) \{\n\s*throw new Error\('ACTIVATION_PENDING: [^']+'\);\n\s*\}/;
+    const removed = source.replace(guard, '');
+    assert.notEqual(removed, source, `${id} guard-removal mutant must apply`);
+    const result = analyzeMutant(id, removed);
+    assert.equal(result.violations.some((item) =>
+      item.code === 'L_PENDING_BLOCK_NOT_DOMINATED' && item.id === id), true, id);
+  }
+
+  const ackSource = targets.find(([id]) => id === 'comprehension.mjs#ack')[1];
+  const oneGuardRemoved = ackSource.replace(
+    /\s*else if \([^\n]*activation_deadline_at != null\) \{\n\s*throw new Error\('ACTIVATION_PENDING: ack'\);\n\s*\}/,
+    '',
+  );
+  assert.notEqual(oneGuardRemoved, ackSource);
+  assert.equal(analyzeMutant('comprehension.mjs#ack', oneGuardRemoved).violations.some(({ code }) =>
+    code === 'L_PENDING_BLOCK_NOT_DOMINATED'), true, 'both ack append branches must be covered');
+
+  const conditional = targets[0][1].replace('else if (loop.session_chain.lease.activation_deadline_at != null)',
+    'else if (fence && loop.session_chain.lease.activation_deadline_at != null)');
+  assert.notEqual(conditional, targets[0][1]);
+  assert.equal(analyzeMutant('state.mjs#patch', conditional).violations.some(({ code }) =>
+    code === 'L_PENDING_BLOCK_NOT_DOMINATED'), true, 'absent-fence block cannot depend on fence truthiness');
+
+  const wrongBinding = targets[0][1].replace(
+    'loop.session_chain.lease.activation_deadline_at != null',
+    'attacker.session_chain.lease.activation_deadline_at != null',
+  );
+  assert.notEqual(wrongBinding, targets[0][1]);
+  assert.equal(analyzeMutant('state.mjs#patch', wrongBinding).violations.some(({ code }) =>
+    code === 'L_PENDING_BLOCK_NOT_DOMINATED'), true, 'guard must bind the locked callback state');
+
+  const outsideLock = targets[1][1].replace(
+    '  return withReconciledMutationLock(root, runId, (_guard, { data }) => {',
+    "  if (captureReconciledRunSnapshot(root, runId).data.session_chain.lease.activation_deadline_at != null) throw new Error('ACTIVATION_PENDING: recordReviewVerdict');\n  return withReconciledMutationLock(root, runId, (_guard, { data }) => {",
+  ).replace(/\s*else if \([^\n]*activation_deadline_at != null\) \{\n\s*throw new Error\('ACTIVATION_PENDING: recordReviewVerdict'\);\n\s*\}/, '');
+  assert.notEqual(outsideLock, targets[1][1]);
+  assert.equal(analyzeMutant('breaker.mjs#recordReviewVerdict', outsideLock).violations.some(({ code }) =>
+    code === 'L_PENDING_BLOCK_NOT_DOMINATED'), true, 'stale out-of-lock precheck cannot count');
 });
 
 test('STEP0-3 analyzer generically follows nullish default dependency aliases', async () => {
@@ -564,11 +634,33 @@ test('STEP0-3 tracked evidence matrix is canonical and exactly matches source re
     'candidate_ids_sha256', 'candidate_ids', 'rows',
   ]);
   assert.equal(evidence.schema_version, 1);
-  assert.equal(evidence.design_sha256, '5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2');
+  assert.equal(evidence.design_sha256, 'b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a');
   assert.equal(evidence.seed_sha256, sha256(seedBytes));
   assert.equal(evidence.live_classification_sha256, sha256(liveBytes));
   assert.equal(evidence.candidate_ids_sha256,
     sha256(Buffer.from(`${evidence.candidate_ids.join('\n')}\n`)));
+  const dualPendingBlockIds = new Set([
+    'breaker.mjs#recordReviewVerdict',
+    'comprehension.mjs#ack',
+    'state.mjs#patch',
+  ]);
+  const structuralPreconditionIds = new Set([
+    'budget.mjs#settleTerminalCodexMakerCost',
+    'initrun.mjs#initRun',
+    'lease.mjs#advanceHandoffPhase',
+    'lease.mjs#rollbackReservedEmit',
+    'recover.mjs#recoverRun',
+    'respawn.mjs#respawn',
+  ]);
+  for (const row of evidence.rows) {
+    const rowKeys = ['id', 'classification', 'write_reachability', 'leasecheck_dominance', 'reason', 'evidence'];
+    if (dualPendingBlockIds.has(row.id)) rowKeys.push('activation_pending_block_dominance');
+    if (structuralPreconditionIds.has(row.id)) rowKeys.push('structural_precondition');
+    assert.equal(exactKeys(row, rowKeys), true,
+    `unexpected evidence row shape for ${row.id}`);
+    assert.equal(row.evidence.every((item) => exactKeys(item, ['kind', 'path', 'coordinates'])), true,
+      `unexpected evidence item shape for ${row.id}`);
+  }
 
   const live = analyzer.parseLiveClassification({ seed: seedBytes.toString(), overlay: liveBytes.toString() });
   const calculated = analyzer.analyzeClassification({

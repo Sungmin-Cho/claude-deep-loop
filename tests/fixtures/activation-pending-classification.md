@@ -3,17 +3,18 @@
 This tracked overlay resolves the pinned seed into the current execution surface. The seed remains immutable; this file owns post-design export deltas and the strengthened machine/human boundary.
 
 - Seed SHA-256: `6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13`
-- Reviewed design SHA-256: `5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2`
+- Reviewed design SHA-256: `b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a`
 - W1: every E2–E5/E7/E8 declaration body or initializer fails when `writeState`, `appendEvent`, or `appendAnchored` is directly called **or directly referenced**.
 - W2: the W1 domain is the closed set E2, E3, E4, E5, E7, E8; no E subclass may be silently omitted.
 - Machine boundary: guards 1–4, rule-B canonicalization, bidirectional/disjoint partition, direct/transitive call reachability, same-mutation-lock dominance, closed reason enum, and classification/reason/recalculation consistency.
-- Human boundary: only non-static X/E reason semantics and every live `conditional-dominates` L public wiring remain for the step-4 checker. A tracked file cannot authenticate observer independence.
+- Machine boundary extension: `breaker.mjs#recordReviewVerdict`, `comprehension.mjs#ack`, and `state.mjs#patch` retain honest `conditional-dominates` leaseCheck evidence while a separate same-lock proof requires their absent-fence `ACTIVATION_PENDING` fallback to dominate every write.
+- Human boundary: only non-static X/E reason semantics and the remaining seven live `conditional-dominates` L public wirings remain for the step-4 checker. A tracked file cannot authenticate observer independence.
 
 <!-- F26-LIVE-JSON-BEGIN -->
 {
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
+  "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
   "expected_counts": { "L": 28, "B": 7, "X": 34, "E2": 116, "E3": 12, "E4": 15, "E5": 1, "E7": 73, "E8": 26 },
   "base_x_reasons": {
     "safety-downgrade": ["attended-launch.mjs#revokeAttendedLaunch", "spawn-optin.mjs#resetDesktop"],

@@ -68,6 +68,8 @@ export function recordReviewVerdict(root, runId, verdict, fence) {
     if (fence) {
       const r = leaseCheck(data, fence);
       if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    } else if (data.session_chain.lease.activation_deadline_at != null) {
+      throw new Error('ACTIVATION_PENDING: recordReviewVerdict');
     }
     // v1.6 (spec §2.3-7): legacy export — terminal run에 카운터/paused 강등 write 금지 (fence-less 커버).
     if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: recordReviewVerdict');

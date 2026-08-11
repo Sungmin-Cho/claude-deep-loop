@@ -21,6 +21,8 @@ import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs'
 import * as leaseModule from '../scripts/lib/lease.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { recoverRun } from '../scripts/lib/recover.mjs';
+import { ack } from '../scripts/lib/comprehension.mjs';
+import { recordReviewVerdict } from '../scripts/lib/breaker.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -968,6 +970,101 @@ test('SLICE-005 activation-pending state patch rejects without anchored mutation
     fence: activationFence(f),
   }), /LEASE_FENCED: ACTIVATION_PENDING/);
   assert.deepEqual(activationDurableBytes(f.root, f.runId), before);
+});
+
+test('F26 unfenced exported business writers reject activation pending inside their mutation lock', () => {
+  const cases = [
+    {
+      label: 'state patch',
+      arrange(f) {},
+      invoke: (f) => patch(f.root, f.runId, 'discovered_items', ['unfenced-pending']),
+      reason: /ACTIVATION_PENDING: patch/,
+    },
+    {
+      label: 'ordinary comprehension ack',
+      arrange(f) {
+        f.episodeId = newEpisode(f.root, f.runId, {
+          plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'f26-unfenced-ack',
+          fence: { owner: f.runId, generation: 1, intent: 'business' },
+        }).id;
+      },
+      invoke: (f) => ack(f.root, f.runId, f.episodeId, { actor: 'agent', env: {} }),
+      reason: /ACTIVATION_PENDING: ack/,
+    },
+    {
+      label: 'headless-human comprehension rejection append',
+      arrange(f) {
+        f.episodeId = newEpisode(f.root, f.runId, {
+          plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'f26-unfenced-reject',
+          fence: { owner: f.runId, generation: 1, intent: 'business' },
+        }).id;
+      },
+      invoke: (f) => ack(f.root, f.runId, f.episodeId, {
+        actor: 'human', confirm: true, env: { DEEP_LOOP_HEADLESS: '1' },
+      }),
+      reason: /ACTIVATION_PENDING: ack/,
+    },
+    {
+      label: 'breaker REQUEST_CHANGES',
+      arrange(f) {},
+      invoke: (f) => recordReviewVerdict(f.root, f.runId, 'REQUEST_CHANGES'),
+      reason: /ACTIVATION_PENDING: recordReviewVerdict/,
+    },
+    {
+      label: 'breaker APPROVE',
+      arrange(f) {},
+      invoke: (f) => recordReviewVerdict(f.root, f.runId, 'APPROVE'),
+      reason: /ACTIVATION_PENDING: recordReviewVerdict/,
+    },
+  ];
+
+  for (const entry of cases) {
+    const f = seed();
+    entry.arrange(f);
+    Object.assign(f, pendingLease(f.root, f.runId, {
+      owner: `F26${entry.label.replaceAll(/[^A-Za-z]/g, '').toUpperCase()}OWNER`,
+      attemptId: `F26${entry.label.replaceAll(/[^A-Za-z]/g, '').toUpperCase()}ATTEMPT`,
+    }));
+    const before = durableLeaseBytes(f.root, f.runId);
+    assert.throws(() => entry.invoke(f), entry.reason, entry.label);
+    assert.deepEqual(durableLeaseBytes(f.root, f.runId), before, `${entry.label} mutated durable bytes`);
+  }
+});
+
+test('F26 unfenced exported business writers preserve legacy behavior after activation', () => {
+  const f = seed();
+  const episodeId = newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'f26-legacy-active',
+    fence: { owner: f.runId, generation: 1, intent: 'business' },
+  }).id;
+  patch(f.root, f.runId, 'discovered_items', ['legacy-active']);
+  ack(f.root, f.runId, episodeId, { actor: 'agent', env: {} });
+  recordReviewVerdict(f.root, f.runId, 'REQUEST_CHANGES');
+  const { data } = readState(f.root, f.runId);
+  assert.deepEqual(data.discovered_items, ['legacy-active']);
+  assert.equal(data.episodes.find(({ id }) => id === episodeId).agent_reviewed, true);
+  assert.equal(data.circuit_breaker.consecutive_request_changes, 1);
+});
+
+test('F26 fenced exported business writers preserve leaseCheck activation-pending polarity', () => {
+  const f = seed();
+  const episodeId = newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'f26-fenced-pending',
+    fence: { owner: f.runId, generation: 1, intent: 'business' },
+  }).id;
+  const pending = pendingLease(f.root, f.runId, {
+    owner: 'F26FENCEDPENDINGOWNER', attemptId: 'F26FENCEDPENDINGATTEMPT',
+  });
+  const fence = { owner: pending.owner, generation: pending.generation, intent: 'business' };
+  const before = durableLeaseBytes(f.root, f.runId);
+  for (const invoke of [
+    () => patch(f.root, f.runId, 'discovered_items', ['fenced-pending'], { fence }),
+    () => ack(f.root, f.runId, episodeId, { actor: 'agent', env: {}, fence }),
+    () => recordReviewVerdict(f.root, f.runId, 'REQUEST_CHANGES', fence),
+  ]) {
+    assert.throws(invoke, /LEASE_FENCED: ACTIVATION_PENDING/);
+    assert.deepEqual(durableLeaseBytes(f.root, f.runId), before);
+  }
 });
 
 test('SLICE-005 activation-pending newEpisode rejects without state or request mutation', () => {

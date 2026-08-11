@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
+  "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "2d83ad0e602065d4d7700557f3372332aed757ea5facd58f13ba30ee83238aad",
+  "live_classification_sha256": "efe4a1459164cf54a24cfabf3c140e4fce82d0b795f6e6deaa6d4cfd0ad7d7b0",
   "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
@@ -648,13 +648,23 @@
       "reason": "leasecheck-dominated",
       "evidence": [
         {
+          "kind": "activation-pending-block-dominance",
+          "path": [
+            "breaker.mjs#recordReviewVerdict",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:88"
+          ]
+        },
+        {
           "kind": "conditional-dominance",
           "path": [
             "breaker.mjs#recordReviewVerdict",
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/breaker.mjs:86"
+            "scripts/lib/breaker.mjs:88"
           ]
         },
         {
@@ -664,10 +674,11 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/breaker.mjs:86"
+            "scripts/lib/breaker.mjs:88"
           ]
         }
-      ]
+      ],
+      "activation_pending_block_dominance": "dominates"
     },
     {
       "id": "breaker.mjs#resetBreaker",
@@ -1376,6 +1387,16 @@
       "reason": "leasecheck-dominated",
       "evidence": [
         {
+          "kind": "activation-pending-block-dominance",
+          "path": [
+            "comprehension.mjs#ack",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/comprehension.mjs:50"
+          ]
+        },
+        {
           "kind": "conditional-dominance",
           "path": [
             "comprehension.mjs#ack",
@@ -1395,7 +1416,8 @@
             "scripts/lib/comprehension.mjs:50"
           ]
         }
-      ]
+      ],
+      "activation_pending_block_dominance": "dominates"
     },
     {
       "id": "comprehension.mjs#computeDebt",
@@ -1429,7 +1451,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/comprehension.mjs:114"
+            "scripts/lib/comprehension.mjs:120"
           ]
         }
       ]
@@ -6202,6 +6224,16 @@
       "reason": "leasecheck-dominated",
       "evidence": [
         {
+          "kind": "activation-pending-block-dominance",
+          "path": [
+            "state.mjs#patch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:303"
+          ]
+        },
+        {
           "kind": "conditional-dominance",
           "path": [
             "state.mjs#patch",
@@ -6221,7 +6253,8 @@
             "scripts/lib/state.mjs:303"
           ]
         }
-      ]
+      ],
+      "activation_pending_block_dominance": "dominates"
     },
     {
       "id": "state.mjs#pauseRun",
@@ -6237,7 +6270,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:603"
+            "scripts/lib/state.mjs:606"
           ]
         },
         {
@@ -6247,7 +6280,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:603"
+            "scripts/lib/state.mjs:606"
           ]
         }
       ]
@@ -6319,7 +6352,7 @@
             "state.mjs#withLock"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:392"
+            "scripts/lib/state.mjs:395"
           ]
         }
       ]

@@ -890,6 +890,41 @@ function rangeIsConditional(tokens, range, identifier) {
   return false;
 }
 
+function rangeActivationPendingBlock(tokens, range) {
+  if (!range) return 'does-not-dominate';
+  for (let index = range[0]; index < range[1] - 2; index += 1) {
+    if (tokens[index].value !== 'else' || tokens[index + 1]?.value !== 'if'
+      || tokens[index + 2]?.value !== '(') continue;
+    const conditionClose = matching(tokens, index + 2, '(', ')');
+    if (conditionClose < 0 || tokens[conditionClose + 1]?.value !== '{') continue;
+    const condition = tokens.slice(index + 3, conditionClose);
+    const conditionValues = condition.map(({ value }) => value);
+    if (JSON.stringify(conditionValues) !== JSON.stringify([
+      recordLockedStateName(tokens, range), '.', 'session_chain', '.', 'lease', '.',
+      'activation_deadline_at', '!=', 'null',
+    ])) continue;
+    const bodyClose = matching(tokens, conditionClose + 1, '{', '}');
+    if (bodyClose < 0 || bodyClose >= range[1]) continue;
+    const body = tokens.slice(conditionClose + 2, bodyClose);
+    if (!body.some(({ value }) => value === 'throw')
+      || !body.some(({ type, value }) => type === 'string' && value.startsWith('ACTIVATION_PENDING:'))) continue;
+    const writeBeforeGuard = tokens.slice(range[0], index).some(({ type, value }) =>
+      type === 'identifier' && ['writeState', 'appendEvent', 'appendAnchored'].includes(value));
+    if (!writeBeforeGuard) return 'dominates';
+  }
+  return 'does-not-dominate';
+}
+
+function recordLockedStateName(tokens, range) {
+  const arrow = tokens.findIndex((token, index) => index >= range[0] && index < range[1]
+    && token.value === '=>');
+  if (arrow < 0) return null;
+  const parameters = tokens.slice(range[0], arrow).map(({ value }) => value);
+  if (parameters.includes('loop')) return 'loop';
+  if (parameters.includes('data')) return 'data';
+  return null;
+}
+
 function rangeLeaseStatus(record, range, recordsByFile, seen = new Set()) {
   if (!range) return null;
   const tokens = record.module.tokens;
@@ -930,6 +965,7 @@ function directFacts(record, recordsByFile) {
       const args = splitArguments(tokens, call.open, call.close);
       if (call.target === 'integrity.mjs#appendAnchored') {
         fact.precheck = rangeLeaseStatus(record, args[4], recordsByFile) || 'does-not-dominate';
+        fact.pendingBlock = rangeActivationPendingBlock(tokens, args[4]);
       }
       if (call.target === 'state.mjs#withReconciledMutationLock') {
         const callback = args[2];
@@ -939,6 +975,7 @@ function directFacts(record, recordsByFile) {
           fact.precheck = rangeHasIdentifier(tokens, callback, 'leaseCheck')
             ? (rangeIsConditional(tokens, callback, 'leaseCheck') ? 'conditional-dominates' : 'dominates')
             : 'does-not-dominate';
+          fact.pendingBlock = rangeActivationPendingBlock(tokens, callback);
         }
       }
       calls.push(fact);
@@ -1002,11 +1039,12 @@ function mergeDominance(left, right) {
 }
 
 function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
-  if (!record) return { reaches: false, dominance: 'not-applicable', path: [], coordinates: [] };
-  if (stack.has(record.id)) return { reaches: false, dominance: 'not-applicable', path: [], coordinates: [] };
+  if (!record) return { reaches: false, dominance: 'not-applicable', pendingBlock: 'not-applicable', path: [], coordinates: [] };
+  if (stack.has(record.id)) return { reaches: false, dominance: 'not-applicable', pendingBlock: 'not-applicable', path: [], coordinates: [] };
   const facts = factsById.get(record.id);
   let reaches = false;
   let dominance = 'not-applicable';
+  let pendingBlock = 'not-applicable';
   let path = [];
   let coordinates = [];
   for (const call of facts.calls) {
@@ -1020,6 +1058,14 @@ function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
         if (enclosing) nextDominance = enclosing.precheck;
       }
       dominance = mergeDominance(dominance, nextDominance);
+      let nextPendingBlock = 'does-not-dominate';
+      if (call.target === 'integrity.mjs#appendAnchored') nextPendingBlock = call.pendingBlock;
+      else {
+        const enclosing = facts.calls.find((candidate) => candidate.target === 'state.mjs#withReconciledMutationLock'
+          && candidate.open < call.open && call.close < candidate.close && candidate.pendingBlock);
+        if (enclosing) nextPendingBlock = enclosing.pendingBlock;
+      }
+      pendingBlock = mergeDominance(pendingBlock, nextPendingBlock);
       if (path.length === 0) {
         path = [record.id, call.target];
         coordinates = [call.coordinate];
@@ -1032,12 +1078,19 @@ function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
     if (!nested.reaches) continue;
     reaches = true;
     dominance = mergeDominance(dominance, nested.dominance);
+    pendingBlock = mergeDominance(pendingBlock, nested.pendingBlock);
     if (path.length === 0) {
       path = [record.id, ...nested.path];
       coordinates = [call.coordinate, ...nested.coordinates];
     }
   }
-  return { reaches, dominance: reaches ? dominance : 'not-applicable', path, coordinates };
+  return {
+    reaches,
+    dominance: reaches ? dominance : 'not-applicable',
+    pendingBlock: reaches ? pendingBlock : 'not-applicable',
+    path,
+    coordinates,
+  };
 }
 
 function analyzeRepairRecord(record, factsById, recordsById, stack = new Set()) {
@@ -1115,6 +1168,11 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
     ]);
     let dominance = calculated.dominance;
     if (declared.classification === 'B') dominance = 'not-applicable';
+    const dualPendingBlock = new Set([
+      'breaker.mjs#recordReviewVerdict',
+      'comprehension.mjs#ack',
+      'state.mjs#patch',
+    ]).has(id);
     const evidence = calculated.reaches
       ? sortedEvidence([{
         kind: calculated.path.length > 2 ? 'transitive' : 'direct',
@@ -1125,7 +1183,11 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
           : dominance === 'conditional-dominates' ? 'conditional-dominance' : 'non-dominance',
         path: calculated.path,
         coordinates: calculated.coordinates,
-      }])])
+      }]), ...(dualPendingBlock && calculated.pendingBlock === 'dominates' ? [{
+        kind: 'activation-pending-block-dominance',
+        path: calculated.path,
+        coordinates: calculated.coordinates,
+      }] : [])])
       : [{ kind: 'no-path', path: [id], coordinates: record ? [`${relativeSourcePath(record.module.file)}:${record.line}`] : [] }];
     const structuralProofRequired = declared.classification === 'X'
       && declared.reason === 'structural-no-target' && calculated.reaches;
@@ -1140,12 +1202,16 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
       leasecheck_dominance: dominance,
       reason: declared.reason,
       evidence,
+      ...(dualPendingBlock ? { activation_pending_block_dominance: calculated.pendingBlock } : {}),
       ...(structuralPrecondition ? { structural_precondition: structuralPrecondition } : {}),
     };
     rows.push(row);
     if (declared.classification === 'L' && (!calculated.reaches
       || !['dominates', 'conditional-dominates'].includes(dominance))) {
       violations.push({ code: 'L_WRITE_NOT_DOMINATED', id });
+    }
+    if (dualPendingBlock && calculated.pendingBlock !== 'dominates') {
+      violations.push({ code: 'L_PENDING_BLOCK_NOT_DOMINATED', id });
     }
     const unexpectedPrimitiveReferences = [...primitiveReferences].filter((primitive) =>
       !E3_IMPLEMENTATION_REFERENCES.get(id)?.has(primitive));

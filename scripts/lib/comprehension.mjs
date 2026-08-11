@@ -52,6 +52,9 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       undefined,
       (loop) => {
         if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+        else if (loop.session_chain.lease.activation_deadline_at != null) {
+          throw new Error('ACTIVATION_PENDING: ack');
+        }
         const ep = loop.episodes.find(e => e.id === episodeId);
         if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
         if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');   // impl-R3 Fix 5
@@ -79,6 +82,9 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
     },
     (loop) => {
       if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      else if (loop.session_chain.lease.activation_deadline_at != null) {
+        throw new Error('ACTIVATION_PENDING: ack');
+      }
       const ep = loop.episodes.find(e => e.id === episodeId);
       if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // Codex r1 sf-5: overcount 차단
       // impl-R3 Fix 5: ack is a MAKER-review signal. episodes_total counts only makers, so acking a checker would
