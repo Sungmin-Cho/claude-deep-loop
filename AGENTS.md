@@ -127,7 +127,7 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    remain a valid snapshot that intentionally excludes the final process measurement.
 7. **`withLock` is non-reentrant** — never take a lock inside a locked callback.
    Kernel durable writes are confined to `<root>/.deep-loop/`. The sole carve-out is
-   `scripts/lib/activation-secret.mjs`: the execution-child stored-activation client
+   `DEEP_LOOP_ROOT/scripts/lib/activation-secret.mjs`: the execution-child stored-activation client
    may write only its internally derived OS user-state `deep-loop/activation-secrets`
    directory. It accepts no caller path, never writes a raw token to project/kernel
    state or output, and fails closed on unsafe identity/permissions/ACL. It publishes

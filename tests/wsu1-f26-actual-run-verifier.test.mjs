@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tokenize } from './helpers/wsu1-f26-static-analyzer.mjs';
+import { createDirectoryJunction, createFileSymlink } from './helpers/fs-fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -69,11 +70,11 @@ function fixture() {
   mkdirSync(reviews, { recursive: true });
   writeFileSync(join(scripts, 'surface.mjs'), 'export function surface() {}\n');
   writeFileSync(join(scripts, 'nested', 'surface-nested.mjs'), 'export const nested = true;\n');
-  symlinkSync('surface.mjs', join(scripts, 'surface-decoy.mjs'));
+  createFileSymlink('surface.mjs', join(scripts, 'surface-decoy.mjs'));
   const outsideScripts = join(projectRoot, 'outside-scripts');
   mkdirSync(outsideScripts);
   writeFileSync(join(outsideScripts, 'outside.mjs'), 'export const outside = true;\n');
-  symlinkSync(outsideScripts, join(scripts, 'directory-decoy'), process.platform === 'win32' ? 'junction' : 'dir');
+  createDirectoryJunction(outsideScripts, join(scripts, 'directory-decoy'));
   writeFileSync(join(fixtures, 'activation-pending-classification.seed.md'), 'seed\n');
   writeFileSync(join(fixtures, 'activation-pending-classification.md'), 'live\n');
   writeFileSync(join(fixtures, 'activation-pending-classification-evidence.json'), '{"rows":[]}\n');
@@ -304,7 +305,7 @@ negative('F26-ACTUAL-NEG-OBSERVATION-NON-REGULAR', 'WSU1_F26_OBSERVATION_NON_REG
   const target = join(fx.projectRoot, 'observation-target.json');
   writeFileSync(target, `${JSON.stringify(fx.observation)}\n`);
   unlinkSync(fx.observationPath);
-  symlinkSync(target, fx.observationPath);
+  createFileSymlink(target, fx.observationPath);
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-SHAPE', 'WSU1_F26_OBSERVATION_SHAPE', (fx) => {
   delete fx.observation.observed_at; fx.writeObservation();

@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { activateStoredLease } from '../scripts/lib/activation-secret.mjs';
+import { createDirectoryJunction, createFileSymlink } from './helpers/fs-fixtures.mjs';
 
 const ROOT = '/canonical/project';
 const RUN = '01KSTOREDSECRETRUN00000000';
@@ -113,7 +114,7 @@ test('stored activation rejects malformed, mismatched, unsafe and symlink entrie
     ['malformed', path => writeFileSync(path, '{', { mode: 0o600 }), 'ACTIVATION_SECRET_MALFORMED'],
     ['extra key', path => writeFileSync(path, JSON.stringify({ schema_version: '1.0', binding: {}, token: 'x', extra: true }), { mode: 0o600 }), 'ACTIVATION_SECRET_MALFORMED'],
     ['unsafe mode', path => { writeFileSync(path, '{}', { mode: 0o644 }); chmodSync(path, 0o644); }, 'ACTIVATION_SECRET_UNSAFE'],
-    ['symlink', path => { const target = `${path}.outside`; writeFileSync(target, '{}'); symlinkSync(target, path); }, 'ACTIVATION_SECRET_UNSAFE'],
+    ['symlink', path => { const target = `${path}.outside`; writeFileSync(target, '{}'); createFileSymlink(target, path); }, 'ACTIVATION_SECRET_UNSAFE'],
   ]) {
     const stateRoot = mkdtempSync(join(tmpdir(), `dl-secret-${label.replace(' ', '-')}-`));
     const directory = join(stateRoot, 'deep-loop', 'activation-secrets');
@@ -135,7 +136,7 @@ test('stored activation root selection rejects relative trusted config and Windo
   const linkedRootTarget = join(linkedRootParent, 'target');
   const linkedRoot = join(linkedRootParent, 'link');
   mkdirSync(linkedRootTarget, { mode: 0o700 });
-  symlinkSync(linkedRootTarget, linkedRoot);
+  createDirectoryJunction(linkedRootTarget, linkedRoot);
   assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, linuxDeps(linkedRoot)),
     error => error?.message === 'ACTIVATION_SECRET_UNSAFE');
 
