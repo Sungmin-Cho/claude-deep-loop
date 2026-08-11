@@ -130,9 +130,17 @@ function boundManifestStep(task, context) {
     task.id === 'allow-checkpoint-observe-108' && token === '@emitted-checkpoint'
       ? context.checkpointRel : token
   ));
+  const stdin = step.stdin ? substitutePlaceholders(step.stdin.inline_json, bindings) : undefined;
+  // Trusted checkpoint ingress compares the supplied cwd to native
+  // realpathSync output byte-for-byte. The published task uses a portable
+  // slash spelling, so materialize this one host path with path.join before
+  // invoking the production CLI (the manifest itself remains unchanged).
+  if (task.id === 'allow-checkpoint-observe-108' && stdin?.cwd) {
+    stdin.cwd = join(context.root, '.claude', 'worktrees', 'eval-checkpoint', 'src');
+  }
   return {
     cmd: command,
-    stdin: step.stdin ? substitutePlaceholders(step.stdin.inline_json, bindings) : undefined,
+    stdin,
     setup_files: substitutePlaceholders(step.setup_files || [], bindings),
     expect: substitutePlaceholders(step.expect, bindings),
   };

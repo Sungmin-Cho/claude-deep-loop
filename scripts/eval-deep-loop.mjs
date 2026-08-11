@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { executeKernelTask, seedHostTopology } from '../evals/lib/scenarios.mjs';
 import { runAllowReviewImport111, validateHostAcceptanceResult, HOST_TASK_ID } from '../evals/lib/host-acceptance.mjs';
 import { materializeFixture, materializeOutcomeSupport, applyReference } from '../evals/lib/fixture.mjs';
@@ -274,7 +274,10 @@ export async function main(argv = process.argv.slice(2)) {
   return report.payload.kernel_findings.length === 0 ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `process.argv[1]` is a native Windows path, while import.meta.url is always a
+// URL. Comparing the POSIX spelling directly makes the Windows child exit 0
+// without running the driver or writing its report.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().then(code => { process.exitCode = code; }).catch(error => {
     process.stderr.write(`${error.message}\n`); process.exitCode = 1;
   });
