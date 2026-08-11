@@ -460,6 +460,7 @@ test('SLICE-006 PreCompact wrapper is transitively activation-blocked with zero 
   assert.deepEqual(activateLease(root, runId, {
     owner, generation: acquired.generation, runtime: 'claude', attemptId,
     activationToken: 'SLICE006PRECOMPACTTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
   }), { ok: true, reason: 'activated' });
   const emitted = await runPreCompactHandoff({}, {
     root, now: Date.parse('2026-08-09T00:00:02.000Z'), env: {},

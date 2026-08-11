@@ -489,6 +489,7 @@ test('SLICE-006 emitHandoff is transitively activation-blocked with zero direct 
   assert.deepEqual(activateLease(root, runId, {
     owner, generation: acquired.generation, runtime: 'claude', attemptId,
     activationToken: 'SLICE006HANDOFFTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
   }), { ok: true, reason: 'activated' });
   const emitted = emitHandoff(root, runId, {
     trigger: 'slice-006-direct-emit',

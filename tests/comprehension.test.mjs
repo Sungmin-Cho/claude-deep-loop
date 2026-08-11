@@ -431,6 +431,7 @@ test('SLICE-006 recordReviewed throws on activation pending without state or cou
   assert.deepEqual(activateLease(root, runId, {
     owner, generation: acquired.generation, runtime: 'claude', attemptId,
     activationToken: 'SLICE006REVIEWTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
   }), { ok: true, reason: 'activated' });
   recordReviewed(root, runId, episodeId, 'manual');
   data = readState(root, runId).data;
