@@ -126,6 +126,21 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     L: 28, B: 7, X: 34, E2: 116, E3: 12, E4: 15, E5: 1, E7: 73, E8: 26,
   });
   assert.equal(live.rows.size, 312);
+  assert.deepEqual([
+    'budget.mjs#settleTerminalCodexMakerCost',
+    'lease.mjs#rollbackReservedEmit',
+    'spawn-optin.mjs#resetDesktop',
+  ].map((id) => [id, live.rows.get(id)]), [
+    ['budget.mjs#settleTerminalCodexMakerCost', {
+      classification: 'X', reason: 'structural-no-target',
+    }],
+    ['lease.mjs#rollbackReservedEmit', {
+      classification: 'X', reason: 'structural-no-target',
+    }],
+    ['spawn-optin.mjs#resetDesktop', {
+      classification: 'X', reason: 'safety-downgrade',
+    }],
+  ]);
   assert.deepEqual([...live.rows.entries()].filter(([id]) => [
     'activation-secret.mjs#activateStoredLease',
     'headless-host.mjs#acquireHeadlessHostLock',

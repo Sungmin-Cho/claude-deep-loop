@@ -2,7 +2,7 @@
   "schema_version": 1,
   "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "f9980aa94b5394bb2f2e76736327a91cfb7c34b89765a105267da59348a30b8b",
+  "live_classification_sha256": "6564dc75662edd92b303da315951d7eff903be772122e67fc689146c6bee599d",
   "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
@@ -1032,7 +1032,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "safety-downgrade",
+      "reason": "structural-no-target",
       "evidence": [
         {
           "kind": "direct",
@@ -3274,7 +3274,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "pause-direction",
+      "reason": "structural-no-target",
       "evidence": [
         {
           "kind": "direct",
@@ -5939,7 +5939,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "human-only-recovery",
+      "reason": "safety-downgrade",
       "evidence": [
         {
           "kind": "direct",

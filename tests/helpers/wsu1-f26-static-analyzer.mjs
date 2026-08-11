@@ -520,6 +520,10 @@ const E_WRITE_GUARD = new Set(['E2', 'E3', 'E4', 'E5', 'E7', 'E8']);
 const E3_IMPLEMENTATION_REFERENCES = new Map([
   ['integrity.mjs#appendAnchored', new Set(['state.mjs#writeState'])],
 ]);
+const STRUCTURAL_STATE_PRECONDITION_IDS = new Set([
+  'budget.mjs#settleTerminalCodexMakerCost',
+  'lease.mjs#rollbackReservedEmit',
+]);
 const REASONS = Object.freeze({
   L: new Set(['leasecheck-dominated']),
   B: new Set(['explicit-activation-pending-block']),
@@ -1014,6 +1018,7 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
       violations.push({ code: 'E_DIRECT_OR_REFERENCE_WRITE', id });
     }
     if ((declared.classification === 'X' && declared.reason === 'structural-no-target'
+        && !STRUCTURAL_STATE_PRECONDITION_IDS.has(id)
       || declared.classification === 'E2' && declared.reason === 'no-run-state-write'
       || declared.classification === 'E8' && declared.reason === 'non-callable-value') && calculated.reaches) {
       violations.push({ code: 'CLASSIFICATION_RECALCULATION_MISMATCH', id });
