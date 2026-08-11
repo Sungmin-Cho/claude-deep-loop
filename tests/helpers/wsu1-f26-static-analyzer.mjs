@@ -171,8 +171,8 @@ function parseSpecifiers(tokens, openIndex, closeIndex) {
   return entries;
 }
 
-function parseModule(file) {
-  const source = readFileSync(file, 'utf8');
+function parseModule(file, sourceOverride) {
+  const source = sourceOverride ?? readFileSync(file, 'utf8');
   const tokens = tokenize(source, file);
   const module = {
     file,
@@ -644,7 +644,19 @@ function findTokenSequence(record, sequence, from = record.start) {
   return -1;
 }
 
-function orderedProof(record, sequences, terminalSequence) {
+function bracedTokenRange(record, sequence) {
+  const open = findTokenSequence(record, sequence);
+  if (open < 0) return null;
+  const brace = open + sequence.length - 1;
+  if (record.module.tokens[brace]?.value !== '{') return null;
+  const close = matching(record.module.tokens, brace, '{', '}');
+  return close < 0 ? null : { start: brace + 1, end: close };
+}
+
+function orderedProof(record, sequences, terminalSequence, {
+  dangerousCallOpens,
+  allowedPreGuardRanges = [],
+}) {
   let cursor = record.start;
   let witness = -1;
   for (const sequence of sequences) {
@@ -653,48 +665,77 @@ function orderedProof(record, sequences, terminalSequence) {
     if (witness < 0) witness = found;
     cursor = found + sequence.length;
   }
+  for (let index = record.start; index < cursor; index += 1) {
+    const allowed = allowedPreGuardRanges.some((range) => range.start <= index && index < range.end);
+    if (!allowed && dangerousCallOpens.has(index + 1)) return null;
+  }
   const terminal = findTokenSequence(record, terminalSequence, cursor);
   if (terminal < 0) return null;
   return { witness, terminal };
 }
 
 const STRUCTURAL_STATE_PRECONDITION_PROOFS = new Map([
-  ['budget.mjs#settleTerminalCodexMakerCost', (record) => orderedProof(record, [[
+  ['budget.mjs#settleTerminalCodexMakerCost', (record, dangerousCallOpens) => orderedProof(record, [[
     'if', '(', 'loop', '.', 'status', '!==', 'completed', '&&',
     'loop', '.', 'status', '!==', 'stopped', ')', 'throw',
-  ]], ['appendEvent', '('])],
-  ['initrun.mjs#initRun', (record) => {
+  ]], ['appendEvent', '('], { dangerousCallOpens })],
+  ['initrun.mjs#initRun', (record, dangerousCallOpens) => {
     const parameters = record.module.tokens.slice(record.parametersStart, record.parametersEnd);
     if (parameters.some((token) => token.value === 'runId')) return null;
     return orderedProof(record, [[
       'const', 'runId', '=', 'ulid', '(', 'now', '.', 'getTime', '(', ')', ')', ';',
     ], [
       'mkdirSync', '(', 'runDir', '(', 'canonicalRoot', ',', 'runId', ')',
-    ]], ['writeState', '(', 'canonicalRoot', ',', 'runId', ',', 'loop', ')']);
+    ]], ['writeState', '(', 'canonicalRoot', ',', 'runId', ',', 'loop', ')'], {
+      dangerousCallOpens,
+    });
   }],
-  ['lease.mjs#advanceHandoffPhase', (record) => orderedProof(record, [[
+  ['lease.mjs#advanceHandoffPhase', (record, dangerousCallOpens) => orderedProof(record, [[
     'if', '(', 'lease', '.', 'handoff_idempotency_key', '!==', 'key', ')', 'return',
   ], [
     'if', '(', 'next', '===', 'cur', ')', 'return',
   ], [
     'if', '(', 'next', '!==', 'cur', '+', '1', ')', 'return',
-  ]], ['writeState', '(', 'root', ',', 'runId', ',', 'data', ')'])],
-  ['lease.mjs#rollbackReservedEmit', (record) => orderedProof(record, [[
+  ]], ['writeState', '(', 'root', ',', 'runId', ',', 'data', ')'], {
+    dangerousCallOpens,
+  })],
+  ['lease.mjs#rollbackReservedEmit', (record, dangerousCallOpens) => orderedProof(record, [[
     'if', '(', 'childCommitted', '||', 'lease', '.', 'handoff_phase', '!==', 'reserved', ')', '{', 'return',
-  ]], ['writeState', '(', 'root', ',', 'runId', ',', 'data', ')'])],
-  ['recover.mjs#recoverRun', (record) => orderedProof(record, [[
+  ]], ['writeState', '(', 'root', ',', 'runId', ',', 'data', ')'], {
+    dangerousCallOpens,
+  })],
+  ['recover.mjs#recoverRun', (record, dangerousCallOpens) => orderedProof(record, [[
     'if', '(', 'snapshot', '.', 'status', '!==', 'paused', ')', '{', 'throw',
-  ]], ['return', 'legacyRecover', '('])],
-  ['respawn.mjs#respawn', (record) => orderedProof(record, [[
-    'if', '(', 'lease', '.', 'handoff_phase', '!==', 'emitted', '||',
-    'lease', '.', 'state', '!==', 'releasing', ')', '{', 'return',
-  ]], ['const', 'gate', '=', 'respawnGate', '('])],
+  ]], ['return', 'legacyRecover', '('], {
+    dangerousCallOpens,
+  })],
+  ['respawn.mjs#respawn', (record, dangerousCallOpens) => {
+    const spawnedRange = bracedTokenRange(record, [
+      'if', '(', 'lease', '.', 'handoff_phase', '===', 'spawned', ')', '{',
+    ]);
+    if (!spawnedRange) return null;
+    return orderedProof(record, [[
+      'if', '(', 'lease', '.', 'handoff_phase', '!==', 'emitted', '||',
+      'lease', '.', 'state', '!==', 'releasing', ')', '{', 'return',
+    ]], ['const', 'gate', '=', 'respawnGate', '('], {
+      dangerousCallOpens,
+      allowedPreGuardRanges: [spawnedRange],
+    });
+  }],
 ]);
 
-function structuralPreconditionProofForRecord(record) {
+function writeReachingCallOpens(record, factsById, recordsById) {
+  if (!record) return new Set();
+  return new Set(factsById.get(record.id).calls.filter((call) =>
+    WRITE_PRIMITIVES.has(call.target)
+      || analyzeRecord(recordsById.get(call.target), factsById, recordsById).reaches)
+    .map((call) => call.open));
+}
+
+function structuralPreconditionProofForRecord(record, dangerousCallOpens) {
   const check = STRUCTURAL_STATE_PRECONDITION_PROOFS.get(record?.id);
   if (!check) return null;
-  const matched = check(record);
+  const matched = check(record, dangerousCallOpens);
   if (!matched) return null;
   return {
     kind: record.id === 'initrun.mjs#initRun' ? 'fresh-target-isolation' : 'state-precondition',
@@ -708,15 +749,21 @@ export function structuralPreconditionProof({ id, source } = {}) {
   if (separator < 1) return null;
   const idFile = id.slice(0, separator);
   const name = id.slice(separator + 1);
-  const module = {
-    file: idFile,
-    idFile,
-    source,
-    tokens: tokenize(source, idFile),
-    imports: new Map(),
-  };
-  const record = functionRecords(module).get(name);
-  return record?.id === id ? structuralPreconditionProofForRecord(record) : null;
+  const module = parseModule(idFile, source);
+  if (module.failures.length > 0) return null;
+  const records = functionRecords(module);
+  const recordsByFile = new Map([[module.file, records]]);
+  const recordsById = new Map([...records.values()].map((record) => [record.id, record]));
+  const factsById = new Map();
+  for (const record of records.values()) {
+    const facts = directFacts(record, recordsByFile);
+    if (facts.failures.length > 0) return null;
+    factsById.set(record.id, facts);
+  }
+  const record = records.get(name);
+  return record?.id === id ? structuralPreconditionProofForRecord(
+    record, writeReachingCallOpens(record, factsById, recordsById),
+  ) : null;
 }
 
 function originForImport(module, binding) {
@@ -1083,7 +1130,9 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
     const structuralProofRequired = declared.classification === 'X'
       && declared.reason === 'structural-no-target' && calculated.reaches;
     const structuralPrecondition = structuralProofRequired
-      ? structuralPreconditionProofForRecord(record) : null;
+      ? structuralPreconditionProofForRecord(
+        record, writeReachingCallOpens(record, factsById, recordsById),
+      ) : null;
     const row = {
       id,
       classification: declared.classification,

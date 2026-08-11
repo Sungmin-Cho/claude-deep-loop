@@ -19,10 +19,10 @@ This tracked overlay resolves the pinned seed into the current execution surface
     "safety-downgrade": ["attended-launch.mjs#revokeAttendedLaunch", "spawn-optin.mjs#resetDesktop"],
     "boot-observation": ["detect-terminal.mjs#detectAndPersist"],
     "pause-direction": ["breaker.mjs#tripBreaker", "respawn.mjs#rollbackAndPause", "state.mjs#pauseRun"],
-    "human-only-recovery": ["project-root-recovery.mjs#rebindProjectRoot", "project-root-recovery.mjs#recoverRelocatedRoot", "recover.mjs#recoverBoundary", "recover.mjs#supersedeAffinity"],
+    "human-only-recovery": ["recover.mjs#recoverBoundary", "recover.mjs#supersedeAffinity"],
     "structural-no-target": ["budget.mjs#settleTerminalCodexMakerCost", "initrun.mjs#initRun", "lease.mjs#advanceHandoffPhase", "lease.mjs#rollbackReservedEmit", "recover.mjs#recoverRun", "respawn.mjs#respawn"],
     "damage-repair": ["integrity.mjs#captureReconciledRootRecoverySnapshot", "integrity.mjs#captureReconciledRunSet", "integrity.mjs#captureReconciledRunSnapshot", "integrity.mjs#reconcileAnchoredPublicationLocked", "state.mjs#captureReconciledRootRecoverySnapshot", "state.mjs#captureReconciledRunSet", "state.mjs#captureReconciledRunSnapshot"],
-    "acquire-chain": ["lease.mjs#acquireLease", "project-root-recovery.mjs#acquireRootRecovery", "recover.mjs#acquireRecovery"],
+    "acquire-chain": ["lease.mjs#acquireLease", "project-root-recovery.mjs#acquireRootRecovery", "project-root-recovery.mjs#rebindProjectRoot", "project-root-recovery.mjs#recoverRelocatedRoot", "recover.mjs#acquireRecovery"],
     "transitive": ["drive-headless.mjs#main", "headless-host.mjs#driveHeadless", "headless-host.mjs#driveHeadlessRun"],
     "treated-in-D2": ["budget.mjs#extendBudget"]
   },

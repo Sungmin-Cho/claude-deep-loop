@@ -2,7 +2,7 @@
   "schema_version": 1,
   "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "1799308490bc09f11bff3284790b027670c07a3a7175b9cd5b6176ce5f4e9ea7",
+  "live_classification_sha256": "2d83ad0e602065d4d7700557f3372332aed757ea5facd58f13ba30ee83238aad",
   "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
@@ -3786,7 +3786,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "human-only-recovery",
+      "reason": "acquire-chain",
       "evidence": [
         {
           "kind": "non-dominance",
@@ -3819,7 +3819,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "human-only-recovery",
+      "reason": "acquire-chain",
       "evidence": [
         {
           "kind": "non-dominance",

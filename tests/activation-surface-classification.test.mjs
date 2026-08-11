@@ -130,8 +130,13 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     'attended-launch.mjs#revokeAttendedLaunch',
     'budget.mjs#settleTerminalCodexMakerCost',
     'initrun.mjs#initRun',
+    'lease.mjs#acquireLease',
     'lease.mjs#advanceHandoffPhase',
     'lease.mjs#rollbackReservedEmit',
+    'project-root-recovery.mjs#acquireRootRecovery',
+    'project-root-recovery.mjs#rebindProjectRoot',
+    'project-root-recovery.mjs#recoverRelocatedRoot',
+    'recover.mjs#acquireRecovery',
     'recover.mjs#recoverRun',
     'respawn.mjs#respawn',
     'spawn-optin.mjs#resetDesktop',
@@ -145,11 +150,26 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     ['initrun.mjs#initRun', {
       classification: 'X', reason: 'structural-no-target',
     }],
+    ['lease.mjs#acquireLease', {
+      classification: 'X', reason: 'acquire-chain',
+    }],
     ['lease.mjs#advanceHandoffPhase', {
       classification: 'X', reason: 'structural-no-target',
     }],
     ['lease.mjs#rollbackReservedEmit', {
       classification: 'X', reason: 'structural-no-target',
+    }],
+    ['project-root-recovery.mjs#acquireRootRecovery', {
+      classification: 'X', reason: 'acquire-chain',
+    }],
+    ['project-root-recovery.mjs#rebindProjectRoot', {
+      classification: 'X', reason: 'acquire-chain',
+    }],
+    ['project-root-recovery.mjs#recoverRelocatedRoot', {
+      classification: 'X', reason: 'acquire-chain',
+    }],
+    ['recover.mjs#acquireRecovery', {
+      classification: 'X', reason: 'acquire-chain',
     }],
     ['recover.mjs#recoverRun', {
       classification: 'X', reason: 'structural-no-target',
@@ -199,6 +219,9 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
       remove: (source) => source.replace(
         "if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');",
         "if (false) throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');"),
+      prewrite: (source) => source.replace(
+        "if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');",
+        "appendEvent(root, runId, { type: 'mutant', data: {} });\n    if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');"),
     },
     {
       id: 'initrun.mjs#initRun',
@@ -206,6 +229,9 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
       remove: (source) => source.replace(
         'const runId = ulid(now.getTime());',
         "const runId = 'caller-selected';"),
+      prewrite: (source) => source.replace(
+        'const runId = ulid(now.getTime());',
+        "writeState(canonicalRoot, 'existing-run', loop);\n  const runId = ulid(now.getTime());"),
     },
     {
       id: 'lease.mjs#advanceHandoffPhase',
@@ -213,6 +239,9 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
       remove: (source) => source.replace(
         "if (next !== cur + 1) return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };",
         "if (false) return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };"),
+      prewrite: (source) => source.replace(
+        "if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };",
+        "writeState(root, runId, data);\n    if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };"),
     },
     {
       id: 'lease.mjs#rollbackReservedEmit',
@@ -220,6 +249,9 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
       remove: (source) => source.replace(
         "if (childCommitted || lease.handoff_phase !== 'reserved') {",
         'if (false) {'),
+      prewrite: (source) => source.replace(
+        "if (childCommitted || lease.handoff_phase !== 'reserved') {",
+        "writeState(root, runId, data);\n    if (childCommitted || lease.handoff_phase !== 'reserved') {"),
     },
     {
       id: 'recover.mjs#recoverRun',
@@ -227,6 +259,9 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
       remove: (source) => source.replace(
         "if (snapshot.status !== 'paused') {",
         'if (false) {'),
+      prewrite: (source) => source.replace(
+        "if (snapshot.status !== 'paused') {",
+        "legacyRecover(root, runId, { expect, now });\n  if (snapshot.status !== 'paused') {"),
     },
     {
       id: 'respawn.mjs#respawn',
@@ -235,6 +270,12 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
         const needle = "if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {";
         const at = source.lastIndexOf(needle);
         return at < 0 ? source : `${source.slice(0, at)}if (false) {${source.slice(at + needle.length)}`;
+      },
+      prewrite: (source) => {
+        const needle = "if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {";
+        const at = source.lastIndexOf(needle);
+        return at < 0 ? source
+          : `${source.slice(0, at)}preservePause(root, runId, {});\n  ${source.slice(at)}`;
       },
     },
   ];
@@ -247,7 +288,28 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
     assert.notEqual(mutant, source, `${item.id} mutant replacement must apply`);
     assert.equal(analyzer.structuralPreconditionProof({ id: item.id, source: mutant }), null,
       `${item.id} guard/binding removal must invalidate the proof`);
+    const prewrite = item.prewrite(source);
+    assert.notEqual(prewrite, source, `${item.id} pre-guard write mutant must apply`);
+    assert.equal(analyzer.structuralPreconditionProof({ id: item.id, source: prewrite }), null,
+      `${item.id} pre-guard write must invalidate the proof`);
   }
+  const leaseSource = readFileSync(join(ROOT, 'scripts', 'lib', 'lease.mjs'), 'utf8');
+  const nestedPrewrite = leaseSource.replace(
+    "if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };",
+    "if (true) { writeState(root, runId, data); }\n    if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };");
+  assert.notEqual(nestedPrewrite, leaseSource);
+  assert.equal(analyzer.structuralPreconditionProof({
+    id: 'lease.mjs#advanceHandoffPhase', source: nestedPrewrite,
+  }), null, 'nested unconditional pre-guard write must invalidate the proof');
+  const wrappedPrewrite = leaseSource
+    .replace('export function advanceHandoffPhase',
+      'function mutantWrite(root, runId, data) { writeState(root, runId, data); }\n\nexport function advanceHandoffPhase')
+    .replace("if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };",
+      "mutantWrite(root, runId, data);\n    if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };");
+  assert.notEqual(wrappedPrewrite, leaseSource);
+  assert.equal(analyzer.structuralPreconditionProof({
+    id: 'lease.mjs#advanceHandoffPhase', source: wrappedPrewrite,
+  }), null, 'transitive pre-guard write must invalidate the proof');
 });
 
 test('STEP0-3 call graph recomputes reachability and same-lock dominance for every live row', async () => {
