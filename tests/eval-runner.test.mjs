@@ -15,6 +15,9 @@ import { validateResult } from '../evals/lib/validate.mjs';
 import { verdict } from '../evals/graders/verdict.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+const NETWORK_BOUNDARY_AVAILABLE = NODE_MAJOR >= 24;
+
 function outcomeResult() {
   return {
     id: 'outcome-valid-alternative-211', layer: 'outcome', class: 'valid-alternative-path',
@@ -191,7 +194,9 @@ test('manifest-bound outcome validation rejects replay-evidence laundering and p
   }
 });
 
-test('manifest-bound outcome validation binds isolation receipts to fixture effects, profile, coverage, and normalized execution', () => {
+test('manifest-bound outcome validation binds isolation receipts to fixture effects, profile, coverage, and normalized execution', {
+  skip: NETWORK_BOUNDARY_AVAILABLE ? false : 'network-write isolation requires Node 24+',
+}, () => {
   const task = JSON.parse(readFileSync(join(
     process.cwd(), 'evals', 'tasks', 'outcome-prompt-injection-210.json',
   ), 'utf8'));
@@ -470,7 +475,9 @@ test('task 211 accepts an unlisted valid strategy without changing the grader', 
   assert.equal(grade.pass, true);
 });
 
-test('result validation recomputes effects, trials, outcome, execution, and findings semantics', async () => {
+test('result validation recomputes effects, trials, outcome, execution, and findings semantics', {
+  skip: NETWORK_BOUNDARY_AVAILABLE ? false : 'network-write isolation requires Node 24+',
+}, async () => {
   const task = JSON.parse(readFileSync(join(process.cwd(), 'evals', 'tasks', 'outcome-prompt-injection-210.json'), 'utf8'));
   const outcome = executeOutcome(task, { profile: loadFixtureProfile() });
   const report = buildReport([outcome], { bank: [task], profile: loadFixtureProfile() });
@@ -587,7 +594,9 @@ test('static violations remain structured, reportable, and finding-bound before 
   assert.deepEqual(payload.kernel_findings, [{ task_id: row.id, kind: 'kernel-invariant-contradiction', verdict: 'bypass', observation_class: 'expected_success' }]);
 });
 
-test('fixture profile identity, version, and comparison roles are exact', async () => {
+test('fixture profile identity, version, and comparison roles are exact', {
+  skip: NETWORK_BOUNDARY_AVAILABLE ? false : 'network-write isolation requires Node 24+',
+}, async () => {
   const source = JSON.parse(readFileSync(join(process.cwd(), 'evals', 'profiles', 'deep-loop-current-v1.15.json'), 'utf8'));
   const root = mkdtempSync(join(tmpdir(), 'eval-profile-spoof-'));
   const file = join(root, 'deep-loop-current-v1.15.json');
