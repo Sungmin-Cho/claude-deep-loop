@@ -127,14 +127,34 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
   });
   assert.equal(live.rows.size, 312);
   assert.deepEqual([
+    'attended-launch.mjs#revokeAttendedLaunch',
     'budget.mjs#settleTerminalCodexMakerCost',
+    'initrun.mjs#initRun',
+    'lease.mjs#advanceHandoffPhase',
     'lease.mjs#rollbackReservedEmit',
+    'recover.mjs#recoverRun',
+    'respawn.mjs#respawn',
     'spawn-optin.mjs#resetDesktop',
   ].map((id) => [id, live.rows.get(id)]), [
+    ['attended-launch.mjs#revokeAttendedLaunch', {
+      classification: 'X', reason: 'safety-downgrade',
+    }],
     ['budget.mjs#settleTerminalCodexMakerCost', {
       classification: 'X', reason: 'structural-no-target',
     }],
+    ['initrun.mjs#initRun', {
+      classification: 'X', reason: 'structural-no-target',
+    }],
+    ['lease.mjs#advanceHandoffPhase', {
+      classification: 'X', reason: 'structural-no-target',
+    }],
     ['lease.mjs#rollbackReservedEmit', {
+      classification: 'X', reason: 'structural-no-target',
+    }],
+    ['recover.mjs#recoverRun', {
+      classification: 'X', reason: 'structural-no-target',
+    }],
+    ['respawn.mjs#respawn', {
       classification: 'X', reason: 'structural-no-target',
     }],
     ['spawn-optin.mjs#resetDesktop', {
@@ -168,6 +188,66 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     ['schema.mjs#validCheckerProcessDiagnostic', { classification: 'E2', reason: 'no-run-state-write' }],
     ['schema.mjs#validProcessStreamMetadata', { classification: 'E2', reason: 'no-run-state-write' }],
   ]);
+});
+
+test('STEP0-3 structural exceptions require their closed source preconditions', async () => {
+  const analyzer = await import(STATIC_ANALYZER);
+  const cases = [
+    {
+      id: 'budget.mjs#settleTerminalCodexMakerCost',
+      file: 'lib/budget.mjs',
+      remove: (source) => source.replace(
+        "if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');",
+        "if (false) throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');"),
+    },
+    {
+      id: 'initrun.mjs#initRun',
+      file: 'lib/initrun.mjs',
+      remove: (source) => source.replace(
+        'const runId = ulid(now.getTime());',
+        "const runId = 'caller-selected';"),
+    },
+    {
+      id: 'lease.mjs#advanceHandoffPhase',
+      file: 'lib/lease.mjs',
+      remove: (source) => source.replace(
+        "if (next !== cur + 1) return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };",
+        "if (false) return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };"),
+    },
+    {
+      id: 'lease.mjs#rollbackReservedEmit',
+      file: 'lib/lease.mjs',
+      remove: (source) => source.replace(
+        "if (childCommitted || lease.handoff_phase !== 'reserved') {",
+        'if (false) {'),
+    },
+    {
+      id: 'recover.mjs#recoverRun',
+      file: 'lib/recover.mjs',
+      remove: (source) => source.replace(
+        "if (snapshot.status !== 'paused') {",
+        'if (false) {'),
+    },
+    {
+      id: 'respawn.mjs#respawn',
+      file: 'lib/respawn.mjs',
+      remove: (source) => {
+        const needle = "if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {";
+        const at = source.lastIndexOf(needle);
+        return at < 0 ? source : `${source.slice(0, at)}if (false) {${source.slice(at + needle.length)}`;
+      },
+    },
+  ];
+  for (const item of cases) {
+    const source = readFileSync(join(ROOT, 'scripts', item.file), 'utf8');
+    const proof = analyzer.structuralPreconditionProof({ id: item.id, source });
+    assert.equal(proof?.kind, item.id === 'initrun.mjs#initRun'
+      ? 'fresh-target-isolation' : 'state-precondition');
+    const mutant = item.remove(source);
+    assert.notEqual(mutant, source, `${item.id} mutant replacement must apply`);
+    assert.equal(analyzer.structuralPreconditionProof({ id: item.id, source: mutant }), null,
+      `${item.id} guard/binding removal must invalidate the proof`);
+  }
 });
 
 test('STEP0-3 call graph recomputes reachability and same-lock dominance for every live row', async () => {
@@ -382,7 +462,7 @@ test('STEP0-3 reversal mutants expose non-dominance and false structural excepti
   });
   assert.equal(falseException.rows[0].write_reachability, 'reaches');
   assert.equal(falseException.violations.some(({ code }) =>
-    code === 'CLASSIFICATION_RECALCULATION_MISMATCH'), true);
+    code === 'STRUCTURAL_PRECONDITION_MISSING'), true);
 
   const falsePure = analyzer.analyzeClassification({
     files: [join(FIXTURES, 'mut23.mjs')],

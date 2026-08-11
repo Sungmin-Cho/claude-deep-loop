@@ -2,7 +2,7 @@
   "schema_version": 1,
   "design_sha256": "5804ada375432cffc2c31440524bd31e929d52f55658f20b3360e34d7d865ec2",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "6564dc75662edd92b303da315951d7eff903be772122e67fc689146c6bee599d",
+  "live_classification_sha256": "1799308490bc09f11bff3284790b027670c07a3a7175b9cd5b6176ce5f4e9ea7",
   "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
@@ -564,7 +564,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "human-only-recovery",
+      "reason": "safety-downgrade",
       "evidence": [
         {
           "kind": "direct",
@@ -1054,7 +1054,13 @@
             "scripts/lib/budget.mjs:1621"
           ]
         }
-      ]
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/budget.mjs:1552"
+        ]
+      }
     },
     {
       "id": "checkpoint.mjs#captureCheckpointSet",
@@ -2410,7 +2416,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "boot-observation",
+      "reason": "structural-no-target",
       "evidence": [
         {
           "kind": "direct",
@@ -2432,7 +2438,13 @@
             "scripts/lib/initrun.mjs:61"
           ]
         }
-      ]
+      ],
+      "structural_precondition": {
+        "kind": "fresh-target-isolation",
+        "coordinates": [
+          "scripts/lib/initrun.mjs:54"
+        ]
+      }
     },
     {
       "id": "insights.mjs#CANDIDATE_RULES",
@@ -3105,7 +3117,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "acquire-chain",
+      "reason": "structural-no-target",
       "evidence": [
         {
           "kind": "direct",
@@ -3127,7 +3139,13 @@
             "scripts/lib/lease.mjs:813"
           ]
         }
-      ]
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/lease.mjs:796"
+        ]
+      }
     },
     {
       "id": "lease.mjs#boundaryHandoffTopologyError",
@@ -3296,7 +3314,13 @@
             "scripts/lib/lease.mjs:896"
           ]
         }
-      ]
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/lease.mjs:859"
+        ]
+      }
     },
     {
       "id": "lease.mjs#sameBoundaryEvent",
@@ -4134,7 +4158,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "human-only-recovery",
+      "reason": "structural-no-target",
       "evidence": [
         {
           "kind": "non-dominance",
@@ -4160,7 +4184,13 @@
             "scripts/lib/recover.mjs:908"
           ]
         }
-      ]
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/recover.mjs:938"
+        ]
+      }
     },
     {
       "id": "recover.mjs#recoverySafetyReason",
@@ -4268,7 +4298,7 @@
       "classification": "X",
       "write_reachability": "reaches",
       "leasecheck_dominance": "does-not-dominate",
-      "reason": "transitive",
+      "reason": "structural-no-target",
       "evidence": [
         {
           "kind": "non-dominance",
@@ -4298,7 +4328,13 @@
             "scripts/lib/respawn.mjs:329"
           ]
         }
-      ]
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/respawn.mjs:454"
+        ]
+      }
     },
     {
       "id": "respawn.mjs#respawnGate",

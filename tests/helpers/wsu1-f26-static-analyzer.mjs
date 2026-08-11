@@ -520,10 +520,6 @@ const E_WRITE_GUARD = new Set(['E2', 'E3', 'E4', 'E5', 'E7', 'E8']);
 const E3_IMPLEMENTATION_REFERENCES = new Map([
   ['integrity.mjs#appendAnchored', new Set(['state.mjs#writeState'])],
 ]);
-const STRUCTURAL_STATE_PRECONDITION_IDS = new Set([
-  'budget.mjs#settleTerminalCodexMakerCost',
-  'lease.mjs#rollbackReservedEmit',
-]);
 const REASONS = Object.freeze({
   L: new Set(['leasecheck-dominated']),
   B: new Set(['explicit-activation-pending-block']),
@@ -601,6 +597,8 @@ function functionRecords(module) {
           start: body.open + 1,
           end: body.close,
           line: tokens[functionIndex].line,
+          parametersStart: body.parametersOpen + 1,
+          parametersEnd: body.parametersClose,
           aliases: new Map(),
         };
         records.set(name, record);
@@ -636,6 +634,89 @@ function functionRecords(module) {
     index = end;
   }
   return records;
+}
+
+function findTokenSequence(record, sequence, from = record.start) {
+  const tokens = record.module.tokens;
+  for (let index = from; index <= record.end - sequence.length; index += 1) {
+    if (sequence.every((value, offset) => tokens[index + offset]?.value === value)) return index;
+  }
+  return -1;
+}
+
+function orderedProof(record, sequences, terminalSequence) {
+  let cursor = record.start;
+  let witness = -1;
+  for (const sequence of sequences) {
+    const found = findTokenSequence(record, sequence, cursor);
+    if (found < 0) return null;
+    if (witness < 0) witness = found;
+    cursor = found + sequence.length;
+  }
+  const terminal = findTokenSequence(record, terminalSequence, cursor);
+  if (terminal < 0) return null;
+  return { witness, terminal };
+}
+
+const STRUCTURAL_STATE_PRECONDITION_PROOFS = new Map([
+  ['budget.mjs#settleTerminalCodexMakerCost', (record) => orderedProof(record, [[
+    'if', '(', 'loop', '.', 'status', '!==', 'completed', '&&',
+    'loop', '.', 'status', '!==', 'stopped', ')', 'throw',
+  ]], ['appendEvent', '('])],
+  ['initrun.mjs#initRun', (record) => {
+    const parameters = record.module.tokens.slice(record.parametersStart, record.parametersEnd);
+    if (parameters.some((token) => token.value === 'runId')) return null;
+    return orderedProof(record, [[
+      'const', 'runId', '=', 'ulid', '(', 'now', '.', 'getTime', '(', ')', ')', ';',
+    ], [
+      'mkdirSync', '(', 'runDir', '(', 'canonicalRoot', ',', 'runId', ')',
+    ]], ['writeState', '(', 'canonicalRoot', ',', 'runId', ',', 'loop', ')']);
+  }],
+  ['lease.mjs#advanceHandoffPhase', (record) => orderedProof(record, [[
+    'if', '(', 'lease', '.', 'handoff_idempotency_key', '!==', 'key', ')', 'return',
+  ], [
+    'if', '(', 'next', '===', 'cur', ')', 'return',
+  ], [
+    'if', '(', 'next', '!==', 'cur', '+', '1', ')', 'return',
+  ]], ['writeState', '(', 'root', ',', 'runId', ',', 'data', ')'])],
+  ['lease.mjs#rollbackReservedEmit', (record) => orderedProof(record, [[
+    'if', '(', 'childCommitted', '||', 'lease', '.', 'handoff_phase', '!==', 'reserved', ')', '{', 'return',
+  ]], ['writeState', '(', 'root', ',', 'runId', ',', 'data', ')'])],
+  ['recover.mjs#recoverRun', (record) => orderedProof(record, [[
+    'if', '(', 'snapshot', '.', 'status', '!==', 'paused', ')', '{', 'throw',
+  ]], ['return', 'legacyRecover', '('])],
+  ['respawn.mjs#respawn', (record) => orderedProof(record, [[
+    'if', '(', 'lease', '.', 'handoff_phase', '!==', 'emitted', '||',
+    'lease', '.', 'state', '!==', 'releasing', ')', '{', 'return',
+  ]], ['const', 'gate', '=', 'respawnGate', '('])],
+]);
+
+function structuralPreconditionProofForRecord(record) {
+  const check = STRUCTURAL_STATE_PRECONDITION_PROOFS.get(record?.id);
+  if (!check) return null;
+  const matched = check(record);
+  if (!matched) return null;
+  return {
+    kind: record.id === 'initrun.mjs#initRun' ? 'fresh-target-isolation' : 'state-precondition',
+    coordinates: [`${relativeSourcePath(record.module.file)}:${record.module.tokens[matched.witness].line}`],
+  };
+}
+
+export function structuralPreconditionProof({ id, source } = {}) {
+  if (typeof id !== 'string' || typeof source !== 'string') return null;
+  const separator = id.lastIndexOf('#');
+  if (separator < 1) return null;
+  const idFile = id.slice(0, separator);
+  const name = id.slice(separator + 1);
+  const module = {
+    file: idFile,
+    idFile,
+    source,
+    tokens: tokenize(source, idFile),
+    imports: new Map(),
+  };
+  const record = functionRecords(module).get(name);
+  return record?.id === id ? structuralPreconditionProofForRecord(record) : null;
 }
 
 function originForImport(module, binding) {
@@ -999,6 +1080,10 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
         coordinates: calculated.coordinates,
       }])])
       : [{ kind: 'no-path', path: [id], coordinates: record ? [`${relativeSourcePath(record.module.file)}:${record.line}`] : [] }];
+    const structuralProofRequired = declared.classification === 'X'
+      && declared.reason === 'structural-no-target' && calculated.reaches;
+    const structuralPrecondition = structuralProofRequired
+      ? structuralPreconditionProofForRecord(record) : null;
     const row = {
       id,
       classification: declared.classification,
@@ -1006,6 +1091,7 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
       leasecheck_dominance: dominance,
       reason: declared.reason,
       evidence,
+      ...(structuralPrecondition ? { structural_precondition: structuralPrecondition } : {}),
     };
     rows.push(row);
     if (declared.classification === 'L' && (!calculated.reaches
@@ -1017,11 +1103,14 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
     if (E_WRITE_GUARD.has(declared.classification) && unexpectedPrimitiveReferences.length > 0) {
       violations.push({ code: 'E_DIRECT_OR_REFERENCE_WRITE', id });
     }
-    if ((declared.classification === 'X' && declared.reason === 'structural-no-target'
-        && !STRUCTURAL_STATE_PRECONDITION_IDS.has(id)
+    if ((structuralProofRequired && !structuralPrecondition
       || declared.classification === 'E2' && declared.reason === 'no-run-state-write'
       || declared.classification === 'E8' && declared.reason === 'non-callable-value') && calculated.reaches) {
-      violations.push({ code: 'CLASSIFICATION_RECALCULATION_MISMATCH', id });
+      violations.push({
+        code: structuralProofRequired
+          ? 'STRUCTURAL_PRECONDITION_MISSING' : 'CLASSIFICATION_RECALCULATION_MISMATCH',
+        id,
+      });
     }
     if ((declared.classification === 'X' && ['transitive', 'damage-repair'].includes(declared.reason)
       || declared.classification === 'B') && !calculated.reaches) {
