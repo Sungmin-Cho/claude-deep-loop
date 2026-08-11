@@ -22,6 +22,7 @@ export function activateAcquiredLease(root, runId, options, acquired) {
     attemptId: options.attemptId,
     activationToken: TEST_ACTIVATION_TOKEN,
     now: options.now,
+    clock: options.clock,
   });
   if (!activated.ok) {
     throw new Error(`TEST_ACTIVATION_FAILED: ${activated.reason}`);
