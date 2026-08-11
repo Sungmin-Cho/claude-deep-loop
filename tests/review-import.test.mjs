@@ -6,6 +6,7 @@ import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,7 @@ import { finishRun } from '../scripts/lib/finish.mjs';
 import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
+import { runAllowReviewImport111, validateHostAcceptanceResult } from '../evals/lib/host-acceptance.mjs';
 import {
   REVIEW_IMPORT_MAX_ARTIFACTS,
   REVIEW_REPORT_BODY_MAX_BYTES,
@@ -40,6 +42,48 @@ const eventLog = (root, runId) => {
   if (!existsSync(path)) return [];
   return readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
 };
+
+test('allow-review-import-111: fixed host executor threads claimed attempt into bounded CLI import', () => {
+  const f = fixtureWithoutChecker();
+  const result = runAllowReviewImport111({ projectRoot: realpathSync(f.root), runId: f.runId, fence: f.fence, workstreamId: f.ws });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.attempt_id, 'attempt-eval-111');
+  assert.equal(result.binding.review_source, 'imported-stdin');
+  const task = { id: 'allow-review-import-111', host_acceptance: { evidence_ref: 'tests/review-import.test.mjs#allow-review-import-111' } };
+  const expected = {
+    run_id: f.runId, checker_episode_id: '002-deep-review', target_maker: '001-deep-work',
+    workstream_id: f.ws, point: 'implementation', reviewer_id: 'deep-review',
+    review_source: 'imported-stdin', imported_verdict: 'APPROVE',
+  };
+  const validation = validateHostAcceptanceResult(task, result, expected);
+  assert.equal(validation.ok, true, JSON.stringify({ result, expected, validation }));
+});
+
+test('allow-review-import-111 validates against an independently derived topology expectation, never result.binding itself', () => {
+  const f = fixtureWithoutChecker();
+  const expected = {
+    run_id: f.runId,
+    checker_episode_id: '002-deep-review',
+    target_maker: '001-deep-work',
+    workstream_id: f.ws,
+    point: 'implementation',
+    reviewer_id: 'deep-review',
+    review_source: 'imported-stdin',
+    imported_verdict: 'APPROVE',
+  };
+  const task = {
+    id: 'allow-review-import-111',
+    host_acceptance: { evidence_ref: 'tests/review-import.test.mjs#allow-review-import-111' },
+  };
+  const result = runAllowReviewImport111({ projectRoot: realpathSync(f.root), runId: f.runId, fence: f.fence, workstreamId: f.ws });
+  const validation = validateHostAcceptanceResult(task, result, expected);
+  assert.equal(validation.ok, true, JSON.stringify({ result, expected, validation }));
+  const selfConsistentButWrong = {
+    ...result,
+    binding: { ...result.binding, target_maker: '999-spoof' },
+  };
+  assert.equal(validateHostAcceptanceResult(task, selfConsistentButWrong, expected).ok, false);
+});
 
 function validImport(overrides = {}) {
   return {
@@ -83,6 +127,29 @@ function fixture({ runtime = 'codex', detected = { 'deep-review': true }, artifa
     artifacts: [{ path: artifactRel.replaceAll('\\', '/'), sha256: sha256(artifactBytes) }],
   };
   return { root, runId, fence, worktree, ws, makerId, checkerId, artifactRel, input };
+}
+
+function fixtureWithoutChecker({
+  runtime = 'codex', detected = { 'deep-review': true },
+  artifactRel = '.claude/worktrees/w/artifact.txt', artifactBytes = Buffer.from('maker artifact'),
+} = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-review-import-host-'));
+  const { runId } = initRun(root, {
+    runtime, goal: 'g', detected, now: new Date('2026-07-10T00:00:00Z'),
+  });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const worktree = '.claude/worktrees/w';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const ws = newWorkstream(root, runId, { title: 'w', branch: 'b', worktree, fence }).id;
+  mkdirSync(dirname(join(root, artifactRel)), { recursive: true });
+  writeFileSync(join(root, artifactRel), artifactBytes);
+  const makerId = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: [artifactRel], fence,
+  }).id;
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence });
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
+  return { root, runId, fence, worktree, ws, makerId, artifactRel };
 }
 
 test('review import schema artifact is exact and closed', () => {

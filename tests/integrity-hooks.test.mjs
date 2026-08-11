@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { captureReconciledRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
 
@@ -36,6 +37,32 @@ function durable(root, runId) {
     hashBytes: readFileSync(join(dir, '.loop.hash')),
   };
 }
+
+test('family-3 event:appended fail-stop', () => {
+  const { root, runId } = seed();
+  const before = durable(root, runId);
+  assert.throws(() => appendAnchored(root, runId, { type: 'family-3-event-appended', data: {}, now: NOW }, null, null, {
+    faultAt: phase => { if (phase === 'event:appended') throw new Error('EVENT_APPENDED_BARRIER'); },
+  }), /EVENT_APPENDED_BARRIER/);
+  const after = durable(root, runId);
+  assert.equal(after.logLines, before.logLines + 1);
+  assert.deepEqual(after.loopBytes, before.loopBytes);
+  assert.deepEqual(after.hashBytes, before.hashBytes);
+  assert.throws(() => captureReconciledRunSnapshot(root, runId), /LOG_TAMPERED|STATE_TAMPERED|integrity/i);
+});
+
+test('family-3 state:written committed', () => {
+  const { root, runId } = seed();
+  const before = durable(root, runId);
+  assert.throws(() => appendAnchored(root, runId, { type: 'family-3-state-written', data: {}, now: NOW }, null, null, {
+    faultAt: phase => { if (phase === 'state:written') throw new Error('STATE_WRITTEN_BARRIER'); },
+  }), /STATE_WRITTEN_BARRIER/);
+  const after = durable(root, runId);
+  assert.equal(after.logLines, before.logLines + 1);
+  assert.notDeepEqual(after.loopBytes, before.loopBytes);
+  assert.notDeepEqual(after.hashBytes, before.hashBytes);
+  assert.equal(captureReconciledRunSnapshot(root, runId).data.event_log_head.seq, 1);
+});
 
 // 1-a — preCheck는 두 번째 인자로 { guard }를 받는다 (R4-C1).
 // lease.mjs:215 / recover.mjs:1020 의 `…Locked` 호출이 guard를 요구하므로,

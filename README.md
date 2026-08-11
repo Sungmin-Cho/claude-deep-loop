@@ -242,6 +242,10 @@ deep-loop is designed for **standalone** use — it does not require any other d
 
 When sibling plugins (deep-work, deep-review, deep-wiki, deep-memory) are present, deep-loop automatically detects them and uses their specialized skills as adapters.
 
+### Agency-preservation fixture evaluation
+
+Run the offline, read-only-isolated fixture bank separately from preflight: `npm run eval:fixture -- --out ./evals/results/local --now 2026-08-10T00:00:00Z`.
+
 ## Unattended (Headless) Automation
 
 For cron or CI use, deep-loop includes `scripts/hooks-impl/drive-headless.mjs`. Set `DEEP_LOOP_UNATTENDED=1` in the host environment, then invoke Node directly:

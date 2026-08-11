@@ -280,6 +280,10 @@ deep-loop는 `PreCompact`, `PostCompact`, `SessionStart` hook을 등록합니다
 
 Codex bundled-hook 발견은 host 버전에 의존하며, 사용자가 plugin hook definition을 검토하고 신뢰한 후에만 적용됩니다. **Missing or untrusted hook**(미지원 host 버전 포함)의 manual compact restore는 fresh evidence를 읽어 same owner와 open bound Workstream affinity를 입증하고, 이 증거가 있을 때만 state-derived continuation을 선택합니다. Otherwise preserve-pause와 공식 manual resume(수동 resume) 경로를 선택합니다. 이 fallback은 fencing을 약화하거나 두 번째 owner를 만들지 않습니다. 격리 Codex child가 plugins와 hooks를 끄는 것도 이 durable fallback을 기대한 설계입니다.
 
+## 에이전시 보존 fixture 평가
+
+preflight와 분리된 오프라인 read-only 격리 fixture 은행을 실행합니다: `npm run eval:fixture -- --out ./evals/results/local --now 2026-08-10T00:00:00Z`.
+
 ## 라이센스
 
 MIT — LICENSE 참조.

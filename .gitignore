@@ -8,6 +8,7 @@
 .claude/
 node_modules/
 package-lock.json
+/evals/results/**
 .DS_Store
 
 # internal design docs (specs / plans / research / handoffs) — kept local, not published

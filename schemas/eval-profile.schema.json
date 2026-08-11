@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "eval-profile.schema.json",
+  "x-deep-loop-runtime": "evals/lib/validate.mjs#validateProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "driver", "model", "harness", "allowed_effects", "record"],
+  "properties": {
+    "id": {"enum": ["host-native", "deep-loop-kernel-minimal", "deep-loop-current-v1.15", "deep-loop-experimental"]},
+    "driver": {"enum": ["fixture", "agent"]},
+    "model": {"type": "string", "minLength": 1},
+    "harness": {"type": "string", "minLength": 1},
+    "allowed_effects": {"const": ["read-only"]},
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript", "observables"],
+      "properties": {
+        "transcript": {"type": "boolean"},
+        "observables": {"const": ["exit", "effects"]}
+      }
+    }
+  },
+  "allOf": [
+    {"if":{"properties":{"id":{"const":"deep-loop-current-v1.15"}},"required":["id"]},"then":{"properties":{"driver":{"const":"fixture"},"model":{"const":"none:fixture"},"harness":{"const":"none:fixture"},"record":{"properties":{"transcript":{"const":false}}}}}},
+    {"if":{"properties":{"id":{"const":"host-native"}},"required":["id"]},"then":{"properties":{"driver":{"const":"agent"},"model":{"const":"host"},"harness":{"const":"native"},"record":{"properties":{"transcript":{"const":true}}}}}},
+    {"if":{"properties":{"id":{"const":"deep-loop-kernel-minimal"}},"required":["id"]},"then":{"properties":{"driver":{"const":"agent"},"model":{"const":"none"},"harness":{"const":"deep-loop"},"record":{"properties":{"transcript":{"const":true}}}}}},
+    {"if":{"properties":{"id":{"const":"deep-loop-experimental"}},"required":["id"]},"then":{"properties":{"driver":{"const":"agent"},"model":{"const":"experimental"},"harness":{"const":"deep-loop"},"record":{"properties":{"transcript":{"const":true}}}}}}
+  ]
+}

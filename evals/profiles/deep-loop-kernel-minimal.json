@@ -1,0 +1,1 @@
+{"id":"deep-loop-kernel-minimal","driver":"agent","model":"none","harness":"deep-loop","allowed_effects":["read-only"],"record":{"transcript":true,"observables":["exit","effects"]}}
