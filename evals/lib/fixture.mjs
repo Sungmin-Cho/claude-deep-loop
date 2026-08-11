@@ -129,10 +129,10 @@ export function describeOutcomeReplay(task, { repoRoot = REPO_ROOT } = {}) {
   };
 }
 
-export function seedFixture({ now = NOW, goal = 'eval fixture' } = {}) {
+export function seedFixture({ now = NOW, goal = 'eval fixture', reviewer = 'deep-review' } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'deep-loop-eval-')));
   const review = JSON.stringify({
-    points: ['implementation'], reviewer: 'deep-review', mode: 'cross-model', flags: [],
+    points: ['implementation'], reviewer, mode: 'cross-model', flags: [],
     converge: true, max_review_rounds: 5, require_human_ack: false,
   });
   const proc = spawnSync(process.execPath, [

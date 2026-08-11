@@ -103,7 +103,10 @@ function rejectedRound(context, workstream, round) {
 }
 
 function setupContext(task, now) {
-  const seeded = seedFixture({ now, goal: `eval:${task.id}` });
+  // Kernel fixtures must be host-neutral: review dispatch is exercised as a
+  // subagent-checker path, so a clean CI checkout does not need deep-review's
+  // project marker or plugin cache merely to run the deterministic scenario.
+  const seeded = seedFixture({ now, goal: `eval:${task.id}`, reviewer: 'subagent-checker' });
   return { ...seeded, owner: seeded.runId, generation: 1, priorOwner: seeded.runId };
 }
 
