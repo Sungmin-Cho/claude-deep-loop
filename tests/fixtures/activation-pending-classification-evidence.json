@@ -2494,9 +2494,9 @@
           ],
           "coordinates": [
             "scripts/hooks-impl/drive-headless.mjs:44",
-            "scripts/lib/headless-host.mjs:2151",
-            "scripts/lib/headless-host.mjs:2103",
-            "scripts/lib/headless-host.mjs:1499",
+            "scripts/lib/headless-host.mjs:2164",
+            "scripts/lib/headless-host.mjs:2116",
+            "scripts/lib/headless-host.mjs:1511",
             "scripts/lib/review.mjs:247"
           ]
         },
@@ -2512,9 +2512,9 @@
           ],
           "coordinates": [
             "scripts/hooks-impl/drive-headless.mjs:44",
-            "scripts/lib/headless-host.mjs:2151",
-            "scripts/lib/headless-host.mjs:2103",
-            "scripts/lib/headless-host.mjs:1499",
+            "scripts/lib/headless-host.mjs:2164",
+            "scripts/lib/headless-host.mjs:2116",
+            "scripts/lib/headless-host.mjs:1511",
             "scripts/lib/review.mjs:247"
           ]
         }
@@ -3131,9 +3131,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2151",
-            "scripts/lib/headless-host.mjs:2103",
-            "scripts/lib/headless-host.mjs:1499",
+            "scripts/lib/headless-host.mjs:2164",
+            "scripts/lib/headless-host.mjs:2116",
+            "scripts/lib/headless-host.mjs:1511",
             "scripts/lib/review.mjs:247"
           ]
         },
@@ -3147,9 +3147,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2151",
-            "scripts/lib/headless-host.mjs:2103",
-            "scripts/lib/headless-host.mjs:1499",
+            "scripts/lib/headless-host.mjs:2164",
+            "scripts/lib/headless-host.mjs:2116",
+            "scripts/lib/headless-host.mjs:1511",
             "scripts/lib/review.mjs:247"
           ]
         }
@@ -3171,8 +3171,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2103",
-            "scripts/lib/headless-host.mjs:1499",
+            "scripts/lib/headless-host.mjs:2116",
+            "scripts/lib/headless-host.mjs:1511",
             "scripts/lib/review.mjs:247"
           ]
         },
@@ -3185,8 +3185,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2103",
-            "scripts/lib/headless-host.mjs:1499",
+            "scripts/lib/headless-host.mjs:2116",
+            "scripts/lib/headless-host.mjs:1511",
             "scripts/lib/review.mjs:247"
           ]
         }
@@ -4835,7 +4835,7 @@
             "preflight-receipt-journal.mjs#listPreflightUsageReceipts"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:432"
+            "scripts/lib/preflight-receipt-journal.mjs:476"
           ]
         }
       ]
@@ -4853,7 +4853,7 @@
             "preflight-receipt-journal.mjs#listProcessUsageReceipts"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:488"
+            "scripts/lib/preflight-receipt-journal.mjs:532"
           ]
         }
       ]
@@ -4889,7 +4889,7 @@
             "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:348"
+            "scripts/lib/preflight-receipt-journal.mjs:379"
           ]
         }
       ]
@@ -4907,7 +4907,7 @@
             "preflight-receipt-journal.mjs#readPreflightUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:239"
+            "scripts/lib/preflight-receipt-journal.mjs:270"
           ]
         }
       ]
@@ -4925,7 +4925,7 @@
             "preflight-receipt-journal.mjs#readProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:306"
+            "scripts/lib/preflight-receipt-journal.mjs:337"
           ]
         }
       ]
@@ -4943,7 +4943,7 @@
             "preflight-receipt-journal.mjs#removeProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:561"
+            "scripts/lib/preflight-receipt-journal.mjs:609"
           ]
         }
       ]
@@ -4997,7 +4997,7 @@
             "preflight-receipt-journal.mjs#writePreflightUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:264"
+            "scripts/lib/preflight-receipt-journal.mjs:295"
           ]
         }
       ]
@@ -5015,7 +5015,7 @@
             "preflight-receipt-journal.mjs#writeProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:389"
+            "scripts/lib/preflight-receipt-journal.mjs:433"
           ]
         }
       ]

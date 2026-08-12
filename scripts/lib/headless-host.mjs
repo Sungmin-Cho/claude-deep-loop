@@ -1243,6 +1243,10 @@ function driveIndependentChecker({
   } catch {
     imported = { ok: false, reason: 'checker-import-failed' };
   }
+  const importDiagnostic = closedCheckerImportDiagnostic(
+    imported?.import_diagnostic,
+    checkerResult.finalMessage,
+  );
   const importProof = captureImportedCheckerProof(projectRoot, runId, {
     checkerEpisodeId: pending.id,
     attemptId: claimed.attemptId,
@@ -1262,6 +1266,7 @@ function driveIndependentChecker({
       markCheckerRecoveryFn({
         receipt: checkerResult.usageReceipt,
         descriptor: checkerUsageReceiptDescriptor,
+        importDiagnostic,
       });
     } catch {
       return {
@@ -1280,6 +1285,7 @@ function driveIndependentChecker({
       action: 'checker-import-unconfirmed',
       reason: 'checker-import-proof-lock-busy',
       import_reason: imported?.reason || 'checker-import-unconfirmed',
+      import_diagnostic: importDiagnostic,
       checkerEpisodeId: pending.id,
       attemptId: claimed.attemptId,
       continuation: false,
@@ -1292,6 +1298,7 @@ function driveIndependentChecker({
         markCheckerRecoveryFn({
           receipt: checkerResult.usageReceipt,
           descriptor: checkerUsageReceiptDescriptor,
+          importDiagnostic,
         });
       } catch {
         return {
@@ -1310,6 +1317,7 @@ function driveIndependentChecker({
       ok: false,
       action: 'checker-import-proof-invalid',
       reason: 'checker-import-proof-invalid',
+      import_diagnostic: importDiagnostic,
       checkerEpisodeId: pending.id,
       attemptId: claimed.attemptId,
       continuation: false,
@@ -1440,6 +1448,7 @@ function driveHeadlessRunLocked({
       if (recoveries.length > 1) throw new Error('PROCESS_ACCOUNTING_RECOVERY_AMBIGUOUS');
       if (recoveries.length === 1) {
         const item = recoveries[0];
+        const importDiagnostic = closedCheckerImportDiagnostic(item.importDiagnostic);
         const context = item.receipt.context;
         const checker = initialLoop.episodes?.find(episode => episode.id === context.checker_episode_id);
         if (item.receipt.process_kind !== 'checker'
@@ -1452,6 +1461,7 @@ function driveHeadlessRunLocked({
             ok: false,
             action: 'checker-import-proof-invalid',
             reason: 'checker-import-proof-invalid',
+            import_diagnostic: importDiagnostic,
           };
         }
         const recoveredBlock = checker.status === 'blocked'
@@ -1475,6 +1485,7 @@ function driveHeadlessRunLocked({
             ok: false,
             action: 'checker-import-unconfirmed',
             reason: 'checker-import-proof-lock-busy',
+            import_diagnostic: importDiagnostic,
             checkerEpisodeId: checker.id,
             attemptId: context.attempt_id,
             continuation: false,
@@ -1487,6 +1498,7 @@ function driveHeadlessRunLocked({
             ok: false,
             action: 'checker-import-proof-invalid',
             reason: 'checker-import-proof-invalid',
+            import_diagnostic: importDiagnostic,
             checkerEpisodeId: checker.id,
             attemptId: context.attempt_id,
             continuation: false,
@@ -1500,6 +1512,7 @@ function driveHeadlessRunLocked({
               episodeId: checker.id,
               attemptId: context.attempt_id,
               reason: 'checker-import-failed',
+              importDiagnostic,
               fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
             });
           }

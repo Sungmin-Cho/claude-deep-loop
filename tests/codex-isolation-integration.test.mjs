@@ -5,7 +5,6 @@ import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
-  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -49,7 +48,19 @@ const STATE_MODULE_URL = new URL('../scripts/lib/state.mjs', import.meta.url).hr
 const WAIT_WORD = new Int32Array(new SharedArrayBuffer(4));
 
 const sha256File = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+const sha256Bytes = bytes => createHash('sha256').update(bytes).digest('hex');
 const PROCESS_EXECUTABLE_SHA256 = sha256File(process.execPath);
+
+function importDiagnostic(secret = 'recovery-secret') {
+  const metadata = value => ({
+    sha256: sha256Bytes(Buffer.from(value)), byte_count: Buffer.byteLength(value), truncated: false,
+  });
+  return {
+    reason_code: 'import-nonzero-exit', import_phase: 'child-execution',
+    input: metadata(`${secret}-input`), stdout: metadata(`${secret}-stdout`),
+    stderr: metadata(`${secret}-stderr`),
+  };
+}
 
 function holdKernelLockUntilReleased(root, runId) {
   const markerDir = mkdtempSync(join(tmpdir(), 'dl-held-kernel-lock-'));
@@ -1548,12 +1559,15 @@ function assertCommittedImportLostAckReconcilesAndRoutes() {
     action: 'checker-import-unconfirmed',
     reason: 'checker-import-proof-lock-busy',
     import_reason: 'checker-import-timeout',
+    import_diagnostic: first.import_diagnostic,
     checkerEpisodeId: review.checkerId,
     attemptId,
     continuation: false,
     usage: { num_turns: 1, tokens: 36, input_tokens: 17, output_tokens: 19 },
     recorded: false,
   });
+  assert.equal(first.import_diagnostic.reason_code, 'import-diagnostic-invalid');
+  assert.equal(first.import_diagnostic.import_phase, 'import-adapter');
   assert.equal(existsSync(join(runDir(h.root, h.runId), '.headless-host.lock')), false);
   assert.equal(
     readdirSync(runDir(h.root, h.runId)).some(name => name.startsWith('.headless-host.lock.release-')),
@@ -1612,6 +1626,7 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
   const attemptId = 'attempt-task-2.8-lost-ack-no-proof';
   let heldLock = null;
   let first;
+  const diagnostic = importDiagnostic('RAW_IMPORT_SECRET_7f19');
   try {
     first = driveHeadlessRun({
       ...h.baseOptions,
@@ -1622,7 +1637,7 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
       checkerRunFn: options => runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker }),
       checkerImportFn: () => {
         heldLock = holdKernelLockUntilReleased(h.root, h.runId);
-        return { ok: false, reason: 'checker-import-exit-1' };
+        return { ok: false, reason: 'checker-import-failed', import_diagnostic: diagnostic };
       },
     });
   } finally {
@@ -1630,18 +1645,57 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
   }
   assert.equal(first.action, 'checker-import-unconfirmed', JSON.stringify(first));
   assert.equal(first.recorded, false);
+  assert.deepEqual(first.import_diagnostic, diagnostic);
   const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
   assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 1);
   const recoveryName = readdirSync(receiptDir).find(name => name.endsWith('-checker-unconfirmed.json'));
-  linkSync(
-    join(receiptDir, recoveryName),
+  const recovery = JSON.parse(readFileSync(join(receiptDir, recoveryName), 'utf8'));
+  assert.deepEqual(recovery.checker_import_diagnostic, diagnostic);
+  assert.equal(JSON.stringify(recovery).includes('RAW_IMPORT_SECRET_7f19'), false,
+    'raw secret is never journaled');
+  writeFileSync(
     join(receiptDir, recoveryName.replace('-checker-unconfirmed.json', '-checker.json')),
+    `${JSON.stringify(recovery.receipt)}\n`,
+    { mode: 0o600 },
   );
-  assert.equal(
-    readdirSync(receiptDir).filter(name => name.includes('checker')).length,
-    2,
-    'crash after marker link but before source unlink leaves two names for one immutable inode',
-  );
+  assert.equal(readdirSync(receiptDir).filter(name => name.includes('checker')).length, 2,
+    'crash after recovery publication but before source unlink leaves both exact records');
+  const invalidState = readState(h.root, h.runId).data;
+  invalidState.episodes.find(episode => episode.id === review.checkerId).status = 'approved';
+  writeState(h.root, h.runId, invalidState);
+  const costsBeforeInvalid = readLines(h.root, h.runId).filter(event => event.type === 'cost').length;
+  const invalid = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 18_250,
+    checkerRunFn: () => { throw new Error('invalid recovery proof must not respawn'); },
+  });
+  assert.equal(invalid.action, 'checker-import-proof-invalid');
+  assert.deepEqual(invalid.import_diagnostic, diagnostic);
+  assert.equal(invalid.recorded, false);
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'cost').length,
+    costsBeforeInvalid, 'invalid proof neither settles nor fabricates cost');
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'independent-review-blocked').length, 0);
+  assert.equal(readdirSync(receiptDir).filter(name => name.includes('checker')).length, 2,
+    'unreconcilable invalid proof retains recovery evidence');
+  const recoveryPath = join(receiptDir, recoveryName);
+  const recoveryBytes = readFileSync(recoveryPath);
+  const rawMutant = structuredClone(recovery);
+  rawMutant.checker_import_diagnostic.stderr.raw = 'RAW_RECOVERY_SECRET';
+  writeFileSync(recoveryPath, `${JSON.stringify(rawMutant)}\n`);
+  const rejectedRaw = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 18_275,
+  });
+  assert.equal(rejectedRaw.action, 'process-accounting-failed');
+  assert.equal(JSON.stringify(rejectedRaw).includes('RAW_RECOVERY_SECRET'), false);
+  assert.equal(JSON.stringify(readState(h.root, h.runId).data).includes('RAW_RECOVERY_SECRET'), false);
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'cost').length,
+    costsBeforeInvalid, 'malformed recovery metadata mutates no accounting');
+  writeFileSync(recoveryPath, recoveryBytes);
+  invalidState.episodes.find(episode => episode.id === review.checkerId).status = 'in_progress';
+  writeState(h.root, h.runId, invalidState);
   let checkerRetries = 0;
   const second = driveHeadlessRun({
     ...h.baseOptions,
@@ -1659,10 +1713,14 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
   assert.equal(readdirSync(receiptDir).filter(name => name.includes('checker')).length, 0);
   const state = readState(h.root, h.runId).data;
   assert.equal(state.status, 'paused');
-  assert.equal(state.episodes.find(episode => episode.id === review.checkerId).status, 'blocked');
+  const checker = state.episodes.find(episode => episode.id === review.checkerId);
+  assert.equal(checker.status, 'blocked');
+  assert.deepEqual(checker.checker_import_diagnostic, diagnostic);
   const events = readLines(h.root, h.runId);
   assert.equal(events.filter(event => event.type === 'review-outcome').length, 0);
   assert.equal(events.filter(event => event.type === 'independent-review-blocked').length, 1);
+  assert.deepEqual(events.find(event => event.type === 'independent-review-blocked')
+    .data.checker_import_diagnostic, diagnostic);
   assert.equal(events.filter(event => event.data?.process_kind === 'checker').length, 1);
   assert.deepEqual(
     events.filter(event => event.type === 'cost' && event.data.reported_turns === 1)

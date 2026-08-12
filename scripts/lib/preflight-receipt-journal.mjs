@@ -4,7 +4,6 @@ import {
   fstatSync,
   fsyncSync,
   lstatSync,
-  linkSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -18,6 +17,7 @@ import { makeCodexPreflightReceipt, makeCodexProcessReceipt } from './budget.mjs
 import { contentHash } from './envelope.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { runDir } from './state.mjs';
+import { validCheckerImportDiagnostic } from './schema.mjs';
 
 const RECEIPT_MAX_BYTES = 16 * 1024;
 const RECEIPT_MAX_FILES = 256;
@@ -236,6 +236,37 @@ function receiptBytes(receipt) {
   return Buffer.from(`${JSON.stringify(receipt)}\n`, 'utf8');
 }
 
+function checkerRecoveryEnvelope(receipt, importDiagnostic) {
+  if (!validCheckerImportDiagnostic(importDiagnostic)) throw new Error('recovery diagnostic invalid');
+  return {
+    schema_version: 1,
+    receipt,
+    checker_import_diagnostic: structuredClone(importDiagnostic),
+  };
+}
+
+function readCheckerRecoveryAt(descriptor, journalPath) {
+  const parent = trustedJournalDirectory(
+    join(runDir(descriptor.root, descriptor.runId), 'preflight', 'process-receipts'),
+    descriptor.root,
+    descriptor.runId,
+  );
+  let bytes;
+  try { bytes = readTrustedReceiptBytes(journalPath, parent); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  const raw = JSON.parse(bytes.toString('utf8'));
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)
+    || Object.keys(raw).join(',') !== 'schema_version,receipt,checker_import_diagnostic'
+    || raw.schema_version !== 1) throw new Error('recovery envelope invalid');
+  const receipt = exactProcessReceipt(descriptor, raw.receipt);
+  const envelope = checkerRecoveryEnvelope(receipt, raw.checker_import_diagnostic);
+  if (!bytes.equals(receiptBytes(envelope))) throw new Error('recovery envelope bytes invalid');
+  return envelope;
+}
+
 export function readPreflightUsageReceipt(value) {
   let descriptor;
   try {
@@ -345,20 +376,22 @@ function readProcessUsageReceiptAt(descriptor, journalPath) {
   return receipt;
 }
 
-export function markCheckerImportUnconfirmed({ receipt, descriptor } = {}) {
+export function markCheckerImportUnconfirmed({ receipt, descriptor, importDiagnostic } = {}) {
   try {
     const exactDescriptor = validateProcessUsageReceiptDescriptor(descriptor);
     const recoveryPath = expectedCheckerRecoveryJournalPath(exactDescriptor);
     const stored = readProcessUsageReceipt(exactDescriptor);
-    const recovered = readProcessUsageReceiptAt(exactDescriptor, recoveryPath);
+    const expected = checkerRecoveryEnvelope(receipt, importDiagnostic);
+    const recovered = readCheckerRecoveryAt(exactDescriptor, recoveryPath);
     if (recovered != null) {
-      if (JSON.stringify(recovered) !== JSON.stringify(receipt)
+      if (JSON.stringify(recovered) !== JSON.stringify(expected)
         || (stored != null && JSON.stringify(stored) !== JSON.stringify(receipt))) {
         throw new Error('recovery receipt conflict');
       }
       if (stored != null) unlinkSync(exactDescriptor.journalPath);
       return {
-        receipt: recovered,
+        receipt: recovered.receipt,
+        importDiagnostic: recovered.checker_import_diagnostic,
         descriptor: exactDescriptor,
         journalPath: recoveryPath,
         recovery: 'checker-import-unconfirmed',
@@ -367,16 +400,27 @@ export function markCheckerImportUnconfirmed({ receipt, descriptor } = {}) {
     if (stored == null || JSON.stringify(stored) !== JSON.stringify(receipt)) {
       throw new Error('source receipt missing or changed');
     }
-    // A hard link is an exclusive, atomic marker creation over the already
-    // validated immutable receipt inode. It cannot overwrite attacker bytes.
-    linkSync(exactDescriptor.journalPath, recoveryPath);
-    const linked = readProcessUsageReceiptAt(exactDescriptor, recoveryPath);
-    if (linked == null || JSON.stringify(linked) !== JSON.stringify(receipt)) {
+    let fd;
+    try {
+      fd = openSync(recoveryPath, 'wx', 0o600);
+      writeFileSync(fd, receiptBytes(expected));
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+    } catch (error) {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch { /* preserve original failure */ }
+      }
+      throw error;
+    }
+    const linked = readCheckerRecoveryAt(exactDescriptor, recoveryPath);
+    if (linked == null || JSON.stringify(linked) !== JSON.stringify(expected)) {
       throw new Error('recovery receipt validation failed');
     }
     unlinkSync(exactDescriptor.journalPath);
     return {
-      receipt: linked,
+      receipt: linked.receipt,
+      importDiagnostic: linked.checker_import_diagnostic,
       descriptor: exactDescriptor,
       journalPath: recoveryPath,
       recovery: 'checker-import-unconfirmed',
@@ -537,10 +581,11 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
         root: canonicalRoot,
         runId,
         processKind,
-        context: raw?.context,
+        context: recoveryMatch ? raw?.receipt?.context : raw?.context,
       });
-      const receipt = exactProcessReceipt(descriptor, raw);
-      if (!bytes.equals(receiptBytes(receipt))) throw new Error('receipt bytes invalid');
+      const recoveryEnvelope = recoveryMatch ? readCheckerRecoveryAt(descriptor, journalPath) : null;
+      const receipt = recoveryMatch ? recoveryEnvelope.receipt : exactProcessReceipt(descriptor, raw);
+      if (!recoveryMatch && !bytes.equals(receiptBytes(receipt))) throw new Error('receipt bytes invalid');
       if (recoveryMatch && existsSync(descriptorPath)) {
         const duplicate = readProcessUsageReceiptAt(descriptor, descriptorPath);
         if (JSON.stringify(duplicate) !== JSON.stringify(receipt)) throw new Error('recovery duplicate conflict');
@@ -549,7 +594,10 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
         receipt,
         descriptor,
         journalPath,
-        ...(recoveryMatch ? { recovery: 'checker-import-unconfirmed' } : {}),
+        ...(recoveryMatch ? {
+          recovery: 'checker-import-unconfirmed',
+          importDiagnostic: recoveryEnvelope.checker_import_diagnostic,
+        } : {}),
       });
     }
     return output.sort((left, right) => left.journalPath.localeCompare(right.journalPath));
@@ -558,7 +606,7 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
   }
 }
 
-export function removeProcessUsageReceipt({ receipt, descriptor = null, journalPath = null, recovery = null } = {}) {
+export function removeProcessUsageReceipt({ receipt, descriptor = null, journalPath = null, recovery = null, importDiagnostic = null } = {}) {
   try {
     if (descriptor != null && typeof descriptor === 'object' && !Array.isArray(descriptor)
       && Object.hasOwn(descriptor, 'smokeKind')) {
@@ -582,9 +630,17 @@ export function removeProcessUsageReceipt({ receipt, descriptor = null, journalP
       || (journalPath != null && expectedPath !== journalPath)) {
       throw new Error('process descriptor required');
     }
-    const stored = readProcessUsageReceiptAt(exactDescriptor, expectedPath);
+    const recoveryEnvelope = recovery === 'checker-import-unconfirmed'
+      ? readCheckerRecoveryAt(exactDescriptor, expectedPath) : null;
+    const stored = recovery === 'checker-import-unconfirmed'
+      ? recoveryEnvelope?.receipt ?? null
+      : readProcessUsageReceiptAt(exactDescriptor, expectedPath);
     if (stored == null) return { ok: true, removed: false };
-    if (JSON.stringify(stored) !== JSON.stringify(receipt)) throw new Error('receipt changed');
+    if (JSON.stringify(stored) !== JSON.stringify(receipt)
+      || (recoveryEnvelope != null && importDiagnostic != null
+        && JSON.stringify(recoveryEnvelope.checker_import_diagnostic) !== JSON.stringify(importDiagnostic))) {
+      throw new Error('receipt changed');
+    }
     if (recovery === 'checker-import-unconfirmed') {
       const duplicate = readProcessUsageReceipt(exactDescriptor);
       if (duplicate != null) {
@@ -596,7 +652,9 @@ export function removeProcessUsageReceipt({ receipt, descriptor = null, journalP
       }
     }
     rmSync(expectedPath);
-    if (readProcessUsageReceiptAt(exactDescriptor, expectedPath) != null) throw new Error('receipt remained');
+    if ((recovery === 'checker-import-unconfirmed'
+      ? readCheckerRecoveryAt(exactDescriptor, expectedPath)
+      : readProcessUsageReceiptAt(exactDescriptor, expectedPath)) != null) throw new Error('receipt remained');
     return { ok: true, removed: true };
   } catch (error) {
     throw new Error('PROCESS_USAGE_RECEIPT_CLEANUP_FAILED', { cause: error });
