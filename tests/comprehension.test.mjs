@@ -14,6 +14,7 @@ import { verifyLog } from '../scripts/lib/integrity.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { recordEpisode } from '../scripts/lib/episode.mjs';
 import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';
+import { acquireLease, activateLease, releaseLease } from '../scripts/lib/lease.mjs';
 
 const COMPREHENSION_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
 function runComprehensionCli(root, runId, args) {
@@ -389,4 +390,51 @@ test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () 
   writeState(root, runId, data);
   assert.throws(() => recordReviewed(root, runId, 'ep-x', 'src'), /RUN_TERMINAL: recordReviewed/);
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed || 0, 0);
+});
+
+test('SLICE-006 recordReviewed throws on activation pending without state or counter mutation, then succeeds after activation', () => {
+  const { root, runId, fence } = freshRun();
+  const episodeId = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    expectedArtifacts: [], fence,
+  }).id;
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+  const attemptId = 'SLICE006REVIEWATTEMPT';
+  const owner = 'SLICE006REVIEWOWNER';
+  const acquired = acquireLease(root, runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  const dir = runDir(root, runId);
+  const before = {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    events: readFileSync(join(dir, 'event-log.jsonl')),
+  };
+
+  assert.throws(
+    () => recordReviewed(root, runId, episodeId, 'manual'),
+    /ACTIVATION_PENDING: recordReviewed/,
+  );
+  assert.deepEqual({
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    events: readFileSync(join(dir, 'event-log.jsonl')),
+  }, before);
+  let data = readState(root, runId).data;
+  assert.equal(data.comprehension.episodes_human_reviewed || 0, 0);
+  assert.equal(data.episodes.find(episode => episode.id === episodeId).human_reviewed, undefined);
+
+  assert.deepEqual(activateLease(root, runId, {
+    owner, generation: acquired.generation, runtime: 'claude', attemptId,
+    activationToken: 'SLICE006REVIEWTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
+  }), { ok: true, reason: 'activated' });
+  recordReviewed(root, runId, episodeId, 'manual');
+  data = readState(root, runId).data;
+  assert.equal(data.comprehension.episodes_human_reviewed, 1);
+  assert.equal(data.episodes.find(episode => episode.id === episodeId).human_reviewed, true);
 });

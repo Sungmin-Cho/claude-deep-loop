@@ -318,6 +318,120 @@ export function materializeImportedReview(root, runId, input, binding, { now } =
 
 const sameArtifacts = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
+const recoveredProofInvalid = () => ({ ok: false, reason: 'checker-import-proof-invalid' });
+
+export function locateCapturedImportedReviewArtifact(snapshot, {
+  runId,
+  checkerEpisodeId,
+  attemptId,
+} = {}) {
+  if (!Array.isArray(snapshot?.logLines) || typeof runId !== 'string'
+    || typeof checkerEpisodeId !== 'string' || !REVIEW_ATTEMPT_ID.test(attemptId || '')) {
+    return recoveredProofInvalid();
+  }
+  const outcomes = snapshot.logLines.filter(event => event?.type === 'review-outcome'
+    && event?.data?.episodeId === checkerEpisodeId
+    && event.data.attempt_id === attemptId);
+  if (outcomes.length !== 1) return recoveredProofInvalid();
+  const { report, report_sha256: sha } = outcomes[0].data || {};
+  if (!SHA256.test(sha || '')
+    || report !== `.deep-loop/runs/${runId}/reviews/${sha}.json`) return recoveredProofInvalid();
+  return { ok: true, reportRel: `reviews/${sha}.json` };
+}
+
+export function verifyCapturedImportedReviewProof(snapshot, {
+  runId,
+  checkerEpisodeId,
+  attemptId,
+  claim,
+} = {}) {
+  try {
+    if (snapshot == null || typeof snapshot !== 'object' || Array.isArray(snapshot)
+      || snapshot.data == null || typeof snapshot.data !== 'object' || Array.isArray(snapshot.data)
+      || !Array.isArray(snapshot.logLines)
+      || snapshot.artifacts == null || typeof snapshot.artifacts !== 'object' || Array.isArray(snapshot.artifacts)
+      || typeof runId !== 'string' || runId.length === 0
+      || typeof checkerEpisodeId !== 'string' || checkerEpisodeId.length === 0
+      || !REVIEW_ATTEMPT_ID.test(attemptId || '')
+      || claim == null || typeof claim !== 'object' || Array.isArray(claim)) return recoveredProofInvalid();
+
+    const checker = snapshot.data.episodes?.find(episode => episode?.id === checkerEpisodeId);
+    if (!isProofCapableChecker(checker)
+      || !['approved', 'rejected'].includes(checker.status)
+      || checker.review_source !== 'imported-stdin'
+      || checker.attempt_id !== attemptId
+      || JSON.stringify(checker.review_claim) !== JSON.stringify(claim)
+      || claim.run_id !== runId
+      || claim.checker_episode_id !== checkerEpisodeId
+      || claim.attempt_id !== attemptId
+      || claim.reviewer_id !== checker.plugin
+      || claim.target_maker !== checker.target_maker) return recoveredProofInvalid();
+
+    const outcomes = snapshot.logLines.filter(event => event?.type === 'review-outcome'
+      && event?.data?.episodeId === checkerEpisodeId
+      && event.data.attempt_id === attemptId);
+    if (outcomes.length !== 1) return recoveredProofInvalid();
+    const data = outcomes[0].data;
+    const eventKeys = [
+      'episodeId', 'verdict', 'workstream_id', 'point', 'target_maker', 'reviewer_id',
+      'review_source', 'attempt_id', 'report', 'report_sha256',
+    ];
+    if (!exactKeys(data, eventKeys)
+      || !VERDICTS.has(data.verdict)
+      || data.workstream_id !== claim.workstream_id
+      || data.point !== claim.point
+      || data.target_maker !== claim.target_maker
+      || data.reviewer_id !== claim.reviewer_id
+      || data.review_source !== 'imported-stdin'
+      || !SHA256.test(data.report_sha256 || '')) return recoveredProofInvalid();
+    const terminal = data.verdict === 'REQUEST_CHANGES' ? 'rejected' : 'approved';
+    if (checker.status !== terminal) return recoveredProofInvalid();
+
+    const reportRel = `reviews/${data.report_sha256}.json`;
+    const expectedReport = `.deep-loop/runs/${runId}/${reportRel}`;
+    const artifact = snapshot.artifacts[reportRel];
+    if (data.report !== expectedReport
+      || artifact?.state !== 'present'
+      || !Buffer.isBuffer(artifact.bytes)
+      || artifact.sha256 !== data.report_sha256
+      || sha256Bytes(artifact.bytes) !== data.report_sha256) return recoveredProofInvalid();
+
+    let object;
+    try { object = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(artifact.bytes)); }
+    catch { return recoveredProofInvalid(); }
+    const opened = unwrap(object, { producer: 'deep-loop', artifact_kind: 'review-report' });
+    const binding = opened?.envelope?.provenance?.review_binding;
+    const expectedBinding = {
+      reviewer_id: claim.reviewer_id,
+      checker_episode_id: checkerEpisodeId,
+      target_maker: claim.target_maker,
+      attempt_id: attemptId,
+      artifacts: canonicalArtifacts(claim.artifacts),
+    };
+    if (!opened || opened.schema_version !== '1.0'
+      || opened.envelope.schema?.version !== '1.0'
+      || opened.envelope.run_id !== runId
+      || !sameArtifacts(binding, expectedBinding)
+      || !sameArtifacts(opened.envelope.provenance?.source_artifacts, expectedBinding.artifacts.map(item => item.path))
+      || opened.payload == null || typeof opened.payload !== 'object' || Array.isArray(opened.payload)
+      || !exactKeys(opened.payload, ['verdict', 'report_body'])
+      || opened.payload.verdict !== data.verdict
+      || typeof opened.payload.report_body !== 'string'
+      || Buffer.byteLength(opened.payload.report_body, 'utf8') > REVIEW_REPORT_BODY_MAX_BYTES) {
+      return recoveredProofInvalid();
+    }
+    return {
+      ok: true,
+      verdict: data.verdict,
+      terminal,
+      report: data.report,
+      report_sha256: data.report_sha256,
+    };
+  } catch {
+    return recoveredProofInvalid();
+  }
+}
+
 export function verifyImportedEnvelope(root, runId, evidence, lockedBinding) {
   const { canonicalRoot, reviews } = requireReviewDirectory(root, runId);
   if (!SHA256.test(evidence.reportSha256 || '')) throw new Error('REVIEW_REPORT_HASH_MISMATCH: invalid expected hash');

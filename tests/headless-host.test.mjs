@@ -7,7 +7,8 @@ import { driveHeadless as driveHeadlessImpl, driveHeadlessRun as driveHeadlessRu
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
+import { advanceHandoffPhase } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
@@ -196,6 +197,7 @@ test('cache miss records two preflight turns before one post-CAS maker turn', ()
       assert.equal(entry.env.DEEP_LOOP_OWNER, childRunId);
       assert.equal(entry.env.DEEP_LOOP_GENERATION, '2');
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'codex',
@@ -234,6 +236,7 @@ test('cache hit has no smoke usage to replay and still runs the maker exactly on
       makerCalls += 1;
       assert.equal(entry.bin, executable.canonical_path);
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'codex',
@@ -354,6 +357,7 @@ test('native Windows Codex handoff preserves its revalidated descriptor through 
         DEEP_LOOP_GENERATION: '2',
       });
       const acquired = acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'codex',
@@ -423,6 +427,7 @@ test('receipt-settled preflight is accounted through the injected kernel settler
     },
     spawnFn: () => {
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 2_000,
       });
       return { ok: true, usage: measuredUsage(30) };
@@ -447,6 +452,7 @@ test('terminal Codex maker usage is settled once after the acquired child comple
     preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
     spawnFn: () => {
       const acquired = acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 2_000,
       });
       assert.equal(acquired.ok, true);
@@ -487,6 +493,7 @@ test('terminal Codex maker settlement failure is explicit and never reported as 
     settleTerminalCostFn: () => { throw new Error('LOG_TAMPERED: injected terminal settlement failure'); },
     spawnFn: () => {
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 2_000,
       });
       finishRun(root, runId, {
@@ -999,6 +1006,7 @@ test('exact child acquisition remains proof after that child emits its next hand
     preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
     spawnFn: () => {
       const acquired = acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'codex',
@@ -1325,6 +1333,7 @@ test('Claude uses the same core without Codex auth/preflight and keeps acquisiti
       makerCalls += 1;
       assert.equal(entry.bin, 'claude');
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'claude',
@@ -1847,6 +1856,7 @@ test('a concurrent host entry is serialized before Codex preflight and cannot do
     spawnFn: () => {
       makerCalls += 1;
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'codex',
@@ -1890,6 +1900,7 @@ test('an owner-missing host lock is reclaimed after the short metadata crash gra
     spawnFn: () => {
       makerCalls += 1;
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'claude',
@@ -1922,6 +1933,7 @@ test('a malformed-owner host lock is reclaimed after the short metadata crash gr
     spawnFn: () => {
       makerCalls += 1;
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'claude',
@@ -1959,6 +1971,7 @@ test('a dead-PID host lock is reclaimed after the short metadata crash grace', (
     spawnFn: () => {
       makerCalls += 1;
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'claude',
@@ -1996,6 +2009,7 @@ test('a live-PID host lock is reclaimed after the timeout-derived hard stale bou
     spawnFn: () => {
       makerCalls += 1;
       acquireLease(root, runId, {
+        attemptId: 'MIGRATEDATTEMPT01',
         owner: childRunId,
         expectGeneration: 1,
         runtime: 'claude',

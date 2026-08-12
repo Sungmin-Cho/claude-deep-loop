@@ -121,15 +121,30 @@ exact child identity만 사용한다. `<attempt_id>`는 **호출 전에** 자기
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-**`proceed:true` 뒤에만** 승격한다 — 모든 public 획득 경로가 같은 fence를 통과한다.
-`ok:true`인데 `proceed:false`(`already-owned`)면 승격하지 않고 멈춘다. `resume-command`가
-`Status: consumed`를 내면 그 예약은 이미 소비된 것이므로 진입하지 않는다.
+**`proceed:true` 직후, 승격 전에** execution child는 다음 stored activation을 실행한다.
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease activate --stored-token --owner <child_run_id> --generation <new_generation> --runtime <claude|codex> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+helper가 high-entropy token을 caller-private run+attempt binding에 원자 영속화한다. 스킬은
+state-root/SystemRoot/PATH 환경 변수를 덮어쓰지 않고 raw token/path를 descriptor/handoff/env/receipt/stdout/log로
+내보내지 않는다. `proceed:true` 뒤 `activated` 또는 같은 stored token의 `already-activated`만 성공이다.
+`ACTIVATION_SECRET_ROOT_INVALID|UNSAFE|MALFORMED|BINDING_MISMATCH|IO_UNAVAILABLE` 및 다른
+결과는 profile/continue 없이 fail closed한다. 응답 유실은 같은 attempt와 같은 stored token으로
+재시도하고 replacement token·자동 cleanup·TTL을 금지한다.
+
+**`proceed:true` 뒤 activation 성공한 경우에만** 승격한다 — 모든 public 획득 경로가 같은 fence를 통과한다.
+`ok:true`인데 `proceed:false`(`already-owned`)면 승격하지 않는다. `Status: consumed`에서
+같은 attempt+owner+generation stored binding을 이미 보유한 execution child만 activate를 재호출해
+`already-activated`를 확인할 수 있고, 보유 증거가 없으면 멈춘다.
 
 recovery reservation이면 generic acquisition을 시도하지 않는다.
 `resume-command`가 출력한 `recovery acquire --capsule ...` 또는
 `root recovery acquire --capsule ...` 한 줄을 그대로 실행한다. 자세한
 root digest/epoch와 capsule 검증은 `/deep-loop-resume`의 distinct recovery
 branches를 따른다.
+두 recovery route의 `proceed:true`도 동일한 stored activation 뒤에만 승격한다.
 
 Worktree entry는 acquire 뒤 `/deep-loop-continue`가 새
 `action.workstream_id` 기준으로 수행한다.

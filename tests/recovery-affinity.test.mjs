@@ -291,8 +291,14 @@ function commandArgs(invocation) {
   ));
 }
 
-function executeReturnedCommand(invocation) {
-  return spawnSync(process.execPath, [CLI, ...commandArgs(invocation)], {
+function executeReturnedCommand(invocation, expectedAttemptId) {
+  const args = commandArgs(invocation);
+  const attemptIndexes = args.flatMap((arg, index) => arg === '--attempt-id' ? [index] : []);
+  assert.deepEqual(attemptIndexes, [args.length - 2],
+    'returned recovery command must carry exactly one final attempt id');
+  assert.equal(args[attemptIndexes[0] + 1], expectedAttemptId,
+    'returned recovery command must consume its durable operation id');
+  return spawnSync(process.execPath, [CLI, ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
   });
@@ -588,6 +594,7 @@ test('affinity exact child executes the returned fresh-process recovery command;
     '--owner', recovery.child_run_id,
     '--generation', '1',
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT01',
   ]);
   assert.equal(generic.status, 3, generic.stderr);
   assert.match(generic.stdout + generic.stderr, /RECOVERY_ACQUIRE_REQUIRED/);
@@ -597,7 +604,8 @@ test('affinity exact child executes the returned fresh-process recovery command;
   assert.equal(resumed.stdout.split('\n')[0], recovery.resume_command);
   assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
 
-  const acquired = executeReturnedCommand(recovery.resume_command);
+  const acquired = executeReturnedCommand(recovery.resume_command,
+    readState(fixture.root, fixture.runId).data.session_chain.lease.recovery_discriminator);
   assert.equal(acquired.status, 0, acquired.stderr);
   const after = readState(fixture.root, fixture.runId).data;
   assert.equal(after.status, 'running');
@@ -659,6 +667,7 @@ test('generic acquire fences an affinity recovery identified by the exact reserv
   writeState(fixture.root, fixture.runId, state);
   const before = durableBytes(fixture.root, fixture.runId);
   const acquired = acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: childRunId,
     expectGeneration: 1,
     runtime: 'claude',
@@ -677,6 +686,7 @@ test('resume-command rejects a malformed recovery topology without falling throu
     now: NOW + 2_000,
   });
   assert.equal(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: recovery.child_run_id,
     expectGeneration: 1,
     runtime: 'claude',
@@ -708,6 +718,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
   });
   const budgetBefore = durableBytes(budgetFixture.root, budgetFixture.runId);
   const blocked = acquireRecovery(budgetFixture.root, budgetFixture.runId, {
+    attemptId: 'AFFINITYBUDGETBLOCK01',
     capsuleRel: budgetRecovery.recovery_rel,
     owner: budgetRecovery.child_run_id,
     expectGeneration: 1,
@@ -733,6 +744,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
     now: NOW + (2 * 86_400_000),
   }), { ok: true, status: 'paused' });
   const budgetAcquired = acquireRecovery(budgetFixture.root, budgetFixture.runId, {
+    attemptId: 'AFFINITYBUDGETBLOCK01',
     capsuleRel: budgetRecovery.recovery_rel,
     owner: budgetRecovery.child_run_id,
     expectGeneration: 1,
@@ -761,6 +773,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
   writeFileSync(capsulePath, `${readFileSync(capsulePath, 'utf8')}\n`);
   const stateBeforeMismatch = durableBytes(tamperFixture.root, tamperFixture.runId);
   assert.throws(() => acquireRecovery(tamperFixture.root, tamperFixture.runId, {
+    attemptId: 'AFFINITYTAMPER0001',
     capsuleRel: tamperRecovery.recovery_rel,
     owner: tamperRecovery.child_run_id,
     expectGeneration: 1,
@@ -781,6 +794,7 @@ test('affinity acquire breaker failure preserves the reservation through reset a
   tripBreaker(fixture.root, fixture.runId, 'operator-latched-breaker');
   const before = durableBytes(fixture.root, fixture.runId);
   assert.deepEqual(acquireRecovery(fixture.root, fixture.runId, {
+    attemptId: 'AFFINITYBREAKER001',
     capsuleRel: recovery.recovery_rel,
     owner: recovery.child_run_id,
     expectGeneration: 1,
@@ -800,6 +814,7 @@ test('affinity acquire breaker failure preserves the reservation through reset a
     fence: { owner: fixture.runId, generation: 1, intent: 'breaker-reset' },
   }), { ok: true, status: 'paused' });
   const breakerAcquired = acquireRecovery(fixture.root, fixture.runId, {
+    attemptId: 'AFFINITYBREAKER001',
     capsuleRel: recovery.recovery_rel,
     owner: recovery.child_run_id,
     expectGeneration: 1,
@@ -1018,6 +1033,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
 
     const arbitraryBefore = durableBytes(fixture.root, fixture.runId);
     const arbitrary = acquireLease(fixture.root, fixture.runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: 'ARBITRARY-OWNER',
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
@@ -1031,6 +1047,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
     writeState(fixture.root, fixture.runId, budgetState);
     const reservedBefore = durableBytes(fixture.root, fixture.runId);
     const blocked = acquireLease(fixture.root, fixture.runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: result.child_run_id,
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
@@ -1070,6 +1087,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
     }, topologyBeforeExtension);
 
     const acquired = acquireLease(fixture.root, fixture.runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: result.child_run_id,
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
@@ -1146,7 +1164,7 @@ test('boundary recovery returned command acquires the exact child in a fresh pro
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.equal(resumed.stdout.split('\n')[0], recovery.resume_command);
   assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
-  const acquired = executeReturnedCommand(recovery.resume_command);
+  const acquired = executeReturnedCommand(recovery.resume_command, recovery.operation_id);
   assert.equal(acquired.status, 0, acquired.stderr);
   const after = readState(fixture.root, fixture.runId).data;
   assert.equal(after.session_chain.lease.owner_run_id, recovery.child_run_id);
@@ -1164,6 +1182,7 @@ test('boundary acquire breaker failure preserves exact topology through reset an
   tripBreaker(fixture.root, fixture.runId, 'operator-latched-breaker');
   const before = durableBytes(fixture.root, fixture.runId);
   assert.deepEqual(acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: recovery.child_run_id,
     expectGeneration: fixture.expect.generation,
     runtime: 'claude',
@@ -1182,6 +1201,7 @@ test('boundary acquire breaker failure preserves exact topology through reset an
     fence: { ...fixture.expect, intent: 'breaker-reset' },
   }), { ok: true, status: 'paused' });
   const boundaryAcquired = acquireLease(fixture.root, fixture.runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: recovery.child_run_id,
     expectGeneration: fixture.expect.generation,
     runtime: 'claude',
@@ -1248,6 +1268,7 @@ test('affinity recovery acquire rejects stale public --now after real wallclock 
     '--owner', recovery.child_run_id,
     '--generation', '1',
     '--runtime', 'claude',
+    '--attempt-id', recovery.operation_id ?? readState(fixture.root, fixture.runId).data.session_chain.lease.recovery_discriminator,
   ], staleNow);
   assert.equal(acquired.status, 1, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {
@@ -1281,6 +1302,7 @@ test('boundary lease acquire rejects stale public --now after real wallclock exp
     '--owner', recovery.child_run_id,
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT02',
   ], staleNow);
   assert.equal(acquired.status, 0, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {
@@ -1312,7 +1334,8 @@ test('affinity recovery acquire samples production time after lock contention cr
   const acquired = await whileRunLockIsHeld(
     fixture.root,
     fixture.runId,
-    () => executeReturnedCommand(recovery.resume_command),
+    () => executeReturnedCommand(recovery.resume_command,
+      readState(fixture.root, fixture.runId).data.session_chain.lease.recovery_discriminator),
   );
   assert.equal(acquired.status, 1, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {
@@ -1343,7 +1366,7 @@ test('boundary recovery acquire samples production time after lock contention cr
   const acquired = await whileRunLockIsHeld(
     fixture.root,
     fixture.runId,
-    () => executeReturnedCommand(recovery.resume_command),
+    () => executeReturnedCommand(recovery.resume_command, recovery.operation_id),
   );
   assert.equal(acquired.status, 0, acquired.stderr);
   assert.deepEqual(JSON.parse(acquired.stdout), {
@@ -1411,6 +1434,7 @@ test('boundary recovery CLI classifies child reservation mismatch as fence exit 
     '--owner', 'ARBITRARY-OWNER',
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT03',
   ]);
   assert.equal(result.status, 3, result.stderr);
   assert.equal(JSON.parse(result.stdout).reason, 'child-not-reserved');
@@ -1439,6 +1463,7 @@ test('boundary recovery CLI classifies invalid topology as exit 1 without mutati
     '--owner', recovery.child_run_id,
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT04',
   ]);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(JSON.parse(result.stdout).reason, 'recovery-topology-invalid');
@@ -1466,6 +1491,7 @@ test('boundary recovery CLI classifies invalid capsule as exit 1 without mutatio
     '--owner', recovery.child_run_id,
     '--generation', String(fixture.expect.generation),
     '--runtime', 'claude',
+    '--attempt-id', 'RECOVERYATTEMPT05',
   ]);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(JSON.parse(result.stdout).reason, 'recovery-capsule-invalid');

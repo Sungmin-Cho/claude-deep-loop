@@ -130,11 +130,22 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    terminal-rejected. That receipt is completion bookkeeping, so pre-finish insights
    remain a valid snapshot that intentionally excludes the final process measurement.
 7. **`withLock` is non-reentrant** — never take a lock inside a locked callback.
-   Kernel durable writes are confined to `<root>/.deep-loop/`; `/deep-loop-finish` may
-   delegate to deep-memory's and deep-wiki's own skills. Compact hook glue never
-   spawns: PreCompact is emit-only, PostCompact invokes only the bounded public
-   `checkpoint observe` CLI, SessionStart emits restore context only, and every
-   exception is best-effort and non-blocking.
+   Kernel durable writes are confined to `<root>/.deep-loop/`. The sole carve-out is
+   `DEEP_LOOP_ROOT/scripts/lib/activation-secret.mjs`: the execution-child stored-activation client
+   may write only its internally derived OS user-state `deep-loop/activation-secrets`
+   directory. It accepts no caller path, never writes a raw token to project/kernel
+   state or output, and fails closed on unsafe identity/permissions/ACL. It publishes
+   only from `appendAnchored`'s owned-lock, post-eligibility/pre-append callback; an
+   explicit fence or structured rejection therefore leaves no private-store residue.
+   This is a cooperative-but-fallible execution-child contract, not physical-principal
+   attestation: no local UID/PID/env/file mechanism distinguishes a malicious same-UID
+   parent or replacement child. On Windows,
+   trusted ambient `SystemRoot` must bind the exact
+   `System32/WindowsPowerShell/v1.0/powershell.exe`; PATH resolution is forbidden.
+   `/deep-loop-finish` may delegate to deep-memory's and deep-wiki's own skills.
+   Compact hook glue never spawns: PreCompact is emit-only, PostCompact invokes only
+   the bounded public `checkpoint observe` CLI, SessionStart emits restore context only,
+   and every exception is best-effort and non-blocking.
    **Worktree carve-out:** Execution-plane worktree creation is allowed **only** under
    `<root>/.claude/worktrees/` (or `.worktrees/`) — project-root-internal and
    gitignored. Root escape is forbidden, enforced by kernel `newWorkstream`

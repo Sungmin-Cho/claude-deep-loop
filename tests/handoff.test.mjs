@@ -9,7 +9,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
+import {
+  activateLease,
+  acquireLease as acquireLeasePending,
+  reserveHandoff,
+  releaseLease,
+} from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
@@ -37,6 +43,21 @@ function historicalCursor(owner) {
     admission: { kind: 'human-attested', source: 'direct-human-skill', receipt_trigger: null },
     provider_evidence: { recorded: false, supplied: false, matched: false },
   };
+}
+
+function snapshotRunTree(root, runId) {
+  const base = runDir(root, runId);
+  const files = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else files[rel] = readFileSync(path).toString('base64');
+    }
+  };
+  visit(base);
+  return files;
 }
 
 const POSIX_PLATFORM = 'linux';
@@ -452,6 +473,43 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
   assert.match(md, /\/deep-loop-resume/);
+});
+
+test('SLICE-006 emitHandoff is transitively activation-blocked with zero direct writes, then emits after activation', () => {
+  const { root, runId } = seed();
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+  const owner = 'SLICE006HANDOFFOWNER';
+  const attemptId = 'SLICE006HANDOFFATTEMPT';
+  const acquired = acquireLeasePending(root, runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  const before = snapshotRunTree(root, runId);
+
+  const denied = emitHandoff(root, runId, {
+    trigger: 'slice-006-direct-emit',
+    now: Date.parse('2026-08-09T00:00:02.000Z'),
+    expect: { owner, generation: acquired.generation },
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.reason, 'ACTIVATION_PENDING');
+  assert.deepEqual(snapshotRunTree(root, runId), before);
+
+  assert.deepEqual(activateLease(root, runId, {
+    owner, generation: acquired.generation, runtime: 'claude', attemptId,
+    activationToken: 'SLICE006HANDOFFTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
+  }), { ok: true, reason: 'activated' });
+  const emitted = emitHandoff(root, runId, {
+    trigger: 'slice-006-direct-emit',
+    now: Date.parse('2026-08-09T00:00:02.000Z'),
+    expect: { owner, generation: acquired.generation },
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('legacy runtime handoff remains Claude-compatible', () => {
@@ -882,7 +940,7 @@ test('emitHandoff: lease stolen before call → fenced at reserve, new owner lea
   const CHILD2 = 'CHILD2-ACTOR';
   // Lease is released and taken by another actor (generation bumps to 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, runtime: 'claude', now });
+  acquireLease(root, runId, { attemptId: 'MIGRATEDATTEMPT01', owner: CHILD2, expectGeneration: 1, runtime: 'claude', now });
   // emitHandoff with stale expect (original owner/gen=1) → fenced at reserveHandoff (generation mismatch)
   const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
   assert.equal(r.ok, false);

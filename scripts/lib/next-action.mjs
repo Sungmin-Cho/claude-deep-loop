@@ -12,6 +12,17 @@ function currentSessionTurns(loop) {
 const A = (gate, action, next_command) => ({ gate, action, next_command });
 const TERMINAL_WORKSTREAM_STATUSES = new Set(['ready', 'merged', 'abandoned']);
 
+function activationLabel(loop, now) {
+  const lease = loop.session_chain?.lease;
+  if (lease?.state !== 'active') return null;
+  if (!Object.hasOwn(lease, 'activation_deadline_at')) return 'legacy-unprotected';
+  if (lease.activation_deadline_at === null) return null;
+  const deadline = Date.parse(lease.activation_deadline_at);
+  return Number.isFinite(deadline) && now >= deadline
+    ? 'expired-pending'
+    : 'activation-pending';
+}
+
 function sameBoundary(left, right) {
   return Number.isSafeInteger(left?.seq)
     && left.seq > 0
@@ -168,14 +179,16 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
     .map(e => e.id);
   const workstreamSession = loop.autonomy?.continuation_policy === 'workstream-session';
   const currentSession = ownerSession(loop);
+  const activation = activationLabel(loop, now);
+  const activationGate = activation === null ? {} : { activation };
 
   // budget hard-stop / breaker 는 모든 행동을 막는 전역 게이트.
   if (!b.ok) return A(
-    { allowed: false, blocked_by: ['budget'], reason: b.reason, tier_after: b.tier_after },
+    { allowed: false, blocked_by: ['budget'], reason: b.reason, tier_after: b.tier_after, ...activationGate },
     { type: 'await_human', reason: 'budget' },
     '/deep-loop-status',
   );
-  if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
+  if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after, ...activationGate }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
 
   // comprehension-debt는 **정착된(done) 미리뷰 maker 산출물이 존재할 때에만** 새 fan-out을 막는다 —
   // `discover`(:190)와 새 non-fix pending maker의 dispatch(:83/:201)가 그 대상이다. 현재 episode 진행/fix/
@@ -194,6 +207,7 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
     reason: b.reason,
     tier_after: b.tier_after,
     unconsumed_milestones: unconsumedMilestones,
+    ...activationGate,
   };
 
   // A Workstream session closes on one anchored event identity. Completion wins

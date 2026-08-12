@@ -11,7 +11,13 @@ import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.m
 import { inspectCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, reserveHandoff } from '../scripts/lib/lease.mjs';
+import {
+  activateLease,
+  acquireLease as acquireLeasePending,
+  releaseLease,
+  reserveHandoff,
+} from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import {
@@ -75,6 +81,21 @@ function seedRotate() {
   });
   persistLegacyPolicy(root, runId, 'rotate-per-unit');
   return { root, runId };
+}
+
+function snapshotRunTree(root, runId) {
+  const base = runDir(root, runId);
+  const files = {};
+  const visit = (dir, prefix = '') => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path, rel);
+      else files[rel] = rf(path).toString('base64');
+    }
+  };
+  visit(base);
+  return files;
 }
 
 function seedBound(runtime = 'claude') {
@@ -509,6 +530,7 @@ test('compact-in-place attended acquired → checkpointed after rotation, byte-i
   });
   assert.equal(emitted.ok, true);
   const acquired = acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01',
     owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: Date.parse('2026-06-24T00:02:00Z'),
   });
   assert.equal(acquired.reason, 'acquired');
@@ -540,6 +562,47 @@ test('rotate-per-unit attended → existing emitted handoff behavior', async () 
   assert.ok(r.childRunId);
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
   assert.deepEqual(checkpointFiles(root, runId), []);
+});
+
+test('SLICE-006 PreCompact wrapper is transitively activation-blocked with zero direct writes, then emits after activation', async () => {
+  const { root, runId } = seedRotate();
+  assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+    ok: true, reason: 'released',
+  });
+  const owner = 'SLICE006PRECOMPACTOWNER';
+  const attemptId = 'SLICE006PRECOMPACTATTEMPT';
+  const acquired = acquireLeasePending(root, runId, {
+    owner, expectGeneration: 1, runtime: 'claude', attemptId,
+    clock: () => Date.parse('2026-08-09T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  const before = snapshotRunTree(root, runId);
+
+  assert.deepEqual(
+    await runPreCompactHandoff({}, {
+      root, now: Date.parse('2026-08-09T00:00:02.000Z'), env: {},
+    }),
+    {
+      ok: false,
+      action: 'fenced',
+      reason: 'ACTIVATION_PENDING',
+      run_id: runId,
+      selection_source: 'single-active',
+    },
+  );
+  assert.deepEqual(snapshotRunTree(root, runId), before);
+
+  assert.deepEqual(activateLease(root, runId, {
+    owner, generation: acquired.generation, runtime: 'claude', attemptId,
+    activationToken: 'SLICE006PRECOMPACTTOKEN', now: Date.parse('2026-08-09T00:00:01.000Z'),
+    clock: () => Date.parse('2026-08-09T00:00:01.000Z'),
+  }), { ok: true, reason: 'activated' });
+  const emitted = await runPreCompactHandoff({}, {
+    root, now: Date.parse('2026-08-09T00:00:02.000Z'), env: {},
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(emitted.action, 'emitted');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('compact-in-place headless invocation ignores attended policy and emits handoff', async () => {
@@ -791,6 +854,50 @@ test('drive-headless direct execution writes one JSON result and imports with mi
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, '');
     assert.equal(result.stderr, '');
+  }
+});
+
+test('drive-headless CLI forwards one exact project/run pair and keeps no-arg resolver routing compatible', () => {
+  const explicit = seed();
+  writeFileSync(join(explicit.root, '.deep-loop', 'current'), '01WRONGCURRENT0000000000000000');
+  const explicitResult = runNode([
+    DRIVE_HOOK,
+    '--project-root', explicit.root,
+    '--run-id', explicit.runId,
+  ], { cwd: explicit.root });
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(explicitResult.stderr, '');
+  assert.equal(JSON.parse(explicitResult.stdout).action, 'no-pending-handoff');
+
+  const legacy = seed();
+  const legacyResult = runNode([DRIVE_HOOK], { cwd: legacy.root });
+  assert.equal(legacyResult.status, 0, legacyResult.stderr);
+  assert.equal(legacyResult.stderr, '');
+  assert.equal(JSON.parse(legacyResult.stdout).action, 'no-pending-handoff');
+});
+
+test('drive-headless CLI rejects malformed argument shapes before durable run mutation', () => {
+  const cases = [
+    ['missing-value', ['--run-id']],
+    ['empty-value', ['--run-id', '']],
+    ['duplicate', ['--run-id', 'run-one', '--run-id', 'run-two']],
+    ['unknown', ['--unknown', 'value']],
+    ['incomplete-pair', ['--run-id', '../escape']],
+  ];
+  for (const [name, argv] of cases) {
+    const fixture = seed();
+    const before = snapshotRunTree(fixture.root, fixture.runId);
+    const currentBefore = rf(join(fixture.root, '.deep-loop', 'current'));
+    const result = runNode([DRIVE_HOOK, ...argv], { cwd: fixture.root });
+    assert.equal(result.status, 1, `${name}: ${result.stderr}`);
+    assert.equal(result.stderr, '', name);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      action: 'routing-failed',
+      reason: 'argv-invalid',
+    }, name);
+    assert.deepEqual(snapshotRunTree(fixture.root, fixture.runId), before, name);
+    assert.deepEqual(rf(join(fixture.root, '.deep-loop', 'current')), currentBefore, name);
   }
 });
 

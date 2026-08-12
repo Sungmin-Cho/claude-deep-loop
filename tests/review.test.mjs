@@ -11,7 +11,8 @@ import {
   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
   recordReviewOutcome, unsatisfiedReviewPoints,
 } from '../scripts/lib/review.mjs';
-import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
+import { releaseLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';
@@ -296,7 +297,7 @@ test('recordReviewOutcome: stale fence throws LEASE_FENCED; breaker and review_p
   const breakerBefore = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
   // Now advance the lease generation: release + child acquires (gen bumps to 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
+  acquireLease(root, runId, { attemptId: 'MIGRATEDATTEMPT01', owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
   // recordReviewOutcome with stale fence must throw LEASE_FENCED somewhere in the chain
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', fence: staleFence }),

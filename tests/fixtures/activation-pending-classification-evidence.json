@@ -1,0 +1,6788 @@
+{
+  "schema_version": 1,
+  "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
+  "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
+  "live_classification_sha256": "efe4a1459164cf54a24cfabf3c140e4fce82d0b795f6e6deaa6d4cfd0ad7d7b0",
+  "candidate_ids_sha256": "525b7f01cb41f1b2541f2a9d1186ee12868c580dd8548fa77f299ae8beeeeab3",
+  "candidate_ids": [
+    "activation-secret.mjs#activateStoredLease",
+    "adapters.mjs#checkerDescriptor",
+    "adapters.mjs#guardTierProtocol",
+    "adapters.mjs#loadProtocol",
+    "adapters.mjs#resolveAdapter",
+    "atomic-write.mjs#RENAME_RETRY_MAX_ELAPSED_MS",
+    "atomic-write.mjs#atomicWrite",
+    "atomic-write.mjs#durableAtomicWrite",
+    "atomic-write.mjs#flushDirectory",
+    "atomic-write.mjs#renameAtomicWithRetry",
+    "attended-launch.mjs#approveAttendedLaunch",
+    "attended-launch.mjs#attendedLaunchAuthorized",
+    "attended-launch.mjs#revokeAttendedLaunch",
+    "bounded-input.mjs#REVIEW_IMPORT_MAX_BYTES",
+    "bounded-input.mjs#readBoundedText",
+    "breaker.mjs#checkBreaker",
+    "breaker.mjs#recordReviewVerdict",
+    "breaker.mjs#resetBreaker",
+    "breaker.mjs#tripBreaker",
+    "budget.mjs#checkBudget",
+    "budget.mjs#checkHardBudget",
+    "budget.mjs#codexCheckerClaimHash",
+    "budget.mjs#extendBudget",
+    "budget.mjs#inventoryRelocatedProcessReceipts",
+    "budget.mjs#isCanonicalHandoffKey",
+    "budget.mjs#isMeasuredOneTurnUsage",
+    "budget.mjs#makeCodexPreflightReceipt",
+    "budget.mjs#makeCodexProcessReceipt",
+    "budget.mjs#reconcileBudget",
+    "budget.mjs#recordCost",
+    "budget.mjs#recoveryReservationKind",
+    "budget.mjs#settleCodexPreflightCost",
+    "budget.mjs#settleCodexProcessCost",
+    "budget.mjs#settleTerminalCodexMakerCost",
+    "checkpoint.mjs#captureCheckpointSet",
+    "checkpoint.mjs#emitCompactCheckpoint",
+    "checkpoint.mjs#emitLegacyCompactCheckpointFromTrustedHook",
+    "checkpoint.mjs#inspectCompactCheckpoint",
+    "checkpoint.mjs#restoreCompactCheckpoint",
+    "checkpoint.mjs#selectCheckpoint",
+    "codex-checker.mjs#buildCodexCheckerPrompt",
+    "codex-checker.mjs#importReviewViaCli",
+    "codex-checker.mjs#inspectCheckerFileIdentity",
+    "codex-checker.mjs#resolveTrustedCheckerSkill",
+    "codex-checker.mjs#runIndependentCodexChecker",
+    "codex-checker.mjs#sameCheckerIdentity",
+    "codex-preflight.mjs#codexPreflightCacheKey",
+    "codex-preflight.mjs#ensureCodexPreflight",
+    "codex-runtime.mjs#buildCodexExecEntry",
+    "codex-runtime.mjs#buildMinimalCodexEnv",
+    "codex-runtime.mjs#codexIsolationProfileDigest",
+    "comprehension.mjs#ack",
+    "comprehension.mjs#computeDebt",
+    "comprehension.mjs#recordReviewed",
+    "desktop-handler.mjs#verifyDesktopHandler",
+    "desktop-target.mjs#ALLOW_BUNDLE_IDS",
+    "desktop-target.mjs#ALLOW_MAC_PATHS",
+    "desktop-target.mjs#ALLOW_TEAM_IDS",
+    "desktop-target.mjs#ALLOW_WIN_PATHS",
+    "desktop-target.mjs#ALLOW_WIN_PATH_PATTERNS",
+    "desktop-target.mjs#ALLOW_WIN_PUBLISHERS",
+    "desktop-target.mjs#WIN_REG_BIN",
+    "desktop-target.mjs#defaultDesktopProbe",
+    "desktop-target.mjs#parseWinAuthenticodeOutput",
+    "desktop-target.mjs#winProbeRun",
+    "detect-main.mjs#detectMain",
+    "detect-terminal.mjs#defaultProbeRun",
+    "detect-terminal.mjs#deriveTmuxSessionByAncestry",
+    "detect-terminal.mjs#detectAndPersist",
+    "detect-terminal.mjs#detectTerminal",
+    "detect-terminal.mjs#isTrustedPsBin",
+    "detect-terminal.mjs#listTmuxPanes",
+    "detect-terminal.mjs#probeTmuxSocket",
+    "detect-terminal.mjs#trustedPsCandidates",
+    "detect.mjs#detectPlugins",
+    "detect.mjs#pluginPresent",
+    "drive-headless.mjs#main",
+    "envelope.mjs#contentHash",
+    "envelope.mjs#ulid",
+    "envelope.mjs#unwrap",
+    "envelope.mjs#wrap",
+    "episode.mjs#abandonEpisode",
+    "episode.mjs#newBlockedCheckerEpisode",
+    "episode.mjs#newEpisode",
+    "episode.mjs#recordEpisode",
+    "finish.mjs#finishProofState",
+    "finish.mjs#finishRun",
+    "finish.mjs#workstreamClosureProofState",
+    "fs-safe.mjs#canonicalNonSymlinkDirectory",
+    "fs-safe.mjs#captureStableFileIdentity",
+    "fs-safe.mjs#containedRealFile",
+    "fs-safe.mjs#containedRealFileWithin",
+    "fs-safe.mjs#matchingStableFileIdentity",
+    "fs-safe.mjs#normalizePortableRelativePath",
+    "fs-safe.mjs#pathWithin",
+    "handoff.mjs#emitHandoff",
+    "headless-host.mjs#acquireHeadlessHostLock",
+    "headless-host.mjs#driveHeadless",
+    "headless-host.mjs#driveHeadlessRun",
+    "initrun.mjs#buildInitialLoop",
+    "initrun.mjs#initRun",
+    "insights.mjs#CANDIDATE_RULES",
+    "insights.mjs#INSIGHTS_SCHEMA_VERSION",
+    "insights.mjs#avgFixCyclesByPoint",
+    "insights.mjs#captureLatestInsightsSet",
+    "insights.mjs#computeInsights",
+    "insights.mjs#computeRunMetrics",
+    "insights.mjs#deriveCandidates",
+    "insights.mjs#emitInsights",
+    "insights.mjs#isSuspiciousActive",
+    "insights.mjs#latestInsights",
+    "insights.mjs#relInsightsPath",
+    "insights.mjs#validateLedger",
+    "integrity.mjs#MUTATION_TURN_FLOOR",
+    "integrity.mjs#appendAnchored",
+    "integrity.mjs#appendEvent",
+    "integrity.mjs#captureReconciledRootRecoverySnapshot",
+    "integrity.mjs#captureReconciledRunSet",
+    "integrity.mjs#captureReconciledRunSnapshot",
+    "integrity.mjs#headOfLines",
+    "integrity.mjs#lastLogHead",
+    "integrity.mjs#readLines",
+    "integrity.mjs#recomputeSpent",
+    "integrity.mjs#reconcileAnchoredPublicationLocked",
+    "integrity.mjs#validCost",
+    "integrity.mjs#verifyHead",
+    "integrity.mjs#verifyHeadLines",
+    "integrity.mjs#verifyLines",
+    "integrity.mjs#verifyLog",
+    "integrity.mjs#withReconciledMutationLock",
+    "integrity.mjs#withReconciledRootRecoveryLock",
+    "lease.mjs#acquireLease",
+    "lease.mjs#activateLease",
+    "lease.mjs#advanceHandoffPhase",
+    "lease.mjs#boundaryHandoffTopologyError",
+    "lease.mjs#deriveIdempotencyKey",
+    "lease.mjs#leaseCheck",
+    "lease.mjs#reapLease",
+    "lease.mjs#releaseLease",
+    "lease.mjs#reserveHandoff",
+    "lease.mjs#rollbackHandoff",
+    "lease.mjs#rollbackReservedEmit",
+    "lease.mjs#sameBoundaryEvent",
+    "log.mjs#error",
+    "log.mjs#info",
+    "log.mjs#json",
+    "log.mjs#setColor",
+    "log.mjs#warn",
+    "next-action.mjs#nextAction",
+    "path-portable.mjs#ancestorPaths",
+    "path-portable.mjs#relativePathWithin",
+    "precompact-handoff.mjs#main",
+    "precompact-handoff.mjs#runPreCompactHandoff",
+    "preflight-receipt-journal.mjs#listPreflightUsageReceipts",
+    "preflight-receipt-journal.mjs#listProcessUsageReceipts",
+    "preflight-receipt-journal.mjs#makeProcessUsageReceiptDescriptor",
+    "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed",
+    "preflight-receipt-journal.mjs#readPreflightUsageReceipt",
+    "preflight-receipt-journal.mjs#readProcessUsageReceipt",
+    "preflight-receipt-journal.mjs#removeProcessUsageReceipt",
+    "preflight-receipt-journal.mjs#validatePreflightUsageReceiptDescriptor",
+    "preflight-receipt-journal.mjs#validateProcessUsageReceiptDescriptor",
+    "preflight-receipt-journal.mjs#writePreflightUsageReceipt",
+    "preflight-receipt-journal.mjs#writeProcessUsageReceipt",
+    "project-root-recovery.mjs#acquireRootRecovery",
+    "project-root-recovery.mjs#diagnoseProjectRoot",
+    "project-root-recovery.mjs#rebindProjectRoot",
+    "project-root-recovery.mjs#recoverRelocatedRoot",
+    "project-root.mjs#assertProjectRootBinding",
+    "project-root.mjs#canonicalProjectRoot",
+    "project-root.mjs#classifyProjectRootBinding",
+    "project-root.mjs#projectRootDigest",
+    "recipes.mjs#loadRecipes",
+    "recipes.mjs#matchRecipe",
+    "recipes.mjs#recipesDir",
+    "recipes.mjs#validateRecipesDir",
+    "recover.mjs#ACQUIRE_HALT",
+    "recover.mjs#acquireHalt",
+    "recover.mjs#acquireRecovery",
+    "recover.mjs#buildAcquisitionReceipt",
+    "recover.mjs#clearRecoveryLease",
+    "recover.mjs#consumedFromReceipt",
+    "recover.mjs#contractFields",
+    "recover.mjs#recoverBoundary",
+    "recover.mjs#recoverRun",
+    "recover.mjs#recoverySafetyReason",
+    "recover.mjs#supersedeAffinity",
+    "recover.mjs#validateBoundaryRecoveryArtifactLocked",
+    "respawn.mjs#isHeadlessInvocation",
+    "respawn.mjs#resolveSpawnMode",
+    "respawn.mjs#respawn",
+    "respawn.mjs#respawnGate",
+    "respawn.mjs#rollbackAndPause",
+    "review-import.mjs#REVIEW_ATTEMPT_ID",
+    "review-import.mjs#REVIEW_IMPORT_MAX_ARTIFACTS",
+    "review-import.mjs#REVIEW_REPORT_BODY_MAX_BYTES",
+    "review-import.mjs#deriveReviewArtifactContract",
+    "review-import.mjs#isProofCapableChecker",
+    "review-import.mjs#locateCapturedImportedReviewArtifact",
+    "review-import.mjs#materializeImportedReview",
+    "review-import.mjs#parseReviewImport",
+    "review-import.mjs#prepareImportedReview",
+    "review-import.mjs#sha256Bytes",
+    "review-import.mjs#sha256File",
+    "review-import.mjs#validateImportedEvidence",
+    "review-import.mjs#verifyCapturedImportedReviewProof",
+    "review-import.mjs#verifyImportedEnvelope",
+    "review.mjs#blockIndependentReview",
+    "review.mjs#claimIndependentReview",
+    "review.mjs#dispatchReview",
+    "review.mjs#epOrder",
+    "review.mjs#findPendingIndependentChecker",
+    "review.mjs#importReviewOutcome",
+    "review.mjs#makerReviewed",
+    "review.mjs#parseVerdict",
+    "review.mjs#recordReviewOutcome",
+    "review.mjs#rejectionResolved",
+    "review.mjs#resolveReviewer",
+    "review.mjs#revalidateIndependentReviewClaim",
+    "review.mjs#unsatisfiedReviewPoints",
+    "runtime-descriptor.mjs#buildLaunchCommand",
+    "runtime-descriptor.mjs#buildRecoveryResumeDescriptor",
+    "runtime-descriptor.mjs#buildRootRecoveryResumeDescriptor",
+    "runtime-descriptor.mjs#buildRuntimeResumeDescriptor",
+    "runtime-descriptor.mjs#resumeSkillToken",
+    "runtime-descriptor.mjs#usageOutputKind",
+    "runtime-descriptor.mjs#validateLaunchCommandMetadata",
+    "runtime-executable.mjs#approveLauncherExecutable",
+    "runtime-executable.mjs#approveRuntimeExecutable",
+    "runtime-executable.mjs#collectRuntimeExecutableCandidates",
+    "runtime-executable.mjs#diagnoseLauncherExecutable",
+    "runtime-executable.mjs#diagnoseRuntimeExecutable",
+    "runtime-executable.mjs#resolveAuthenticatedCodexHome",
+    "runtime-executable.mjs#resolveTrustedLauncherExecutable",
+    "runtime-executable.mjs#resolveTrustedRuntimeExecutable",
+    "runtime-executable.mjs#revalidateTrustedLauncherExecutable",
+    "runtime-executable.mjs#revalidateTrustedRuntimeExecutable",
+    "runtime.mjs#SESSION_RUNTIMES",
+    "runtime.mjs#runtimeFence",
+    "runtime.mjs#sessionRuntime",
+    "runtime.mjs#validateSessionRuntime",
+    "schema.mjs#CHECKER_PROCESS_PHASES",
+    "schema.mjs#CHECKER_PROCESS_REASON_CODES",
+    "schema.mjs#CHECKER_PROCESS_REASON_PHASES",
+    "schema.mjs#LAUNCHER_KINDS",
+    "schema.mjs#loadSchema",
+    "schema.mjs#validCheckerProcessDiagnostic",
+    "schema.mjs#validProcessStreamMetadata",
+    "schema.mjs#validate",
+    "session-profile.mjs#EFFORT_LEVELS",
+    "session-profile.mjs#setSessionProfile",
+    "session-profile.mjs#validateEffort",
+    "session-profile.mjs#validateModel",
+    "session-profile.mjs#validateRuntimeProfile",
+    "session-scope.mjs#assertScopeAllows",
+    "session-scope.mjs#bindMakerScope",
+    "session-scope.mjs#closeScope",
+    "session-scope.mjs#currentWorkstreamScope",
+    "session-scope.mjs#isOpenScope",
+    "session-scope.mjs#openScopeSessions",
+    "session-scope.mjs#ownerSession",
+    "session-scope.mjs#reservedOpenScope",
+    "session-scope.mjs#supersedeScope",
+    "sessionstart-restore.mjs#main",
+    "sessionstart-restore.mjs#runSessionStartRestore",
+    "slug.mjs#runIdSlug",
+    "slug.mjs#slugify",
+    "spawn-driver.mjs#defaultRun",
+    "spawn-driver.mjs#defaultVisibleRun",
+    "spawn-driver.mjs#headlessSpawn",
+    "spawn-driver.mjs#parseUsage",
+    "spawn-driver.mjs#visibleSpawn",
+    "spawn-optin.mjs#confirmDesktop",
+    "spawn-optin.mjs#declineDesktop",
+    "spawn-optin.mjs#offerDesktop",
+    "spawn-optin.mjs#resetDesktop",
+    "state.mjs#LOCK_STALE_TTL_MS",
+    "state.mjs#WHITELIST",
+    "state.mjs#captureReconciledRootRecoverySnapshot",
+    "state.mjs#captureReconciledRunSet",
+    "state.mjs#captureReconciledRunSnapshot",
+    "state.mjs#classifyPatch",
+    "state.mjs#findRoot",
+    "state.mjs#parseHashVerifiedStateBytes",
+    "state.mjs#patch",
+    "state.mjs#pauseRun",
+    "state.mjs#readState",
+    "state.mjs#readStateForRootRecovery",
+    "state.mjs#runDir",
+    "state.mjs#withLock",
+    "state.mjs#withReconciledMutationLock",
+    "state.mjs#withReconciledRootRecoveryLock",
+    "state.mjs#writeState",
+    "streaming-process.mjs#runStreamingProcess",
+    "streaming-process.mjs#runStreamingProcessSync",
+    "toml-safe.mjs#tomlBasicString",
+    "toml-safe.mjs#tomlQuotedKeySegment",
+    "transaction-journal.mjs#classifyArtifactTargetsLocked",
+    "transaction-journal.mjs#findPreparedPublicationLocked",
+    "transaction-journal.mjs#markPublicationCommittedLocked",
+    "transaction-journal.mjs#preparePublicationStagesLocked",
+    "transaction-journal.mjs#publicationCommittedLocked",
+    "transaction-journal.mjs#publishArtifactTargetsLocked",
+    "transaction-journal.mjs#retireCommittedPublicationLocked",
+    "usage-parser.mjs#STREAM_LIMITS",
+    "usage-parser.mjs#createCodexJsonlParser",
+    "usage-parser.mjs#parseClaudeUsage",
+    "workspace.mjs#inheritWorkstreams",
+    "workspace.mjs#integrationOrder",
+    "workspace.mjs#newWorkstream",
+    "workspace.mjs#recordWorkstreamTerminal",
+    "workspace.mjs#setWorkstreamStatus"
+  ],
+  "rows": [
+    {
+      "id": "activation-secret.mjs#activateStoredLease",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "enforcement-origin",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "activation-secret.mjs#activateStoredLease",
+            "lease.mjs#activateLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/activation-secret.mjs:269",
+            "scripts/lib/lease.mjs:584"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "activation-secret.mjs#activateStoredLease",
+            "lease.mjs#activateLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/activation-secret.mjs:269",
+            "scripts/lib/lease.mjs:584"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adapters.mjs#checkerDescriptor",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "adapters.mjs#checkerDescriptor"
+          ],
+          "coordinates": [
+            "scripts/lib/adapters.mjs:16"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adapters.mjs#guardTierProtocol",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "adapters.mjs#guardTierProtocol"
+          ],
+          "coordinates": [
+            "scripts/lib/adapters.mjs:70"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adapters.mjs#loadProtocol",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "adapters.mjs#loadProtocol"
+          ],
+          "coordinates": [
+            "scripts/lib/adapters.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adapters.mjs#resolveAdapter",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "adapters.mjs#resolveAdapter"
+          ],
+          "coordinates": [
+            "scripts/lib/adapters.mjs:34"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "atomic-write.mjs#RENAME_RETRY_MAX_ELAPSED_MS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "atomic-write.mjs#RENAME_RETRY_MAX_ELAPSED_MS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "atomic-write.mjs#atomicWrite",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "atomic-write.mjs#atomicWrite"
+          ],
+          "coordinates": [
+            "scripts/lib/atomic-write.mjs:37"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "atomic-write.mjs#durableAtomicWrite",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "atomic-write.mjs#durableAtomicWrite"
+          ],
+          "coordinates": [
+            "scripts/lib/atomic-write.mjs:66"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "atomic-write.mjs#flushDirectory",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "atomic-write.mjs#flushDirectory"
+          ],
+          "coordinates": [
+            "scripts/lib/atomic-write.mjs:49"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "atomic-write.mjs#renameAtomicWithRetry",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "atomic-write.mjs#renameAtomicWithRetry"
+          ],
+          "coordinates": [
+            "scripts/lib/atomic-write.mjs:14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "attended-launch.mjs#approveAttendedLaunch",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "attended-launch.mjs#approveAttendedLaunch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/attended-launch.mjs:49"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "attended-launch.mjs#approveAttendedLaunch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/attended-launch.mjs:49"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "attended-launch.mjs#attendedLaunchAuthorized",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "attended-launch.mjs#attendedLaunchAuthorized"
+          ],
+          "coordinates": [
+            "scripts/lib/attended-launch.mjs:32"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "attended-launch.mjs#revokeAttendedLaunch",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "safety-downgrade",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "attended-launch.mjs#revokeAttendedLaunch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/attended-launch.mjs:76"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "attended-launch.mjs#revokeAttendedLaunch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/attended-launch.mjs:76"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bounded-input.mjs#REVIEW_IMPORT_MAX_BYTES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "bounded-input.mjs#REVIEW_IMPORT_MAX_BYTES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "bounded-input.mjs#readBoundedText",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "bounded-input.mjs#readBoundedText"
+          ],
+          "coordinates": [
+            "scripts/lib/bounded-input.mjs:3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "breaker.mjs#checkBreaker",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "breaker.mjs#checkBreaker"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:19"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "breaker.mjs#recordReviewVerdict",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "activation-pending-block-dominance",
+          "path": [
+            "breaker.mjs#recordReviewVerdict",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:88"
+          ]
+        },
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "breaker.mjs#recordReviewVerdict",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:88"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "breaker.mjs#recordReviewVerdict",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:88"
+          ]
+        }
+      ],
+      "activation_pending_block_dominance": "dominates"
+    },
+    {
+      "id": "breaker.mjs#resetBreaker",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "breaker.mjs#resetBreaker",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:61"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "breaker.mjs#resetBreaker",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:61"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "breaker.mjs#tripBreaker",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "pause-direction",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "breaker.mjs#tripBreaker",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:32"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "breaker.mjs#tripBreaker",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/breaker.mjs:32"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#checkBudget",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#checkBudget"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:466"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#checkHardBudget",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#checkHardBudget"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:455"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#codexCheckerClaimHash",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#codexCheckerClaimHash"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:376"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#extendBudget",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "treated-in-D2",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "budget.mjs#extendBudget",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:788"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "budget.mjs#extendBudget",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:788"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#inventoryRelocatedProcessReceipts",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#inventoryRelocatedProcessReceipts"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:23"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#isCanonicalHandoffKey",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#isCanonicalHandoffKey"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:273"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#isMeasuredOneTurnUsage",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#isMeasuredOneTurnUsage"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:226"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#makeCodexPreflightReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#makeCodexPreflightReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:323"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#makeCodexProcessReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#makeCodexProcessReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:383"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#reconcileBudget",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#reconcileBudget"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1650"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#recordCost",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "budget.mjs#recordCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:889"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "budget.mjs#recordCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:889"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#recoveryReservationKind",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "budget.mjs#recoveryReservationKind"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:571"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#settleCodexPreflightCost",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "budget.mjs#settleCodexPreflightCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1058"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "budget.mjs#settleCodexPreflightCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1058"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#settleCodexProcessCost",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "dominance",
+          "path": [
+            "budget.mjs#settleCodexProcessCost",
+            "budget.mjs#settleCodexPreflightCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1433",
+            "scripts/lib/budget.mjs:1058"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "budget.mjs#settleCodexProcessCost",
+            "budget.mjs#settleCodexPreflightCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1433",
+            "scripts/lib/budget.mjs:1058"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "budget.mjs#settleTerminalCodexMakerCost",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "structural-no-target",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "budget.mjs#settleTerminalCodexMakerCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1621"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "budget.mjs#settleTerminalCodexMakerCost",
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/budget.mjs:1621"
+          ]
+        }
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/budget.mjs:1552"
+        ]
+      }
+    },
+    {
+      "id": "checkpoint.mjs#captureCheckpointSet",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "checkpoint.mjs#captureCheckpointSet"
+          ],
+          "coordinates": [
+            "scripts/lib/checkpoint.mjs:765"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checkpoint.mjs#emitCompactCheckpoint",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "checkpoint.mjs#emitCompactCheckpoint"
+          ],
+          "coordinates": [
+            "scripts/lib/checkpoint.mjs:523"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checkpoint.mjs#emitLegacyCompactCheckpointFromTrustedHook",
+      "classification": "E5",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "legacy-hook-adapter",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "checkpoint.mjs#emitLegacyCompactCheckpointFromTrustedHook"
+          ],
+          "coordinates": [
+            "scripts/lib/checkpoint.mjs:545"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checkpoint.mjs#inspectCompactCheckpoint",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "checkpoint.mjs#inspectCompactCheckpoint"
+          ],
+          "coordinates": [
+            "scripts/lib/checkpoint.mjs:697"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checkpoint.mjs#restoreCompactCheckpoint",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "checkpoint.mjs#restoreCompactCheckpoint"
+          ],
+          "coordinates": [
+            "scripts/lib/checkpoint.mjs:736"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checkpoint.mjs#selectCheckpoint",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "checkpoint.mjs#selectCheckpoint"
+          ],
+          "coordinates": [
+            "scripts/lib/checkpoint.mjs:828"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-checker.mjs#buildCodexCheckerPrompt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-checker.mjs#buildCodexCheckerPrompt"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-checker.mjs:216"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-checker.mjs#importReviewViaCli",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-checker.mjs#importReviewViaCli"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-checker.mjs:310"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-checker.mjs#inspectCheckerFileIdentity",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-checker.mjs#inspectCheckerFileIdentity"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-checker.mjs:56"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-checker.mjs#resolveTrustedCheckerSkill",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-checker.mjs#resolveTrustedCheckerSkill"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-checker.mjs:164"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-checker.mjs#runIndependentCodexChecker",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-checker.mjs#runIndependentCodexChecker"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-checker.mjs:232"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-checker.mjs#sameCheckerIdentity",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-checker.mjs#sameCheckerIdentity"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-checker.mjs:105"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-preflight.mjs#codexPreflightCacheKey",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-preflight.mjs#codexPreflightCacheKey"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-preflight.mjs:86"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-preflight.mjs#ensureCodexPreflight",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-preflight.mjs#ensureCodexPreflight"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-preflight.mjs:581"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-runtime.mjs#buildCodexExecEntry",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-runtime.mjs#buildCodexExecEntry"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-runtime.mjs:46"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-runtime.mjs#buildMinimalCodexEnv",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-runtime.mjs#buildMinimalCodexEnv"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-runtime.mjs:92"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codex-runtime.mjs#codexIsolationProfileDigest",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "codex-runtime.mjs#codexIsolationProfileDigest"
+          ],
+          "coordinates": [
+            "scripts/lib/codex-runtime.mjs:142"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "comprehension.mjs#ack",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "activation-pending-block-dominance",
+          "path": [
+            "comprehension.mjs#ack",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/comprehension.mjs:50"
+          ]
+        },
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "comprehension.mjs#ack",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/comprehension.mjs:50"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "comprehension.mjs#ack",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/comprehension.mjs:50"
+          ]
+        }
+      ],
+      "activation_pending_block_dominance": "dominates"
+    },
+    {
+      "id": "comprehension.mjs#computeDebt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "comprehension.mjs#computeDebt"
+          ],
+          "coordinates": [
+            "scripts/lib/comprehension.mjs:14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "comprehension.mjs#recordReviewed",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "comprehension.mjs#recordReviewed",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/comprehension.mjs:120"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "desktop-handler.mjs#verifyDesktopHandler",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-handler.mjs#verifyDesktopHandler"
+          ],
+          "coordinates": [
+            "scripts/lib/desktop-handler.mjs:12"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#ALLOW_BUNDLE_IDS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#ALLOW_BUNDLE_IDS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#ALLOW_MAC_PATHS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#ALLOW_MAC_PATHS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#ALLOW_TEAM_IDS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#ALLOW_TEAM_IDS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#ALLOW_WIN_PATHS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#ALLOW_WIN_PATHS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#ALLOW_WIN_PATH_PATTERNS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#ALLOW_WIN_PATH_PATTERNS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#ALLOW_WIN_PUBLISHERS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#ALLOW_WIN_PUBLISHERS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#WIN_REG_BIN",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#WIN_REG_BIN"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#defaultDesktopProbe",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#defaultDesktopProbe"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#parseWinAuthenticodeOutput",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#parseWinAuthenticodeOutput"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "desktop-target.mjs#winProbeRun",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "desktop-target.mjs#winProbeRun"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "detect-main.mjs#detectMain",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-main.mjs#detectMain"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-main.mjs:7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#defaultProbeRun",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#defaultProbeRun"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:12"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#deriveTmuxSessionByAncestry",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#deriveTmuxSessionByAncestry"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:145"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#detectAndPersist",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "boot-observation",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "detect-terminal.mjs#detectAndPersist",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:476"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "detect-terminal.mjs#detectAndPersist",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:476"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#detectTerminal",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#detectTerminal"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:209"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#isTrustedPsBin",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#isTrustedPsBin"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:37"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#listTmuxPanes",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#listTmuxPanes"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:109"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#probeTmuxSocket",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#probeTmuxSocket"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:81"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect-terminal.mjs#trustedPsCandidates",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect-terminal.mjs#trustedPsCandidates"
+          ],
+          "coordinates": [
+            "scripts/lib/detect-terminal.mjs:31"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect.mjs#detectPlugins",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect.mjs#detectPlugins"
+          ],
+          "coordinates": [
+            "scripts/lib/detect.mjs:54"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detect.mjs#pluginPresent",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "detect.mjs#pluginPresent"
+          ],
+          "coordinates": [
+            "scripts/lib/detect.mjs:72"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "drive-headless.mjs#main",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "transitive",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "drive-headless.mjs#main",
+            "headless-host.mjs#driveHeadless",
+            "headless-host.mjs#driveHeadlessRun",
+            "headless-host.mjs#driveHeadlessRunLocked",
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/hooks-impl/drive-headless.mjs:8",
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "drive-headless.mjs#main",
+            "headless-host.mjs#driveHeadless",
+            "headless-host.mjs#driveHeadlessRun",
+            "headless-host.mjs#driveHeadlessRunLocked",
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/hooks-impl/drive-headless.mjs:8",
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "envelope.mjs#contentHash",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "envelope.mjs#contentHash"
+          ],
+          "coordinates": [
+            "scripts/lib/envelope.mjs:19"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "envelope.mjs#ulid",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "envelope.mjs#ulid"
+          ],
+          "coordinates": [
+            "scripts/lib/envelope.mjs:7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "envelope.mjs#unwrap",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "envelope.mjs#unwrap"
+          ],
+          "coordinates": [
+            "scripts/lib/envelope.mjs:32"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "envelope.mjs#wrap",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "envelope.mjs#wrap"
+          ],
+          "coordinates": [
+            "scripts/lib/envelope.mjs:23"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "episode.mjs#abandonEpisode",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "episode.mjs#abandonEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:163"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "episode.mjs#abandonEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:163"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "episode.mjs#newBlockedCheckerEpisode",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "dominance",
+          "path": [
+            "episode.mjs#newBlockedCheckerEpisode",
+            "episode.mjs#createEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:148",
+            "scripts/lib/episode.mjs:80"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "episode.mjs#newBlockedCheckerEpisode",
+            "episode.mjs#createEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:148",
+            "scripts/lib/episode.mjs:80"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "episode.mjs#newEpisode",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "dominance",
+          "path": [
+            "episode.mjs#newEpisode",
+            "episode.mjs#createEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:142",
+            "scripts/lib/episode.mjs:80"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "episode.mjs#newEpisode",
+            "episode.mjs#createEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:142",
+            "scripts/lib/episode.mjs:80"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "episode.mjs#recordEpisode",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "episode.mjs#recordEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:211"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "episode.mjs#recordEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/episode.mjs:211"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finish.mjs#finishProofState",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "finish.mjs#finishProofState"
+          ],
+          "coordinates": [
+            "scripts/lib/finish.mjs:73"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finish.mjs#finishRun",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "finish.mjs#finishRun",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/finish.mjs:111"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "finish.mjs#finishRun",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/finish.mjs:111"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finish.mjs#workstreamClosureProofState",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "finish.mjs#workstreamClosureProofState"
+          ],
+          "coordinates": [
+            "scripts/lib/finish.mjs:26"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#canonicalNonSymlinkDirectory",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#canonicalNonSymlinkDirectory"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:49"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#captureStableFileIdentity",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#captureStableFileIdentity"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:69"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#containedRealFile",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#containedRealFile"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#containedRealFileWithin",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#containedRealFileWithin"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:36"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#matchingStableFileIdentity",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#matchingStableFileIdentity"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:90"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#normalizePortableRelativePath",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#normalizePortableRelativePath"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:27"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fs-safe.mjs#pathWithin",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "fs-safe.mjs#pathWithin"
+          ],
+          "coordinates": [
+            "scripts/lib/fs-safe.mjs:21"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "handoff.mjs#emitHandoff",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "transitive",
+          "path": [
+            "handoff.mjs#emitHandoff",
+            "handoff.mjs#emitBoundaryHandoff",
+            "lease.mjs#reserveHandoff",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/handoff.mjs:466",
+            "scripts/lib/handoff.mjs:322",
+            "scripts/lib/lease.mjs:768"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "headless-host.mjs#acquireHeadlessHostLock",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "headless-host.mjs#acquireHeadlessHostLock",
+            "state.mjs#withReconciledMutationLock",
+            "integrity.mjs#withReconciledMutationLock",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:208",
+            "scripts/lib/state.mjs:270",
+            "scripts/lib/integrity.mjs:709",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "headless-host.mjs#acquireHeadlessHostLock",
+            "state.mjs#withReconciledMutationLock",
+            "integrity.mjs#withReconciledMutationLock",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:208",
+            "scripts/lib/state.mjs:270",
+            "scripts/lib/integrity.mjs:709",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "headless-host.mjs#driveHeadless",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "transitive",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "headless-host.mjs#driveHeadless",
+            "headless-host.mjs#driveHeadlessRun",
+            "headless-host.mjs#driveHeadlessRunLocked",
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "headless-host.mjs#driveHeadless",
+            "headless-host.mjs#driveHeadlessRun",
+            "headless-host.mjs#driveHeadlessRunLocked",
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:1957",
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "headless-host.mjs#driveHeadlessRun",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "transitive",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "headless-host.mjs#driveHeadlessRun",
+            "headless-host.mjs#driveHeadlessRunLocked",
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "headless-host.mjs#driveHeadlessRun",
+            "headless-host.mjs#driveHeadlessRunLocked",
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/headless-host.mjs:1943",
+            "scripts/lib/headless-host.mjs:1340",
+            "scripts/lib/review.mjs:156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "initrun.mjs#buildInitialLoop",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "initrun.mjs#buildInitialLoop"
+          ],
+          "coordinates": [
+            "scripts/lib/initrun.mjs:13"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "initrun.mjs#initRun",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "structural-no-target",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "initrun.mjs#initRun",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/initrun.mjs:61"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "initrun.mjs#initRun",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/initrun.mjs:61"
+          ]
+        }
+      ],
+      "structural_precondition": {
+        "kind": "fresh-target-isolation",
+        "coordinates": [
+          "scripts/lib/initrun.mjs:54"
+        ]
+      }
+    },
+    {
+      "id": "insights.mjs#CANDIDATE_RULES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#CANDIDATE_RULES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#INSIGHTS_SCHEMA_VERSION",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#INSIGHTS_SCHEMA_VERSION"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#avgFixCyclesByPoint",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#avgFixCyclesByPoint"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:141"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#captureLatestInsightsSet",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#captureLatestInsightsSet"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:437"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#computeInsights",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#computeInsights"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:349"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#computeRunMetrics",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#computeRunMetrics"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:20"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#deriveCandidates",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#deriveCandidates"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:151"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#emitInsights",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "insights.mjs#emitInsights",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:424"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "insights.mjs#emitInsights",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:424"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#isSuspiciousActive",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#isSuspiciousActive"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:333"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#latestInsights",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#latestInsights"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:459"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#relInsightsPath",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#relInsightsPath"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:396"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insights.mjs#validateLedger",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "insights.mjs#validateLedger"
+          ],
+          "coordinates": [
+            "scripts/lib/insights.mjs:521"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#MUTATION_TURN_FLOOR",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#MUTATION_TURN_FLOOR"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#appendAnchored",
+      "classification": "E3",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "integrity.mjs#appendAnchored",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:930"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#appendAnchored",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:930"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#appendEvent",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#appendEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:718"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#captureReconciledRootRecoverySnapshot",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#captureReconciledRunSet",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#captureReconciledRunSnapshot",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#headOfLines",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#headOfLines"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:756"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#lastLogHead",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#lastLogHead"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:760"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#readLines",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#readLines"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:52"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#recomputeSpent",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#recomputeSpent"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:748"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#reconcileAnchoredPublicationLocked",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#validCost",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#validCost"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:744"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#verifyHead",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#verifyHead"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:775"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#verifyHeadLines",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#verifyHeadLines"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:766"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#verifyLines",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#verifyLines"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:727"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#verifyLog",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#verifyLog"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:739"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#withReconciledMutationLock",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#withReconciledMutationLock"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:706"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integrity.mjs#withReconciledRootRecoveryLock",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "integrity.mjs#withReconciledRootRecoveryLock"
+          ],
+          "coordinates": [
+            "scripts/lib/integrity.mjs:691"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#acquireLease",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "acquire-chain",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#acquireLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:457"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "lease.mjs#acquireLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:457"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#activateLease",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "enforcement-origin",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#activateLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:584"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "lease.mjs#activateLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:584"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#advanceHandoffPhase",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "structural-no-target",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#advanceHandoffPhase",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:813"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "lease.mjs#advanceHandoffPhase",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:813"
+          ]
+        }
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/lease.mjs:796"
+        ]
+      }
+    },
+    {
+      "id": "lease.mjs#boundaryHandoffTopologyError",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "lease.mjs#boundaryHandoffTopologyError"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:92"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#deriveIdempotencyKey",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "lease.mjs#deriveIdempotencyKey"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:72"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#leaseCheck",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "lease.mjs#leaseCheck"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:155"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#reapLease",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "enforcement-origin",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#reapLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:670"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "lease.mjs#reapLease",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:670"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#releaseLease",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#releaseLease",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:705"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#reserveHandoff",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#reserveHandoff",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:768"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#rollbackHandoff",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#rollbackHandoff",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:844"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lease.mjs#rollbackReservedEmit",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "structural-no-target",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "lease.mjs#rollbackReservedEmit",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:896"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "lease.mjs#rollbackReservedEmit",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:896"
+          ]
+        }
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/lease.mjs:859"
+        ]
+      }
+    },
+    {
+      "id": "lease.mjs#sameBoundaryEvent",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "lease.mjs#sameBoundaryEvent"
+          ],
+          "coordinates": [
+            "scripts/lib/lease.mjs:76"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log.mjs#error",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "log.mjs#error"
+          ],
+          "coordinates": [
+            "scripts/lib/log.mjs:11"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log.mjs#info",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "log.mjs#info"
+          ],
+          "coordinates": [
+            "scripts/lib/log.mjs:9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log.mjs#json",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "log.mjs#json"
+          ],
+          "coordinates": [
+            "scripts/lib/log.mjs:12"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log.mjs#setColor",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "log.mjs#setColor"
+          ],
+          "coordinates": [
+            "scripts/lib/log.mjs:3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log.mjs#warn",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "log.mjs#warn"
+          ],
+          "coordinates": [
+            "scripts/lib/log.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "next-action.mjs#nextAction",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "next-action.mjs#nextAction"
+          ],
+          "coordinates": [
+            "scripts/lib/next-action.mjs:132"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "path-portable.mjs#ancestorPaths",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "path-portable.mjs#ancestorPaths"
+          ],
+          "coordinates": [
+            "scripts/lib/path-portable.mjs:3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "path-portable.mjs#relativePathWithin",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "path-portable.mjs#relativePathWithin"
+          ],
+          "coordinates": [
+            "scripts/lib/path-portable.mjs:18"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "precompact-handoff.mjs#main",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "transitive",
+          "path": [
+            "precompact-handoff.mjs#main",
+            "precompact-handoff.mjs#runPreCompactHandoff",
+            "handoff.mjs#emitHandoff",
+            "handoff.mjs#emitBoundaryHandoff",
+            "lease.mjs#reserveHandoff",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/hooks-impl/precompact-handoff.mjs:230",
+            "scripts/hooks-impl/precompact-handoff.mjs:178",
+            "scripts/lib/handoff.mjs:466",
+            "scripts/lib/handoff.mjs:322",
+            "scripts/lib/lease.mjs:768"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "precompact-handoff.mjs#runPreCompactHandoff",
+      "classification": "B",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "explicit-activation-pending-block",
+      "evidence": [
+        {
+          "kind": "transitive",
+          "path": [
+            "precompact-handoff.mjs#runPreCompactHandoff",
+            "handoff.mjs#emitHandoff",
+            "handoff.mjs#emitBoundaryHandoff",
+            "lease.mjs#reserveHandoff",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/hooks-impl/precompact-handoff.mjs:178",
+            "scripts/lib/handoff.mjs:466",
+            "scripts/lib/handoff.mjs:322",
+            "scripts/lib/lease.mjs:768"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#listPreflightUsageReceipts",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#listPreflightUsageReceipts"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:432"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#listProcessUsageReceipts",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#listProcessUsageReceipts"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:488"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#makeProcessUsageReceiptDescriptor",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#makeProcessUsageReceiptDescriptor"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:348"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#readPreflightUsageReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#readPreflightUsageReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:239"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#readProcessUsageReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#readProcessUsageReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:306"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#removeProcessUsageReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#removeProcessUsageReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:561"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#validatePreflightUsageReceiptDescriptor",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#validatePreflightUsageReceiptDescriptor"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:72"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#validateProcessUsageReceiptDescriptor",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#validateProcessUsageReceiptDescriptor"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:112"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#writePreflightUsageReceipt",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#writePreflightUsageReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:264"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preflight-receipt-journal.mjs#writeProcessUsageReceipt",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "preflight-receipt-journal.mjs#writeProcessUsageReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/preflight-receipt-journal.mjs:389"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root-recovery.mjs#acquireRootRecovery",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "acquire-chain",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "project-root-recovery.mjs#acquireRootRecovery",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:1048"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "project-root-recovery.mjs#acquireRootRecovery",
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:1048"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root-recovery.mjs#diagnoseProjectRoot",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "project-root-recovery.mjs#diagnoseProjectRoot"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:479"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root-recovery.mjs#rebindProjectRoot",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "acquire-chain",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "project-root-recovery.mjs#rebindProjectRoot",
+            "project-root-recovery.mjs#executeRelocation",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:909",
+            "scripts/lib/project-root-recovery.mjs:837"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "project-root-recovery.mjs#rebindProjectRoot",
+            "project-root-recovery.mjs#executeRelocation",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:909",
+            "scripts/lib/project-root-recovery.mjs:837"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root-recovery.mjs#recoverRelocatedRoot",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "acquire-chain",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "project-root-recovery.mjs#recoverRelocatedRoot",
+            "project-root-recovery.mjs#executeRelocation",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:913",
+            "scripts/lib/project-root-recovery.mjs:837"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "project-root-recovery.mjs#recoverRelocatedRoot",
+            "project-root-recovery.mjs#executeRelocation",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root-recovery.mjs:913",
+            "scripts/lib/project-root-recovery.mjs:837"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root.mjs#assertProjectRootBinding",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "project-root.mjs#assertProjectRootBinding"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root.mjs:56"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root.mjs#canonicalProjectRoot",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "project-root.mjs#canonicalProjectRoot"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root.mjs#classifyProjectRootBinding",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "project-root.mjs#classifyProjectRootBinding"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root.mjs:26"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project-root.mjs#projectRootDigest",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "project-root.mjs#projectRootDigest"
+          ],
+          "coordinates": [
+            "scripts/lib/project-root.mjs:22"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recipes.mjs#loadRecipes",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recipes.mjs#loadRecipes"
+          ],
+          "coordinates": [
+            "scripts/lib/recipes.mjs:35"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recipes.mjs#matchRecipe",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recipes.mjs#matchRecipe"
+          ],
+          "coordinates": [
+            "scripts/lib/recipes.mjs:57"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recipes.mjs#recipesDir",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recipes.mjs#recipesDir"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "recipes.mjs#validateRecipesDir",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recipes.mjs#validateRecipesDir"
+          ],
+          "coordinates": [
+            "scripts/lib/recipes.mjs:21"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#ACQUIRE_HALT",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#ACQUIRE_HALT"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#acquireHalt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#acquireHalt"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:107"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#acquireRecovery",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "acquire-chain",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "recover.mjs#acquireRecovery",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:1184"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "recover.mjs#acquireRecovery",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:1184"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#buildAcquisitionReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#buildAcquisitionReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:125"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#clearRecoveryLease",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#clearRecoveryLease"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:1030"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#consumedFromReceipt",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#consumedFromReceipt"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#contractFields",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#contractFields"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:116"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#recoverBoundary",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "human-only-recovery",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "recover.mjs#recoverBoundary",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:772"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "recover.mjs#recoverBoundary",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:772"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#recoverRun",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "structural-no-target",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "recover.mjs#recoverRun",
+            "recover.mjs#legacyRecover",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:943",
+            "scripts/lib/recover.mjs:908"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "recover.mjs#recoverRun",
+            "recover.mjs#legacyRecover",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:943",
+            "scripts/lib/recover.mjs:908"
+          ]
+        }
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/recover.mjs:938"
+        ]
+      }
+    },
+    {
+      "id": "recover.mjs#recoverySafetyReason",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#recoverySafetyReason"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:185"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#supersedeAffinity",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "human-only-recovery",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "recover.mjs#supersedeAffinity",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:469"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "recover.mjs#supersedeAffinity",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:469"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover.mjs#validateBoundaryRecoveryArtifactLocked",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "recover.mjs#validateBoundaryRecoveryArtifactLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/recover.mjs:1203"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "respawn.mjs#isHeadlessInvocation",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "respawn.mjs#isHeadlessInvocation"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:193"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "respawn.mjs#resolveSpawnMode",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "respawn.mjs#resolveSpawnMode"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:209"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "respawn.mjs#respawn",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "structural-no-target",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "respawn.mjs#respawn",
+            "respawn.mjs#awaitChildReadiness",
+            "respawn.mjs#preservePause",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:447",
+            "scripts/lib/respawn.mjs:371",
+            "scripts/lib/respawn.mjs:329"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "respawn.mjs#respawn",
+            "respawn.mjs#awaitChildReadiness",
+            "respawn.mjs#preservePause",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:447",
+            "scripts/lib/respawn.mjs:371",
+            "scripts/lib/respawn.mjs:329"
+          ]
+        }
+      ],
+      "structural_precondition": {
+        "kind": "state-precondition",
+        "coordinates": [
+          "scripts/lib/respawn.mjs:454"
+        ]
+      }
+    },
+    {
+      "id": "respawn.mjs#respawnGate",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "respawn.mjs#respawnGate"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:111"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "respawn.mjs#rollbackAndPause",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "pause-direction",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "respawn.mjs#rollbackAndPause",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:267"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "respawn.mjs#rollbackAndPause",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/respawn.mjs:267"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#REVIEW_ATTEMPT_ID",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#REVIEW_ATTEMPT_ID"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#REVIEW_IMPORT_MAX_ARTIFACTS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#REVIEW_IMPORT_MAX_ARTIFACTS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#REVIEW_REPORT_BODY_MAX_BYTES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#REVIEW_REPORT_BODY_MAX_BYTES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#deriveReviewArtifactContract",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#deriveReviewArtifactContract"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:118"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#isProofCapableChecker",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#isProofCapableChecker"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:32"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#locateCapturedImportedReviewArtifact",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#locateCapturedImportedReviewArtifact"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:323"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#materializeImportedReview",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#materializeImportedReview"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:298"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#parseReviewImport",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#parseReviewImport"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:57"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#prepareImportedReview",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#prepareImportedReview"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:249"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#sha256Bytes",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#sha256Bytes"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:40"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#sha256File",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#sha256File"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:41"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#validateImportedEvidence",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#validateImportedEvidence"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:153"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#verifyCapturedImportedReviewProof",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#verifyCapturedImportedReviewProof"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:342"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review-import.mjs#verifyImportedEnvelope",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review-import.mjs#verifyImportedEnvelope"
+          ],
+          "coordinates": [
+            "scripts/lib/review-import.mjs:435"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#blockIndependentReview",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:156"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "review.mjs#blockIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#claimIndependentReview",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "review.mjs#claimIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:113"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "review.mjs#claimIndependentReview",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:113"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#dispatchReview",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "dominance",
+          "path": [
+            "review.mjs#dispatchReview",
+            "episode.mjs#newBlockedCheckerEpisode",
+            "episode.mjs#createEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:449",
+            "scripts/lib/episode.mjs:148",
+            "scripts/lib/episode.mjs:80"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "review.mjs#dispatchReview",
+            "episode.mjs#newBlockedCheckerEpisode",
+            "episode.mjs#createEpisode",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:449",
+            "scripts/lib/episode.mjs:148",
+            "scripts/lib/episode.mjs:80"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#epOrder",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#epOrder"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:215"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#findPendingIndependentChecker",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#findPendingIndependentChecker"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:30"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#importReviewOutcome",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "dominance",
+          "path": [
+            "review.mjs#importReviewOutcome",
+            "review.mjs#commitReviewOutcome",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:723",
+            "scripts/lib/review.mjs:561"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "review.mjs#importReviewOutcome",
+            "review.mjs#commitReviewOutcome",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:723",
+            "scripts/lib/review.mjs:561"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#makerReviewed",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#makerReviewed"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:316"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#parseVerdict",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#parseVerdict"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:304"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#recordReviewOutcome",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "dominance",
+          "path": [
+            "review.mjs#recordReviewOutcome",
+            "review.mjs#commitReviewOutcome",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:687",
+            "scripts/lib/review.mjs:561"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "review.mjs#recordReviewOutcome",
+            "review.mjs#commitReviewOutcome",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:687",
+            "scripts/lib/review.mjs:561"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#rejectionResolved",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#rejectionResolved"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:236"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#resolveReviewer",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#resolveReviewer"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:266"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#revalidateIndependentReviewClaim",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#revalidateIndependentReviewClaim"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:181"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#unsatisfiedReviewPoints",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "review.mjs#unsatisfiedReviewPoints"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:739"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#buildLaunchCommand",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#buildLaunchCommand"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#buildRecoveryResumeDescriptor",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#buildRecoveryResumeDescriptor"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-descriptor.mjs:152"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#buildRootRecoveryResumeDescriptor",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#buildRootRecoveryResumeDescriptor"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-descriptor.mjs:196"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#buildRuntimeResumeDescriptor",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#buildRuntimeResumeDescriptor"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#resumeSkillToken",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#resumeSkillToken"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-descriptor.mjs:122"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#usageOutputKind",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#usageOutputKind"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-descriptor.mjs:128"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-descriptor.mjs#validateLaunchCommandMetadata",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-descriptor.mjs#validateLaunchCommandMetadata"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-descriptor.mjs:56"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#approveLauncherExecutable",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "runtime-executable.mjs#approveLauncherExecutable",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:1044"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "runtime-executable.mjs#approveLauncherExecutable",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:1044"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#approveRuntimeExecutable",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "runtime-executable.mjs#approveRuntimeExecutable",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:1216"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "runtime-executable.mjs#approveRuntimeExecutable",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:1216"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#collectRuntimeExecutableCandidates",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#collectRuntimeExecutableCandidates"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:574"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#diagnoseLauncherExecutable",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#diagnoseLauncherExecutable"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:959"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#diagnoseRuntimeExecutable",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#diagnoseRuntimeExecutable"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:1127"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#resolveAuthenticatedCodexHome",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#resolveAuthenticatedCodexHome"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:1105"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#resolveTrustedLauncherExecutable",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#resolveTrustedLauncherExecutable"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:838"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#resolveTrustedRuntimeExecutable",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#resolveTrustedRuntimeExecutable"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:622"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#revalidateTrustedLauncherExecutable",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#revalidateTrustedLauncherExecutable"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:875"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime-executable.mjs#revalidateTrustedRuntimeExecutable",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime-executable.mjs#revalidateTrustedRuntimeExecutable"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime-executable.mjs:659"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime.mjs#SESSION_RUNTIMES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime.mjs#SESSION_RUNTIMES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "runtime.mjs#runtimeFence",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime.mjs#runtimeFence"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime.mjs:27"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime.mjs#sessionRuntime",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime.mjs#sessionRuntime"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime.mjs#validateSessionRuntime",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "runtime.mjs#validateSessionRuntime"
+          ],
+          "coordinates": [
+            "scripts/lib/runtime.mjs:3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#CHECKER_PROCESS_PHASES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#CHECKER_PROCESS_PHASES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#CHECKER_PROCESS_REASON_CODES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#CHECKER_PROCESS_REASON_CODES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#CHECKER_PROCESS_REASON_PHASES",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#CHECKER_PROCESS_REASON_PHASES"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#LAUNCHER_KINDS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#LAUNCHER_KINDS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#loadSchema",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#loadSchema"
+          ],
+          "coordinates": [
+            "scripts/lib/schema.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#validCheckerProcessDiagnostic",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#validCheckerProcessDiagnostic"
+          ],
+          "coordinates": [
+            "scripts/lib/schema.mjs:85"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#validProcessStreamMetadata",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#validProcessStreamMetadata"
+          ],
+          "coordinates": [
+            "scripts/lib/schema.mjs:77"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.mjs#validate",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "schema.mjs#validate"
+          ],
+          "coordinates": [
+            "scripts/lib/schema.mjs:581"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-profile.mjs#EFFORT_LEVELS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-profile.mjs#EFFORT_LEVELS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "session-profile.mjs#setSessionProfile",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "session-profile.mjs#setSessionProfile",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/session-profile.mjs:66"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "session-profile.mjs#setSessionProfile",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/session-profile.mjs:66"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-profile.mjs#validateEffort",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-profile.mjs#validateEffort"
+          ],
+          "coordinates": [
+            "scripts/lib/session-profile.mjs:14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-profile.mjs#validateModel",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-profile.mjs#validateModel"
+          ],
+          "coordinates": [
+            "scripts/lib/session-profile.mjs:18"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-profile.mjs#validateRuntimeProfile",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-profile.mjs#validateRuntimeProfile"
+          ],
+          "coordinates": [
+            "scripts/lib/session-profile.mjs:23"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#assertScopeAllows",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#assertScopeAllows"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:46"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#bindMakerScope",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#bindMakerScope"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:65"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#closeScope",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#closeScope"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:91"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#currentWorkstreamScope",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#currentWorkstreamScope"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:17"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#isOpenScope",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#isOpenScope"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:26"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#openScopeSessions",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#openScopeSessions"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:41"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#ownerSession",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#ownerSession"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#reservedOpenScope",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#reservedOpenScope"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:32"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-scope.mjs#supersedeScope",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "session-scope.mjs#supersedeScope"
+          ],
+          "coordinates": [
+            "scripts/lib/session-scope.mjs:107"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sessionstart-restore.mjs#main",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "sessionstart-restore.mjs#main"
+          ],
+          "coordinates": [
+            "scripts/hooks-impl/sessionstart-restore.mjs:216"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sessionstart-restore.mjs#runSessionStartRestore",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "sessionstart-restore.mjs#runSessionStartRestore"
+          ],
+          "coordinates": [
+            "scripts/hooks-impl/sessionstart-restore.mjs:80"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "slug.mjs#runIdSlug",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "slug.mjs#runIdSlug"
+          ],
+          "coordinates": [
+            "scripts/lib/slug.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "slug.mjs#slugify",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "slug.mjs#slugify"
+          ],
+          "coordinates": [
+            "scripts/lib/slug.mjs:1"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-driver.mjs#defaultRun",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "spawn-driver.mjs#defaultRun"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "spawn-driver.mjs#defaultVisibleRun",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "spawn-driver.mjs#defaultVisibleRun"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-driver.mjs:11"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-driver.mjs#headlessSpawn",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "spawn-driver.mjs#headlessSpawn"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-driver.mjs:101"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-driver.mjs#parseUsage",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "spawn-driver.mjs#parseUsage"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "spawn-driver.mjs#visibleSpawn",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "spawn-driver.mjs#visibleSpawn"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-driver.mjs:49"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-optin.mjs#confirmDesktop",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "spawn-optin.mjs#confirmDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:94"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "spawn-optin.mjs#confirmDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:94"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-optin.mjs#declineDesktop",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "spawn-optin.mjs#declineDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:129"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "spawn-optin.mjs#declineDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:129"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-optin.mjs#offerDesktop",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "spawn-optin.mjs#offerDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:41"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "spawn-optin.mjs#offerDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:41"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spawn-optin.mjs#resetDesktop",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "safety-downgrade",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "spawn-optin.mjs#resetDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:179"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "spawn-optin.mjs#resetDesktop",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/spawn-optin.mjs:179"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#LOCK_STALE_TTL_MS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#LOCK_STALE_TTL_MS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#WHITELIST",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#WHITELIST"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#captureReconciledRootRecoverySnapshot",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "state.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:266",
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "state.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#captureReconciledRootRecoverySnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:266",
+            "scripts/lib/integrity.mjs:682",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#captureReconciledRunSet",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "state.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:262",
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "state.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSet",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:262",
+            "scripts/lib/integrity.mjs:646",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#captureReconciledRunSnapshot",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "damage-repair",
+      "evidence": [
+        {
+          "kind": "non-dominance",
+          "path": [
+            "state.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:258",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "state.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#captureReconciledRunSnapshot",
+            "integrity.mjs#reconcileAnchoredPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:258",
+            "scripts/lib/integrity.mjs:620",
+            "scripts/lib/integrity.mjs:575"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#classifyPatch",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#classifyPatch"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:86"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#findRoot",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#findRoot"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:44"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#parseHashVerifiedStateBytes",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#parseHashVerifiedStateBytes"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:218"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#patch",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "activation-pending-block-dominance",
+          "path": [
+            "state.mjs#patch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:303"
+          ]
+        },
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "state.mjs#patch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:303"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "state.mjs#patch",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:303"
+          ]
+        }
+      ],
+      "activation_pending_block_dominance": "dominates"
+    },
+    {
+      "id": "state.mjs#pauseRun",
+      "classification": "X",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "does-not-dominate",
+      "reason": "pause-direction",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "state.mjs#pauseRun",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:606"
+          ]
+        },
+        {
+          "kind": "non-dominance",
+          "path": [
+            "state.mjs#pauseRun",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:606"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#readState",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#readState"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:251"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#readStateForRootRecovery",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#readStateForRootRecovery"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:247"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#runDir",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#runDir"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:65"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#withLock",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#withLock"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:395"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#withReconciledMutationLock",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#withReconciledMutationLock"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:269"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#withReconciledRootRecoveryLock",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#withReconciledRootRecoveryLock"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:273"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state.mjs#writeState",
+      "classification": "E3",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "infrastructure-primitive",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "state.mjs#writeState"
+          ],
+          "coordinates": [
+            "scripts/lib/state.mjs:277"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "streaming-process.mjs#runStreamingProcess",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "streaming-process.mjs#runStreamingProcess"
+          ],
+          "coordinates": [
+            "scripts/lib/streaming-process.mjs:85"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "streaming-process.mjs#runStreamingProcessSync",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "streaming-process.mjs#runStreamingProcessSync"
+          ],
+          "coordinates": [
+            "scripts/lib/streaming-process.mjs:380"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "toml-safe.mjs#tomlBasicString",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "toml-safe.mjs#tomlBasicString"
+          ],
+          "coordinates": [
+            "scripts/lib/toml-safe.mjs:21"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "toml-safe.mjs#tomlQuotedKeySegment",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "toml-safe.mjs#tomlQuotedKeySegment"
+          ],
+          "coordinates": [
+            "scripts/lib/toml-safe.mjs:26"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#classifyArtifactTargetsLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#classifyArtifactTargetsLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:1087"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#findPreparedPublicationLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#findPreparedPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:1009"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#markPublicationCommittedLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#markPublicationCommittedLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:1279"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#preparePublicationStagesLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#preparePublicationStagesLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:759"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#publicationCommittedLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#publicationCommittedLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:1264"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#publishArtifactTargetsLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#publishArtifactTargetsLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:1199"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transaction-journal.mjs#retireCommittedPublicationLocked",
+      "classification": "E4",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-run-state-durable-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "transaction-journal.mjs#retireCommittedPublicationLocked"
+          ],
+          "coordinates": [
+            "scripts/lib/transaction-journal.mjs:1301"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "usage-parser.mjs#STREAM_LIMITS",
+      "classification": "E8",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "non-callable-value",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "usage-parser.mjs#STREAM_LIMITS"
+          ],
+          "coordinates": []
+        }
+      ]
+    },
+    {
+      "id": "usage-parser.mjs#createCodexJsonlParser",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "usage-parser.mjs#createCodexJsonlParser"
+          ],
+          "coordinates": [
+            "scripts/lib/usage-parser.mjs:42"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "usage-parser.mjs#parseClaudeUsage",
+      "classification": "E7",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "expanded-read-pure-non-run-state",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "usage-parser.mjs#parseClaudeUsage"
+          ],
+          "coordinates": [
+            "scripts/lib/usage-parser.mjs:10"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace.mjs#inheritWorkstreams",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "workspace.mjs#inheritWorkstreams"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:184"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace.mjs#integrationOrder",
+      "classification": "E2",
+      "write_reachability": "does-not-reach",
+      "leasecheck_dominance": "not-applicable",
+      "reason": "no-run-state-write",
+      "evidence": [
+        {
+          "kind": "no-path",
+          "path": [
+            "workspace.mjs#integrationOrder"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:198"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace.mjs#newWorkstream",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "workspace.mjs#newWorkstream",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:75"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "workspace.mjs#newWorkstream",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:75"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace.mjs#recordWorkstreamTerminal",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "workspace.mjs#recordWorkstreamTerminal",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:122"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "workspace.mjs#recordWorkstreamTerminal",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:122"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace.mjs#setWorkstreamStatus",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "conditional-dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "conditional-dominance",
+          "path": [
+            "workspace.mjs#setWorkstreamStatus",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:96"
+          ]
+        },
+        {
+          "kind": "direct",
+          "path": [
+            "workspace.mjs#setWorkstreamStatus",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/workspace.mjs:96"
+          ]
+        }
+      ]
+    }
+  ]
+}

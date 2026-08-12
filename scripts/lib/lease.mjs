@@ -20,6 +20,21 @@ import { appendAnchored } from './integrity.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
+const LEGACY_ACTIVATION_DEADLINE_SEC = 900;
+const ACTIVATE_HALT = 'ACTIVATE_HALT';
+const REAP_HALT = 'REAP_HALT';
+
+function activateHalt(payload) {
+  const error = new Error(ACTIVATE_HALT);
+  error.payload = payload;
+  return error;
+}
+
+function reapHalt(payload) {
+  const error = new Error(REAP_HALT);
+  error.payload = payload;
+  return error;
+}
 
 function lockedTime(now, clock, context) {
   const value = now === undefined
@@ -34,6 +49,15 @@ function lockedTime(now, clock, context) {
 
 function lockedSafetyTime(clock, context) {
   return lockedTime(undefined, clock, context);
+}
+
+function activationDeadlineSeconds(data) {
+  const value = data.session_chain.activation_deadline_sec;
+  if (value === undefined) return LEGACY_ACTIVATION_DEADLINE_SEC;
+  if (!Number.isSafeInteger(value) || value < 60 || value > 86400) {
+    throw new Error('INVALID_ACTIVATION_DEADLINE_CONFIG');
+  }
+  return value;
 }
 
 function classifiedAcquireFailure(generation, reason, kernelExitCode) {
@@ -154,6 +178,14 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
     && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
     return { ok: false, reason: 'RUN_PAUSED' };
   }
+  // A successful acquire publishes ownership before the replacement session proves that it started.
+  // Until activateLease clears this deadline, only kernel lease/accounting/recovery traffic may write;
+  // ordinary business mutations must fail closed without changing the anchored state.
+  if (intent === 'business'
+    && lease.activation_deadline_at !== null
+    && lease.activation_deadline_at !== undefined) {
+    return { ok: false, reason: 'ACTIVATION_PENDING' };
+  }
   return { ok: true, reason: 'ok' };
 }
 
@@ -168,6 +200,7 @@ function replayedAcquisition(data, { expectGeneration, attempt }) {
   if (receipt.attempt_id !== attempt) return null;                         // 조건 5
   if (receipt.to_generation !== lease.generation) return null;             // 조건 6
   if (receipt.from_generation !== expectGeneration) return null;           // 조건 7
+  if (lease.activation_deadline_at === null || lease.activation_deadline_at === undefined) return null; // 조건 8
   return contractFields(
     { ok: true, generation: lease.generation, reason: 'acquired' },
     { consumed: consumedFromReceipt(receipt), replayed: true },
@@ -195,7 +228,10 @@ export function acquireLease(root, runId, {
   __testFaultAt,
 }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
-  const attempt = attemptId ?? null;
+  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+    throw new Error('INVALID_ATTEMPT_ID');
+  }
+  const attempt = attemptId;
   let plan = null;      // preCheck 이 세우고 mutate 가 집행한다 — 같은 lock, 같은 fresh loop
   let outcome = null;   // 진행 성공 응답 — mutate 가 채운다
   const appendOptions = {};
@@ -207,7 +243,8 @@ export function acquireLease(root, runId, {
     // runtimeFence 가 만든 객체를 그대로 복원한다 — `generation`도 `kernel_exit_code`도 없는 유일한 형태다.
     if (!runtimeResult.ok) throw acquireHalt(contractFields(runtimeResult));
     const lease = data.session_chain.lease;
-    // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
+    // 같은 owner 가 이미 active 면 멱등 (active 에는 stale-takeover expiry deadline 이 없다;
+    // activation_deadline_at 은 별도의 activation safety timer다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {
       // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
       // 위장 금지 — resume이 소유권 경계에서 명확히 거부되어야 한다.
@@ -268,6 +305,7 @@ export function acquireLease(root, runId, {
       }
       const safetyNow = lockedSafetyTime(clock, 'boundary recovery acquire safety');
       const lockedNow = lockedTime(now, () => safetyNow, 'boundary recovery acquire');
+      const activationDeadlineSec = activationDeadlineSeconds(data);
       const safety = recoverySafetyReason(data, safetyNow);
       if (safety) {
         throw acquireHalt(contractFields({
@@ -277,7 +315,14 @@ export function acquireLease(root, runId, {
           preserved: true,
         }));
       }
-      plan = { kind: 'boundary-recovery', iso: new Date(lockedNow).toISOString() };
+      plan = {
+        kind: 'boundary-recovery',
+        iso: new Date(lockedNow).toISOString(),
+        activationDeadlineSec,
+        activationDeadlineIso: new Date(
+          safetyNow + activationDeadlineSec * 1_000,
+        ).toISOString(),
+      };
       return;
     }
     const topologyError = boundaryHandoffTopologyError(data);
@@ -292,7 +337,9 @@ export function acquireLease(root, runId, {
       throw acquireHalt(contractFields({ ok: false, generation: lease.generation, reason: 'child-not-reserved' }));
     }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
-    const lockedNow = lockedTime(now, clock, 'lease acquire');
+    const safetyNow = lockedSafetyTime(clock, 'lease acquire safety');
+    const lockedNow = lockedTime(now, () => safetyNow, 'lease acquire');
+    const activationDeadlineSec = activationDeadlineSeconds(data);
     const expired = lease.expires_at && lockedNow > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) {
@@ -303,13 +350,23 @@ export function acquireLease(root, runId, {
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       throw acquireHalt(contractFields({ ok: false, generation: lease.generation, reason: 'child-not-reserved' }));
     }
-    plan = { kind: 'takeover', iso: new Date(lockedNow).toISOString() };
+    plan = {
+      kind: 'takeover',
+      iso: new Date(lockedNow).toISOString(),
+      activationDeadlineSec,
+      activationDeadlineIso: new Date(
+        safetyNow + activationDeadlineSec * 1_000,
+      ).toISOString(),
+    };
   };
 
   // 소유권 CAS + descriptor 소비 + unpause + 영수증 — 전부 이 트랜잭션 안에서 같은 fresh loop 위에.
   const mutate = (data) => {
     const lease = data.session_chain.lease;   // 소유권 CAS **직전** 값 — 영수증의 원천(§3.1)
-    const { iso } = plan;
+    const { iso, activationDeadlineSec, activationDeadlineIso } = plan;
+    if (data.session_chain.activation_deadline_sec === undefined) {
+      data.session_chain.activation_deadline_sec = activationDeadlineSec;
+    }
     if (plan.kind === 'boundary-recovery') {
       const child = data.session_chain.sessions.find(session => session.run_id === owner);
       const receipt = buildAcquisitionReceipt({
@@ -327,6 +384,9 @@ export function acquireLease(root, runId, {
         attemptId: attempt,
       });
       data.session_chain.lease = clearRecoveryLease(lease, owner, expectGeneration + 1, iso);
+      delete data.session_chain.lease.activation;
+      delete data.session_chain.lease.expiry_receipt;
+      data.session_chain.lease.activation_deadline_at = activationDeadlineIso;
       data.session_chain.lease.acquisition_receipt = receipt;
       data.status = 'running';
       data.pause_reason = null;
@@ -364,11 +424,13 @@ export function acquireLease(root, runId, {
       handoff_boundary_event: _boundaryEvent,
       handoff_project_binding_generation: _bindingGeneration,
       handoff_project_root_digest: _rootDigest,
+      activation: _activation,
+      expiry_receipt: _expiryReceipt,
       ...leaseAfterBoundary
     } = lease;
     data.session_chain.lease = {
       ...leaseAfterBoundary, owner_run_id: owner, generation: expectGeneration + 1,
-      acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
+      acquired_at: iso, expires_at: null, activation_deadline_at: activationDeadlineIso,
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
       handoff_trigger: null, takeover_kind: null,
       acquisition_receipt: receipt,
@@ -411,12 +473,228 @@ export function acquireLease(root, runId, {
   return outcome;
 }
 
+export function activateLease(root, runId, {
+  owner,
+  generation,
+  runtime,
+  attemptId,
+  activationToken,
+  activationTokenProvider,
+  now,
+  clock = Date.now,
+  __testFaultAt,
+} = {}) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
+  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+    throw new Error('INVALID_ATTEMPT_ID');
+  }
+  const hasRawToken = activationToken !== undefined;
+  const hasProvider = activationTokenProvider !== undefined;
+  if (hasRawToken === hasProvider
+    || (hasRawToken && (typeof activationToken !== 'string'
+      || !/^[A-Za-z0-9_-]{8,128}$/.test(activationToken)))
+    || (hasProvider && typeof activationTokenProvider !== 'function')) {
+    throw new Error('INVALID_ACTIVATION_TOKEN');
+  }
+
+  const receiptData = {};
+  let existingActivation;
+  let outcome = null;
+  const preCheck = (data) => {
+    const runtimeResult = runtimeFence(data, runtime);
+    if (!runtimeResult.ok) {
+      throw new Error(
+        `RUNTIME_FENCED: expected=${runtimeResult.expected} actual=${runtimeResult.actual}`,
+      );
+    }
+    const lease = data.session_chain.lease;
+    if (lease.owner_run_id !== owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== generation) throw new Error('LEASE_FENCED: generation-mismatch');
+
+    if (data.status === 'paused') {
+      throw activateHalt({ ok: false, reason: 'RUN_PAUSED' });
+    }
+    if (data.status === 'completed' || data.status === 'stopped') {
+      throw activateHalt({ ok: false, reason: 'RUN_TERMINAL' });
+    }
+
+    const acquisition = lease.acquisition_receipt;
+    if (!acquisition
+      || acquisition.attempt_id !== attemptId
+      || acquisition.to_generation !== generation) {
+      throw activateHalt({ ok: false, reason: 'attempt-mismatch' });
+    }
+
+    existingActivation = lease.activation;
+
+    if (existingActivation === undefined) {
+      if (lease.state !== 'active'
+        || lease.handoff_phase !== 'acquired'
+        || lease.activation_deadline_at === null
+        || lease.activation_deadline_at === undefined) {
+        throw activateHalt({ ok: false, reason: 'not-activation-pending' });
+      }
+
+      const deadlineAtMs = Date.parse(lease.activation_deadline_at);
+      if (!Number.isSafeInteger(deadlineAtMs)
+        || new Date(deadlineAtMs).toISOString() !== lease.activation_deadline_at) {
+        throw new Error('ACTIVATION_DEADLINE_INVALID');
+      }
+      const safetyNow = lockedSafetyTime(clock, 'lease activation deadline');
+      if (safetyNow >= deadlineAtMs) {
+        throw activateHalt({ ok: false, reason: 'activation-deadline-expired' });
+      }
+      const lockedNow = now === undefined
+        ? safetyNow
+        : lockedTime(now, clock, 'lease activation');
+      Object.assign(receiptData, {
+        owner_run_id: owner,
+        generation,
+        from_generation: acquisition.from_generation,
+        to_generation: acquisition.to_generation,
+        attempt_id: attemptId,
+        activated_at: new Date(lockedNow).toISOString(),
+      });
+    }
+  };
+
+  const beforeDurableCommit = ({ guard }) => {
+    const token = hasProvider
+      ? activationTokenProvider({ guard, allowCreate: existingActivation === undefined })
+      : activationToken;
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(token)) {
+      throw new Error('INVALID_ACTIVATION_TOKEN');
+    }
+    const tokenDigest = contentHash(token);
+    if (existingActivation !== undefined) {
+      throw activateHalt(existingActivation.activation_token_digest === tokenDigest
+        ? { ok: true, reason: 'already-activated' }
+        : { ok: false, reason: 'activation-token-mismatch' });
+    }
+    receiptData.activation_token_digest = tokenDigest;
+  };
+
+  const mutate = (data) => {
+    data.session_chain.lease.activation = structuredClone(receiptData);
+    data.session_chain.lease.activation_deadline_at = null;
+    outcome = { ok: true, reason: 'activated' };
+  };
+
+  try {
+    appendAnchored(root, runId, {
+      type: 'lease-activated',
+      data: receiptData,
+      now,
+    }, mutate, preCheck, {
+      beforeDurableCommit,
+      ...(__testFaultAt ? { faultAt: __testFaultAt } : {}),
+    });
+  } catch (error) {
+    if (error?.message !== ACTIVATE_HALT) throw error;
+    return error.payload;
+  }
+  return outcome;
+}
+
+export function reapLease(root, runId, {
+  owner,
+  generation,
+  clock = Date.now,
+  __testFaultAt,
+} = {}) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error('INVALID_GENERATION');
+  }
+
+  const receiptData = {};
+  let outcome = null;
+  const operationId = contentHash(JSON.stringify([
+    'activation-expiry', runId, owner, generation, ulid(),
+  ]));
+
+  const preCheck = (data) => {
+    const lease = data.session_chain.lease;
+    if (lease.owner_run_id !== owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== generation) throw new Error('LEASE_FENCED: generation-mismatch');
+    if (data.status === 'completed' || data.status === 'stopped') {
+      throw new Error('RUN_TERMINAL');
+    }
+    if (data.status !== 'running') {
+      throw reapHalt({ ok: false, reason: 'already-safe' });
+    }
+    const deadlineAt = lease.activation_deadline_at;
+    if (lease.state !== 'active' && (deadlineAt === null || deadlineAt === undefined)) {
+      throw reapHalt({ ok: false, reason: 'already-safe' });
+    }
+    if (deadlineAt === null || deadlineAt === undefined) {
+      throw reapHalt({ ok: false, reason: 'no-expiry-pending' });
+    }
+
+    const decidedAtMs = lockedSafetyTime(clock, 'lease activation expiry');
+    const deadlineAtMs = Date.parse(deadlineAt);
+    if (decidedAtMs < deadlineAtMs) {
+      throw reapHalt({ ok: false, reason: 'deadline-not-expired' });
+    }
+    const acquisition = lease.acquisition_receipt;
+    Object.assign(receiptData, {
+      decision_kind: 'activation-expiry',
+      evidence_kind: 'kernel-activation-deadline',
+      authority: 'kernel-clock',
+      transition: 'preserve-pause',
+      run_id: runId,
+      subject_owner_run_id: lease.owner_run_id,
+      subject_attempt_id: acquisition?.attempt_id,
+      subject_from_generation: acquisition?.from_generation,
+      subject_to_generation: acquisition?.to_generation,
+      deadline_at: deadlineAt,
+      decided_at: new Date(decidedAtMs).toISOString(),
+    });
+  };
+
+  const mutate = (data) => {
+    data.status = 'paused';
+    data.pause_reason = 'activation-expired';
+    data.resume_policy = 'human';
+    data.session_chain.lease.expiry_receipt = structuredClone(receiptData);
+    data.session_chain.lease.activation_deadline_at = null;
+    outcome = { ok: true, reason: 'activation-expired', transition: 'preserve-pause' };
+  };
+
+  const faultAt = __testFaultAt
+    ? (barrier) => {
+      __testFaultAt(barrier === 'event:0:append' ? 'event:appended' : barrier);
+    }
+    : undefined;
+  try {
+    appendAnchored(root, runId, {
+      type: 'activation-expired',
+      data: receiptData,
+    }, mutate, preCheck, {
+      publication: {
+        kind: 'activation-expiry',
+        operationId,
+        artifacts: [],
+        topology: { run_id: runId, subject_owner_run_id: owner, generation },
+        ...(faultAt ? { faultAt } : {}),
+      },
+    });
+  } catch (error) {
+    if (error?.message !== REAP_HALT) throw error;
+    return error.payload;
+  }
+  return outcome;
+}
+
 export function releaseLease(root, runId, { owner, generation }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
     if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
       return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
+    if (lease.activation_deadline_at !== null && lease.activation_deadline_at !== undefined) {
+      return { ok: false, reason: 'ACTIVATION_PENDING' };
     }
     // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
     // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
@@ -450,6 +728,9 @@ export function reserveHandoff(root, runId, { trigger, boundaryEvent, now = Date
         key: lease.handoff_idempotency_key,
         childRunId: lease.handoff_child_run_id,
       };
+    }
+    if (lease.activation_deadline_at !== null && lease.activation_deadline_at !== undefined) {
+      return { ok: false, reason: 'ACTIVATION_PENDING' };
     }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
@@ -543,6 +824,9 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
     if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
       return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
+    if (lease.activation_deadline_at !== null && lease.activation_deadline_at !== undefined) {
+      return { ok: false, reason: 'ACTIVATION_PENDING' };
     }
     const terminal = data.status === 'completed' || data.status === 'stopped';
     // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후

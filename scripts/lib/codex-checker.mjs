@@ -15,12 +15,25 @@ import { runStreamingProcessSync } from './streaming-process.mjs';
 import { isMeasuredOneTurnUsage } from './budget.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from './bounded-input.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
+import { validProcessStreamMetadata } from './schema.mjs';
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_CACHE_DEPTH = 3;
 const CLI_RESULT_BYTES = 512 * 1024;
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
+
+function validatedProcessStreams(result) {
+  const streams = result?.process_streams;
+  return streams != null
+    && typeof streams === 'object'
+    && !Array.isArray(streams)
+    && Object.keys(streams).sort().join(',') === 'stderr,stdout'
+    && validProcessStreamMetadata(streams.stderr)
+    && validProcessStreamMetadata(streams.stdout)
+    ? streams
+    : null;
+}
 
 function absolutePath(value, label) {
   if (typeof value !== 'string' || value.length === 0
@@ -248,19 +261,42 @@ export function runIndependentCodexChecker({
   entry.env = env;
   entry.usageOutputKind = 'codex-jsonl';
   entry.captureFinalMessage = true;
+  entry.captureProcessDiagnostic = true;
   const result = runProcess(entry, {
     timeoutMs,
     ...(usageReceipt == null ? {} : { usageReceipt }),
   });
   if (!result || result.ok !== true) return result || { ok: false, reason: 'checker-worker-invalid' };
-  if (!isMeasuredOneTurnUsage(result.usage)) return { ok: false, reason: 'checker-usage-invalid' };
+  if (!isMeasuredOneTurnUsage(result.usage)) {
+    const streams = validatedProcessStreams(result);
+    return {
+      ok: false,
+      reason: 'checker-usage-invalid',
+      ...(streams == null ? {} : {
+        process_diagnostic: {
+          reason_code: 'checker-usage-invalid',
+          process_phase: 'checker-adapter',
+          ...streams,
+        },
+      }),
+    };
+  }
   if (!Buffer.isBuffer(result.finalMessage) || result.finalMessage.length === 0
     || result.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
+    const streams = validatedProcessStreams(result);
+    const processDiagnostic = streams != null
+      ? {
+          reason_code: 'checker-final-message-invalid',
+          process_phase: 'final-message',
+          ...streams,
+        }
+      : null;
     return {
       ok: false,
       reason: 'checker-final-message-invalid',
       usage: result.usage,
       ...(result.usageReceipt != null ? { usageReceipt: result.usageReceipt } : {}),
+      ...(processDiagnostic == null ? {} : { process_diagnostic: processDiagnostic }),
     };
   }
   return {

@@ -5,9 +5,14 @@ import { normalizePortableRelativePath } from './fs-safe.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
+const ACTIVATION_EVENT_TYPES = Object.freeze(['lease-activated', 'activation-expired']);
 
 export function loadSchema() {
-  return JSON.parse(readFileSync(join(here, '../../schemas/loop-run.schema.json'), 'utf8'));
+  const schema = JSON.parse(readFileSync(join(here, '../../schemas/loop-run.schema.json'), 'utf8'));
+  return {
+    ...schema,
+    event_types: [...new Set([...(schema.event_types || []), ...ACTIVATION_EVENT_TYPES])],
+  };
 }
 
 function get(obj, path) {
@@ -38,6 +43,52 @@ function portableRel(value, prefix = null) {
 
 const REVIEW_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+export const CHECKER_PROCESS_REASON_PHASES = Object.freeze({
+  'process-config-invalid': Object.freeze(['request']),
+  'child-spawn-failed': Object.freeze(['child-spawn']),
+  'child-timeout': Object.freeze(['child-execution']),
+  'child-nonzero-exit': Object.freeze(['child-execution']),
+  'child-stdin-failed': Object.freeze(['child-stdin']),
+  'child-output-overflow': Object.freeze(['child-protocol']),
+  'child-protocol-invalid': Object.freeze(['child-protocol']),
+  'usage-unmeasurable': Object.freeze(['usage-parse']),
+  'usage-receipt-write-failed': Object.freeze(['receipt-write']),
+  'worker-request-invalid': Object.freeze(['request']),
+  'worker-request-overflow': Object.freeze(['request']),
+  'worker-spawn-failed': Object.freeze(['worker-spawn']),
+  'worker-timeout': Object.freeze(['worker-transport']),
+  'worker-result-overflow': Object.freeze(['worker-transport']),
+  'worker-terminated': Object.freeze(['worker-transport']),
+  'worker-nonzero-exit': Object.freeze(['worker-transport']),
+  'worker-protocol-invalid': Object.freeze(['worker-transport']),
+  'checker-worker-invalid': Object.freeze(['checker-adapter']),
+  'checker-usage-invalid': Object.freeze(['checker-adapter']),
+  'checker-final-message-invalid': Object.freeze(['final-message']),
+  'checker-process-error': Object.freeze(['checker-adapter']),
+  'diagnostic-invalid': Object.freeze(['checker-adapter']),
+});
+export const CHECKER_PROCESS_REASON_CODES = Object.freeze(
+  Object.keys(CHECKER_PROCESS_REASON_PHASES),
+);
+export const CHECKER_PROCESS_PHASES = Object.freeze([
+  ...new Set(Object.values(CHECKER_PROCESS_REASON_PHASES).flat()),
+]);
+
+export function validProcessStreamMetadata(value) {
+  return exactObject(value, ['sha256', 'byte_count', 'truncated'])
+    && SHA256.test(value.sha256 || '')
+    && Number.isSafeInteger(value.byte_count)
+    && value.byte_count >= 0
+    && typeof value.truncated === 'boolean';
+}
+
+export function validCheckerProcessDiagnostic(value) {
+  return exactObject(value, ['reason_code', 'process_phase', 'stderr', 'stdout'])
+    && Object.hasOwn(CHECKER_PROCESS_REASON_PHASES, value.reason_code)
+    && CHECKER_PROCESS_REASON_PHASES[value.reason_code].includes(value.process_phase)
+    && validProcessStreamMetadata(value.stderr)
+    && validProcessStreamMetadata(value.stdout);
+}
 const FROZEN_REVIEW_CLAIM_KEYS = Object.freeze([
   'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
   'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
@@ -228,6 +279,16 @@ const RECEIPT_TAKEOVER_KINDS = [
   'boundary-handoff', 'legacy-handoff', 'boundary-recovery',
   'affinity-supersession', 'project-root', 'released-takeover',
 ];
+const ACTIVATION_RECEIPT_KEYS = Object.freeze([
+  'owner_run_id', 'generation', 'from_generation', 'to_generation', 'attempt_id',
+  'activation_token_digest', 'activated_at',
+]);
+const EXPIRY_RECEIPT_KEYS = Object.freeze([
+  'decision_kind', 'evidence_kind', 'authority', 'transition', 'run_id',
+  'subject_owner_run_id', 'subject_attempt_id', 'subject_from_generation',
+  'subject_to_generation', 'deadline_at', 'decided_at',
+]);
+const ATTEMPT_ID = /^[A-Za-z0-9_-]{8,128}$/;
 
 function validateAcquisitionReceipt(receipt, errors) {
   if (receipt === undefined) return;
@@ -268,6 +329,53 @@ function validateAcquisitionReceipt(receipt, errors) {
   }
   if (receipt.attempt_id !== null && !/^[A-Za-z0-9_-]{8,128}$/.test(receipt.attempt_id || '')) {
     fail('attempt_id must be null or match ^[A-Za-z0-9_-]{8,128}$');
+  }
+}
+
+function validateActivationReceipt(receipt, errors) {
+  if (receipt === undefined) return;
+  const fail = detail => errors.push(`session_chain.lease.activation ${detail}`);
+  if (!exactObject(receipt, ACTIVATION_RECEIPT_KEYS)) {
+    fail(`must carry exactly ${ACTIVATION_RECEIPT_KEYS.join(', ')}`);
+    return;
+  }
+  if (!nonEmptyString(receipt.owner_run_id)) fail('owner_run_id must be a non-empty string');
+  for (const key of ['generation', 'from_generation', 'to_generation']) {
+    if (!Number.isSafeInteger(receipt[key]) || receipt[key] < 1) fail(`${key} must be a positive integer`);
+  }
+  if (!ATTEMPT_ID.test(receipt.attempt_id || '')) {
+    fail('attempt_id must match ^[A-Za-z0-9_-]{8,128}$');
+  }
+  if (!SHA256.test(receipt.activation_token_digest || '')) {
+    fail('activation_token_digest must be lowercase 64-hex');
+  }
+  if (!canonicalIso(receipt.activated_at)) fail('activated_at must be canonical ISO-8601');
+}
+
+function validateExpiryReceipt(receipt, errors) {
+  if (receipt === undefined) return;
+  const fail = detail => errors.push(`session_chain.lease.expiry_receipt ${detail}`);
+  if (!exactObject(receipt, EXPIRY_RECEIPT_KEYS)) {
+    fail(`must carry exactly ${EXPIRY_RECEIPT_KEYS.join(', ')}`);
+    return;
+  }
+  if (receipt.decision_kind !== 'activation-expiry') fail('decision_kind must be activation-expiry');
+  if (receipt.evidence_kind !== 'kernel-activation-deadline') {
+    fail('evidence_kind must be kernel-activation-deadline');
+  }
+  if (receipt.authority !== 'kernel-clock') fail('authority must be kernel-clock');
+  if (receipt.transition !== 'preserve-pause') fail('transition must be preserve-pause');
+  for (const key of ['run_id', 'subject_owner_run_id']) {
+    if (!nonEmptyString(receipt[key])) fail(`${key} must be a non-empty string`);
+  }
+  if (!ATTEMPT_ID.test(receipt.subject_attempt_id || '')) {
+    fail('subject_attempt_id must match ^[A-Za-z0-9_-]{8,128}$');
+  }
+  for (const key of ['subject_from_generation', 'subject_to_generation']) {
+    if (!Number.isSafeInteger(receipt[key]) || receipt[key] < 1) fail(`${key} must be a positive integer`);
+  }
+  for (const key of ['deadline_at', 'decided_at']) {
+    if (!canonicalIso(receipt[key])) fail(`${key} must be canonical ISO-8601`);
   }
 }
 
@@ -351,6 +459,10 @@ function validateEpisodeV040(ep, errors) {
   const expectedRequestRel = typeof ep.id === 'string' ? `episodes/${ep.id}/request.md` : null;
   if (!portableRel(ep.request_rel, 'episodes/') || ep.request_rel !== expectedRequestRel) {
     errors.push('episodes[].request_rel must exactly match episodes/<id>/request.md');
+  }
+  if (Object.hasOwn(ep, 'checker_process_diagnostic')
+    && !validCheckerProcessDiagnostic(ep.checker_process_diagnostic)) {
+    errors.push('episodes[].checker_process_diagnostic must be an exact closed secret-safe process diagnostic');
   }
   const invalidated = ep.invalidated_review_claims;
   if (invalidated === undefined) return;
@@ -606,7 +718,23 @@ export function validate(loopJson, schema = loadSchema()) {
     if (takeover === 'boundary-handoff' && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
       errors.push('boundary-handoff takeover requires exact boundary handoff fields');
     }
+    const activationDeadlineSec = sc.activation_deadline_sec;
+    if (activationDeadlineSec !== undefined
+      && (!Number.isSafeInteger(activationDeadlineSec)
+        || activationDeadlineSec < 60 || activationDeadlineSec > 86400)) {
+      errors.push('session_chain.activation_deadline_sec must be an integer in [60, 86400]');
+    }
+    const activationDeadlineAt = sc.lease?.activation_deadline_at;
+    if (activationDeadlineAt !== undefined && activationDeadlineAt !== null
+      && !canonicalIso(activationDeadlineAt)) {
+      errors.push('session_chain.lease.activation_deadline_at must be null or canonical ISO-8601');
+    }
+    if (sc.lease?.expires_at != null && activationDeadlineAt != null) {
+      errors.push('session_chain.lease.expires_at and activation_deadline_at must not both be non-null');
+    }
     validateAcquisitionReceipt(sc.lease?.acquisition_receipt, errors);
+    validateActivationReceipt(sc.lease?.activation, errors);
+    validateExpiryReceipt(sc.lease?.expiry_receipt, errors);
     validateSessions(sc, errors);
   }
   if (!Number.isSafeInteger(loopJson.project?.binding_generation) || loopJson.project.binding_generation < 1) {

@@ -35,6 +35,7 @@ import { buildAcquisitionReceipt, consumedFromReceipt, contractFields } from './
 
 const ROOT_DIGEST = /^[0-9a-f]{64}$/;
 const RECEIPT_LIMIT = 16;
+const LEGACY_ACTIVATION_DEADLINE_SEC = 900;
 
 function canonicalCandidate(candidateRoot) {
   try {
@@ -63,6 +64,32 @@ function canonicalIso(now) {
   const value = new Date(now);
   if (!Number.isFinite(value.getTime())) throw new Error('INVALID_NOW: project root recovery');
   return value.toISOString();
+}
+
+function lockedSafetyTime(clock) {
+  const value = typeof clock === 'function' ? clock() : Number.NaN;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new Error('INVALID_NOW: root recovery acquire safety');
+  }
+  return timestamp;
+}
+
+function operationTime(now, safetyNow) {
+  const timestamp = new Date(now === undefined ? safetyNow : now).getTime();
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new Error('INVALID_NOW: project root recovery');
+  }
+  return timestamp;
+}
+
+function activationDeadlineSeconds(loop) {
+  const value = loop.session_chain.activation_deadline_sec;
+  if (value === undefined) return LEGACY_ACTIVATION_DEADLINE_SEC;
+  if (!Number.isSafeInteger(value) || value < 60 || value > 86400) {
+    throw new Error('INVALID_ACTIVATION_DEADLINE_CONFIG');
+  }
+  return value;
 }
 
 function isOpenWorkstreamScope(scope) {
@@ -699,6 +726,9 @@ function freezeOperation(candidateRoot, runId, snapshot, classified, iso) {
       bindingGeneration: newBindingGeneration,
     })
     : null;
+  const acquireCommand = descriptor
+    ? `${descriptor.acquireInvocation} --attempt-id ${operationId}`
+    : null;
   const capsulePayload = replacementSessionId ? {
     contract: 'deep-loop-root-recovery-v1',
     operation_id: operationId,
@@ -711,7 +741,7 @@ function freezeOperation(candidateRoot, runId, snapshot, classified, iso) {
     lease_generation: newLeaseGeneration,
     runtime: sessionRuntime(loop),
     scope: recoveryScope(loop, recoveryKind),
-    acquire_command: descriptor.acquireInvocation,
+    acquire_command: acquireCommand,
     created_at: iso,
   } : null;
   const capsuleBytes = capsulePayload
@@ -970,7 +1000,11 @@ export function acquireRootRecovery(candidateRoot, runId, {
   runtime,
   now,
   clock = Date.now,
+  attemptId = null,
 } = {}) {
+  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+    throw new Error('INVALID_ATTEMPT_ID');
+  }
   const root = canonicalCandidate(candidateRoot);
   if (typeof capsuleRel !== 'string' || !capsuleRel.startsWith('recoveries/root/')
     || typeof owner !== 'string' || owner.length === 0
@@ -982,6 +1016,30 @@ export function acquireRootRecovery(candidateRoot, runId, {
   return withReconciledRootRecoveryLock(root, runId, (guard, snapshot) => {
     const loop = snapshot.data;
     const lease = loop.session_chain.lease;
+    const replayReceipt = lease.acquisition_receipt;
+    if (loop.status === 'running'
+      && lease.owner_run_id === owner
+      && lease.state === 'active'
+      && replayReceipt?.takeover_kind === 'project-root'
+      && replayReceipt.child_run_id === owner
+      && replayReceipt.attempt_id === attemptId
+      && replayReceipt.from_generation === expectGeneration
+      && replayReceipt.to_generation === lease.generation
+      && lease.activation_deadline_at != null) {
+      if (sessionRuntime(loop) !== runtime) {
+        throw new Error('RUNTIME_FENCED: root recovery runtime mismatch');
+      }
+      const receiptBindingGeneration = replayReceipt.project_binding_generation;
+      if (bindingGeneration !== receiptBindingGeneration
+        || receiptBindingGeneration !== loop.project?.binding_generation) {
+        throw new Error('PROJECT_BINDING_FENCED: root recovery binding mismatch');
+      }
+      return contractFields(
+        { ok: true, owner, generation: lease.generation,
+          project_binding_generation: receiptBindingGeneration, reason: 'acquired' },
+        { consumed: consumedFromReceipt(replayReceipt), replayed: true },
+      );
+    }
     const child = loop.session_chain.sessions.find(session => session.run_id === owner);
     const receipt = exactReceipt(root, runId, loop, snapshot.hash, {
       currentReservation: true,
@@ -997,9 +1055,10 @@ export function acquireRootRecovery(candidateRoot, runId, {
       throw new Error('LEASE_FENCED: root-recovery-reservation-mismatch');
     }
     if (sessionRuntime(loop) !== runtime) throw new Error('RUNTIME_FENCED: root recovery runtime mismatch');
-    const lockedNow = Number(clock());
-    if (!Number.isFinite(lockedNow)) throw new Error('INVALID_NOW: root recovery acquire');
-    const safety = checkHardBudget(loop, { now: lockedNow });
+    const safetyNow = lockedSafetyTime(clock);
+    const lockedNow = operationTime(now, safetyNow);
+    const activationDeadlineSec = activationDeadlineSeconds(loop);
+    const safety = checkHardBudget(loop, { now: safetyNow });
     if (safety.blocked) throw new Error('BUDGET_BLOCKED');
     if (checkBreaker(loop).tripped) throw new Error('BREAKER_BLOCKED');
     const path = join(runDir(root, runId), capsuleRel);
@@ -1017,7 +1076,7 @@ export function acquireRootRecovery(candidateRoot, runId, {
       || capsule.runtime !== runtime) {
       throw new Error('ROOT_RECOVERY_CAPSULE_INVALID');
     }
-    const iso = canonicalIso(now ?? lockedNow);
+    const iso = canonicalIso(lockedNow);
     child.started_at = iso;
     // spec §3.2 예외: 전용 lock 안이므로 appendAnchored 를 중첩 호출할 수 없다(불변식 #7). 이 경로는
     // **영수증 필드만** 같은 트랜잭션에 기록하고 이벤트는 남기지 않는다 — 예약 자체가 project-root-rebound
@@ -1034,15 +1093,20 @@ export function acquireRootRecovery(candidateRoot, runId, {
       fromGeneration: expectGeneration,
       toGeneration: lease.generation + 1,
       at: iso,
-      // §3.6.4: root recovery 는 attempt id 를 받지도 기록하지도 않는다.
-      attemptId: null,
+      attemptId,
     });
+    if (loop.session_chain.activation_deadline_sec === undefined) {
+      loop.session_chain.activation_deadline_sec = activationDeadlineSec;
+    }
     loop.session_chain.lease = {
       ...lease,
       owner_run_id: owner,
       generation: lease.generation + 1,
       acquired_at: iso,
       expires_at: null,
+      activation_deadline_at: new Date(
+        safetyNow + activationDeadlineSec * 1_000,
+      ).toISOString(),
       state: 'active',
       handoff_phase: 'acquired',
       handoff_idempotency_key: null,
@@ -1052,7 +1116,10 @@ export function acquireRootRecovery(candidateRoot, runId, {
       resume_policy: null,
       acquisition_receipt: acquisitionReceipt,
     };
-    for (const key of ['recovery_rel', 'recovery_sha256', 'recovery_discriminator']) {
+    for (const key of [
+      'recovery_rel', 'recovery_sha256', 'recovery_discriminator',
+      'activation', 'expiry_receipt',
+    ]) {
       delete loop.session_chain.lease[key];
     }
     loop.status = 'running';

@@ -97,6 +97,21 @@ WAL은 일반 read/mutation 전에 reconcile됩니다. incomplete, invalid, iden
 (세대당 하나, 매 성공 시 덮어씀). 응답 `consumed`의 상위집합이라 replay 응답 구성이 파생이
 아니라 필드 복사이고, 세션 엔트리가 없는 owner에게도 존재한다.
 
+### acquire 뒤 stored activation
+
+`proceed:true`만으로는 아직 business-write 권한이 아니다. execution child는 즉시 같은 attempt,
+반환된 owner/generation, runtime으로 `lease activate --stored-token`을 실행하며 `activated` 또는
+`already-activated`만 승격과 계속을 허용한다. 그 전 business write는 `ACTIVATION_PENDING`이다.
+
+stored mode는 child가 생성한 32-byte token을 OS user-state의 `deep-loop/activation-secrets`에
+게시한다. POSIX directory/file은 0700/0600이고 Windows는 검증된 current-user-only ACL이 필수다.
+skill은 trusted state-root 환경 변수를 덮어쓰거나 raw token/path를 descriptor, handoff, env,
+receipt, stdout, log에 복사하지 않는다. 응답 유실은 같은 attempt와 stored token으로 재시도한다.
+Windows ACL helper는 trusted ambient `SystemRoot` 아래 exact
+`System32/WindowsPowerShell/v1.0/powershell.exe`에만 결속하며 PATH resolve는 사용하지 않는다.
+raw-token CLI는 호환 전용이고 production skill은 stored mode만 쓴다. 자동 cleanup과 TTL은 금지하며
+future GC가 generation 교체 또는 terminal 증거를 확인할 때까지 보존한다.
+
 **attempt nonce — `lease acquire --attempt-id <token>`** (optional,
 `^[A-Za-z0-9_-]{8,128}$`; 비정형은 exit 1, 미지정은 위반이 아니다). 응답을 잃었으나 살아 있는
 호출자가 **같은** 값을 재전송하면 커널이 `{proceed:true, replayed:true}`를 재발급해 사람 개입

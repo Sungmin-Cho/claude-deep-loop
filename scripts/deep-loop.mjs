@@ -16,12 +16,12 @@ import {
   runDir,
   findRoot,
 } from './lib/state.mjs';
-import {
-  captureVerifiedRunSet,
-  captureVerifiedRunSnapshot,
-} from './lib/integrity.mjs';
+import { captureVerifiedRunSet, captureVerifiedRunSnapshot } from './lib/integrity.mjs';
 import { resolveRunContext } from './lib/run-context.mjs';
-import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
+import {
+  leaseCheck, acquireLease, activateLease, reapLease, releaseLease, sameBoundaryEvent,
+} from './lib/lease.mjs';
+import { activateStoredLease } from './lib/activation-secret.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
@@ -190,6 +190,17 @@ function renderNextAction(result) {
       boundary_event: `${boundary.seq}:${boundary.checksum}`,
     },
   };
+}
+
+function activationStatusLabel(loop, now = Date.now()) {
+  const lease = loop.session_chain?.lease;
+  if (lease?.state !== 'active') return null;
+  if (!Object.hasOwn(lease, 'activation_deadline_at')) return 'legacy-unprotected';
+  if (lease.activation_deadline_at === null) return null;
+  const deadline = Date.parse(lease.activation_deadline_at);
+  return Number.isFinite(deadline) && now >= deadline
+    ? 'expired-pending'
+    : 'activation-pending';
 }
 
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
@@ -382,6 +393,30 @@ function strArg(f, name) {
   if (typeof v !== 'string' || v.length === 0) { error('INVALID_' + name.toUpperCase().replace(/-/g, '_') + ': must be a non-empty string'); process.exit(3); }
   return v;
 }
+function parseNewLeaseFenceArgs(f, argv) {
+  if (flagOccurrences(argv, 'owner') !== 1) {
+    return { ok: false, code: 2, message: 'USAGE: --owner must appear exactly once' };
+  }
+  if (flagOccurrences(argv, 'generation') !== 1) {
+    return { ok: false, code: 2, message: 'USAGE: --generation must appear exactly once' };
+  }
+  const owner = f.owner;
+  if (typeof owner !== 'string' || owner.length === 0) {
+    return { ok: false, code: 2, message: 'USAGE: --owner <run_id> is required' };
+  }
+  const rawGeneration = f.generation;
+  if (typeof rawGeneration !== 'string' || rawGeneration.length === 0) {
+    return { ok: false, code: 2, message: 'USAGE: --generation <positive integer> is required' };
+  }
+  if (!/^[1-9]\d*$/.test(rawGeneration)) {
+    return { ok: false, code: 1, message: 'INVALID_GENERATION: must be a positive safe integer' };
+  }
+  const generation = Number(rawGeneration);
+  if (!Number.isSafeInteger(generation)) {
+    return { ok: false, code: 1, message: 'INVALID_GENERATION: must be a positive safe integer' };
+  }
+  return { ok: true, owner, generation };
+}
 function classifyKernelError(e) {
   const message = String(e?.message || e);
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
@@ -393,7 +428,10 @@ function classifyKernelError(e) {
   if (/^CHECKPOINT_[A-Z_]+(?::|$)/.test(message)) {
     return { code: 1, message };
   }
-  if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
+  if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID|ACTIVATION_DEADLINE_INVALID|RUN_TERMINAL)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
+  if (/^ACTIVATION_SECRET_(?:ROOT_INVALID|UNSAFE|MALFORMED|BINDING_MISMATCH|IO_UNAVAILABLE)$/.test(message)) {
     return { code: 1, message };
   }
   if (/^(?:RUNTIME_EXECUTABLE_|LAUNCHER_EXECUTABLE_|CODEX_HOME_)(?:[A-Z_]+)(?::|$)/.test(message)) {
@@ -536,8 +574,17 @@ const handlers = {
     const [verb, ...rest] = a;
     if (verb === 'recovery') {
       const [subverb, ...acquireArgs] = rest;
+      const allowed = new Set([
+        'capsule', 'owner', 'generation', 'binding-generation', 'runtime',
+        'candidate-project-root', 'run-id', 'now', 'attempt-id',
+      ]);
+      if (subverb !== 'acquire'
+        || !knownFlagVocabulary(acquireArgs, allowed)
+        || !exactFlagGrammar(acquireArgs, allowed)) {
+        error('USAGE: root recovery acquire has invalid grammar');
+        return 2;
+      }
       const f = parseFlags(acquireArgs);
-      if (subverb !== 'acquire') { error('USAGE: root recovery acquire'); return 2; }
       const candidateRoot = reqStr(f, 'candidate-project-root');
       const runId = reqStr(f, 'run-id');
       const capsuleRel = reqStr(f, 'capsule');
@@ -545,11 +592,17 @@ const handlers = {
       const runtime = reqStr(f, 'runtime');
       const generation = reqStr(f, 'generation');
       const bindingGeneration = reqStr(f, 'binding-generation');
+      const attemptId = reqStr(f, 'attempt-id');
       if (!candidateRoot || !runId || !capsuleRel || !owner || !runtime
+        || !attemptId
         || !/^[1-9]\d*$/.test(generation || '')
         || !/^[1-9]\d*$/.test(bindingGeneration || '')) {
         error('USAGE: root recovery acquire requires capsule, owner, generations, runtime, root, and run id');
         return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+        error('INVALID_ATTEMPT_ID');
+        return 1;
       }
       try {
         json(acquireRootRecovery(candidateRoot, runId, {
@@ -558,6 +611,7 @@ const handlers = {
           expectGeneration: Number(generation),
           bindingGeneration: Number(bindingGeneration),
           runtime,
+          attemptId,
           now: parseExplicitNow(f),
         }));
         return 0;
@@ -979,6 +1033,8 @@ const handlers = {
     const snapshot = captured.snapshot;
     const { data } = snapshot;
     const lease = data.session_chain?.lease || {};
+    const activationLabel = activationStatusLabel(data);
+    const activationLine = activationLabel === null ? null : `Activation: ${activationLabel}`;
     const childRunId = typeof lease.handoff_child_run_id === 'string'
       ? lease.handoff_child_run_id
       : null;
@@ -1009,6 +1065,7 @@ const handlers = {
         head,
         `Consumed: takeover_kind=${receipt.takeover_kind} superseded_owner=${receipt.superseded_owner_run_id} transition=${receipt.from_generation}->${receipt.to_generation} at=${receipt.at}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId || 'none'}`,
+        ...(activationLine === null ? [] : [activationLine]),
         // 이 줄은 `Handoff:`/`Recovery:` 헤드와 **공유**되므로(§3.3) 어느 방향으로도 무조건 단정할 수
         // 없다. 무조건 `proceed:false` 는 같은-attempt replay 에 대해 거짓이고(라운드 5 F5-2), 무조건
         // "같은 attempt_id는 replay" 는 영수증에 attempt_id 가 없는 소비 — `recovery acquire` /
@@ -1026,7 +1083,7 @@ const handlers = {
       return 0;
     }
     if (!childRunId || !['reserved', 'emitted', 'spawned'].includes(lease.handoff_phase)) {
-      process.stdout.write('no pending handoff\n');
+      process.stdout.write(`${activationLine === null ? '' : `${activationLine}\n`}no pending handoff\n`);
       return 0;
     }
 
@@ -1051,9 +1108,10 @@ const handlers = {
           bindingGeneration: data.project.binding_generation,
         });
         process.stdout.write([
-          descriptor.resumeInvocation,
+          `${descriptor.resumeInvocation} --attempt-id ${child.root_recovery_operation_id}`,
           `Recovery: kind=project-root capsule=${child.recovery_rel}`,
           `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+          ...(activationLine === null ? [] : [activationLine]),
           'Status: exact root recovery child acquisition is required',
           '',
         ].join('\n'));
@@ -1079,9 +1137,10 @@ const handlers = {
         generation: lease.generation,
       });
       process.stdout.write([
-        descriptor.resumeInvocation,
+        `${descriptor.resumeInvocation} --attempt-id ${lease.recovery_discriminator ?? lease.handoff_idempotency_key}`,
         `Recovery: kind=${child.recovery_kind} capsule=${child.recovery_rel}`,
         `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+        ...(activationLine === null ? [] : [activationLine]),
         'Status: exact recovery child acquisition is required',
         '',
       ].join('\n'));
@@ -1152,6 +1211,7 @@ const handlers = {
       descriptor.resumeInvocation,
       launcherGuidance,
       `Lease: owner=${lease.owner_run_id}${leaseState} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+      ...(activationLine === null ? [] : [activationLine]),
       'Status: 인수 확인은 /deep-loop-status',
       '',
     ].join('\n'));
@@ -1180,15 +1240,14 @@ const handlers = {
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
-      // spec §3.6.1: optional additive 플래그. 형식 위반은 **invalid value → exit 1** 이며 strArg 의
-      // fence 채널(exit 3)을 타지 않는다. 미지정은 위반이 아니다(현행 동작 완전 보존).
-      let attemptId = null;
-      if (f['attempt-id'] !== undefined) {
-        attemptId = f['attempt-id'];
-        if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
-          error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
-          return 1;
-        }
+      const attemptId = reqStr(f, 'attempt-id');
+      if (!attemptId) {
+        error('USAGE: --attempt-id <8-128 chars [A-Za-z0-9_-]> is required');
+        return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+        error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
+        return 1;
       }
       let r;
       try { r = acquireLease(root, runId, {
@@ -1228,9 +1287,102 @@ const handlers = {
         || r.reason === 'RECOVERY_ACQUIRE_REQUIRED'
       )) ? 3 : 0;
     }
+    if (verb === 'activate') {
+      const runId = runIdOf(root, f);
+      const fence = parseNewLeaseFenceArgs(f, rest);
+      if (!fence.ok) { error(fence.message); return fence.code; }
+      const { owner, generation } = fence;
+      const runtime = reqStr(f, 'runtime');
+      if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+      const attemptId = reqStr(f, 'attempt-id');
+      if (!attemptId) {
+        error('USAGE: --attempt-id <8-128 chars [A-Za-z0-9_-]> is required');
+        return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+        error('INVALID_ATTEMPT_ID: must match ^[A-Za-z0-9_-]{8,128}$');
+        return 1;
+      }
+      const storedOccurrences = flagOccurrences(rest, 'stored-token');
+      const rawOccurrences = flagOccurrences(rest, 'activation-token');
+      if (storedOccurrences > 0) {
+        if (storedOccurrences !== 1 || f['stored-token'] !== true || rawOccurrences !== 0) {
+          error('USAGE: --stored-token must be bare, appear exactly once, and exclude --activation-token');
+          return 2;
+        }
+        if (!knownFlagVocabulary(rest, new Set([
+          'stored-token', 'owner', 'generation', 'runtime', 'attempt-id', 'now',
+          'project-root', 'run-id',
+        ]))) {
+          error('USAGE: stored-token activation accepts binding flags only');
+          return 2;
+        }
+        try {
+          json(activateStoredLease(root, runId, {
+            owner, generation, runtime, attemptId, now: parseExplicitNow(f),
+          }));
+          return 0;
+        } catch (e) {
+          const classified = classifyKernelError(e);
+          if (classified) { error(classified.message); return classified.code; }
+          error('ACTIVATION_SECRET_IO_UNAVAILABLE'); return 1;
+        }
+      }
+      const activationToken = reqStr(f, 'activation-token');
+      if (!activationToken) {
+        error('USAGE: --activation-token <8-128 chars [A-Za-z0-9_-]> is required');
+        return 2;
+      }
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(activationToken)) {
+        error('INVALID_ACTIVATION_TOKEN: must match ^[A-Za-z0-9_-]{8,128}$');
+        return 1;
+      }
+      try {
+        json(activateLease(root, runId, {
+          owner,
+          generation,
+          runtime,
+          attemptId,
+          activationToken,
+          now: parseExplicitNow(f),
+        }));
+        return 0;
+      } catch (e) {
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(String(e?.message || e)); return 1;
+      }
+    }
+    if (verb === 'reap') {
+      const runId = runIdOf(root, f);
+      if (Object.hasOwn(f, 'now')) {
+        error('USAGE: lease reap does not accept --now');
+        return 2;
+      }
+      const fence = parseNewLeaseFenceArgs(f, rest);
+      if (!fence.ok) { error(fence.message); return fence.code; }
+      const { owner, generation } = fence;
+      try {
+        json(reapLease(root, runId, { owner, generation }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('LEASE_FENCED')) {
+          error(message);
+          return 3;
+        }
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(message);
+        return 1;
+      }
+    }
     if (verb === 'release') {
       const runId = runIdOf(root, f);
-      json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0;
+      json(releaseLease(root, runId, {
+        owner: strArg(f, 'owner'), generation: intArg(f, 'generation'),
+      }));
+      return 0;
     }
     error(`unknown lease verb: ${verb}`); return 2;
   },
@@ -1565,7 +1717,7 @@ const handlers = {
   recovery: async (a) => {
     const [verb, ...rest] = a;
     const allowed = new Set([
-      'capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now',
+      'capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now', 'attempt-id',
     ]);
     if (verb !== 'acquire'
       || !knownFlagVocabulary(rest, allowed)
@@ -1574,7 +1726,7 @@ const handlers = {
       return 2;
     }
     const f = parseFlags(rest);
-    if (['capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now']
+    if (['capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now', 'attempt-id']
       .some(name => f[name] === true)) {
       error('USAGE: recovery acquire option requires a value');
       return 2;
@@ -1583,11 +1735,17 @@ const handlers = {
     const owner = reqStr(f, 'owner');
     const runtime = reqStr(f, 'runtime');
     const generationValue = reqStr(f, 'generation');
+    const attemptId = reqStr(f, 'attempt-id');
     if (!capsuleRel || !owner || !runtime
+      || !attemptId
       || !/^[1-9]\d*$/.test(generationValue || '')
       || !Number.isSafeInteger(Number(generationValue))) {
       error('USAGE: recovery acquire requires capsule, owner, positive generation, and runtime');
       return 2;
+    }
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(attemptId)) {
+      error('INVALID_ATTEMPT_ID');
+      return 1;
     }
     const root = rootOf(f);
     const runId = runIdOf(root, f);
@@ -1598,6 +1756,7 @@ const handlers = {
         owner,
         expectGeneration: Number(generationValue),
         runtime,
+        attemptId,
         now: parseExplicitNow(f),
       });
       json(result);

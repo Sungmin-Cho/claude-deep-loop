@@ -323,6 +323,9 @@ export function patch(root, runId, field, value, { fence } = {}) {
     (loop) => { setPath(loop, field, value); },
     (loop) => {
       if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      else if (loop.session_chain.lease.activation_deadline_at != null) {
+        throw new Error('ACTIVATION_PENDING: patch');
+      }
       const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
       if (newPolicy && (field === 'active_workstreams' || lifecycleStatus)) {
         throw new Error(`PATCH_TYPED_ROUTE_REQUIRED: ${field}`);

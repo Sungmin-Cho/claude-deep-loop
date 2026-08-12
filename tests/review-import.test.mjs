@@ -18,9 +18,10 @@ import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
-import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { captureReconciledRunSnapshot, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
 import { runAllowReviewImport111, validateHostAcceptanceResult } from '../evals/lib/host-acceptance.mjs';
+import * as reviewImport from '../scripts/lib/review-import.mjs';
 import {
   REVIEW_IMPORT_MAX_ARTIFACTS,
   REVIEW_REPORT_BODY_MAX_BYTES,
@@ -159,7 +160,7 @@ test('review import schema artifact is exact and closed', () => {
   assert.deepEqual(schema.required, ['schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id', 'verdict', 'report_body', 'artifacts']);
   assert.equal(schema.properties.attempt_id.maxLength, 128);
   assert.equal(schema.properties.attempt_id.pattern, '^[A-Za-z0-9][A-Za-z0-9._-]*$');
-  assert.equal(schema.properties.schema_version.const, '1.0');
+  assert.deepEqual(schema.properties.schema_version, { type: 'string', const: '1.0' });
   assert.deepEqual(schema.properties.verdict.enum, ['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
   assert.equal(schema.properties.report_body.maxLength, REVIEW_REPORT_BODY_MAX_BYTES);
   assert.equal(schema.properties.artifacts.maxItems, REVIEW_IMPORT_MAX_ARTIFACTS);
@@ -191,6 +192,7 @@ test('parseReviewImport manually enforces exact keys, schema, types, enums, and 
     ['top-level array', JSON.stringify([]), /REVIEW_IMPORT_OBJECT_INVALID/],
     ['extra top key', JSON.stringify(validImport({ review_source: 'recorded-path' })), /REVIEW_IMPORT_PROPERTY_INVALID/],
     ['schema', JSON.stringify(validImport({ schema_version: '2.0' })), /REVIEW_IMPORT_SCHEMA_INVALID/],
+    ['schema wrong type', JSON.stringify(validImport({ schema_version: 1 })), /REVIEW_IMPORT_SCHEMA_INVALID/],
     ['reviewer', JSON.stringify(validImport({ reviewer_id: '' })), /REVIEW_IMPORT_REVIEWER_INVALID/],
     ['checker', JSON.stringify(validImport({ checker_episode_id: 1 })), /REVIEW_IMPORT_CHECKER_INVALID/],
     ['maker', JSON.stringify(validImport({ target_maker: null })), /REVIEW_IMPORT_TARGET_INVALID/],
@@ -351,6 +353,68 @@ test('successful review import journal retires through stopped finish exactly on
   }), /LEASE_FENCED: RUN_TERMINAL/);
   assert.deepEqual(readFileSync(join(runDir(f.root, f.runId), 'loop.json')), loopBytes);
   assert.deepEqual(readFileSync(join(runDir(f.root, f.runId), 'event-log.jsonl')), logBytes);
+});
+
+test('recovered imported proof requires one exact event and content-addressed envelope binding', () => {
+  assert.equal(typeof reviewImport.verifyCapturedImportedReviewProof, 'function');
+  const capture = () => {
+    const f = fixture();
+    const result = importReviewOutcome(f.root, f.runId, {
+      raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+    });
+    const artifactRel = `reviews/${result.report_sha256}.json`;
+    const snapshot = captureReconciledRunSnapshot(f.root, f.runId, { artifactRels: [artifactRel] });
+    const checker = snapshot.data.episodes.find(episode => episode.id === f.checkerId);
+    return { f, result, artifactRel, snapshot, claim: structuredClone(checker.review_claim) };
+  };
+  const verify = ({ f, snapshot, claim }) => reviewImport.verifyCapturedImportedReviewProof(snapshot, {
+    runId: f.runId,
+    checkerEpisodeId: f.checkerId,
+    attemptId: 'attempt-01',
+    claim,
+  });
+
+  const valid = capture();
+  assert.deepEqual(verify(valid), {
+    ok: true,
+    verdict: 'APPROVE',
+    terminal: 'approved',
+    report: valid.result.report,
+    report_sha256: valid.result.report_sha256,
+  });
+
+  for (const [label, mutate] of [
+    ['missing event', item => {
+      item.snapshot.logLines = item.snapshot.logLines.filter(event => event.type !== 'review-outcome');
+    }],
+    ['missing report', item => { item.snapshot.artifacts[item.artifactRel] = { state: 'absent' }; }],
+    ['altered report', item => {
+      item.snapshot.artifacts[item.artifactRel] = {
+        ...item.snapshot.artifacts[item.artifactRel], bytes: Buffer.from('altered'),
+      };
+    }],
+    ['stale event', item => {
+      item.snapshot.logLines.find(event => event.type === 'review-outcome').data.attempt_id = 'attempt-stale';
+    }],
+    ['unrelated event', item => {
+      item.snapshot.logLines.find(event => event.type === 'review-outcome').data.target_maker = 'unrelated-maker';
+    }],
+    ['forged bound envelope', item => {
+      const event = item.snapshot.logLines.find(candidate => candidate.type === 'review-outcome');
+      const envelope = JSON.parse(item.snapshot.artifacts[item.artifactRel].bytes.toString('utf8'));
+      envelope.envelope.provenance.review_binding.target_maker = 'forged-maker';
+      const bytes = Buffer.from(JSON.stringify(envelope));
+      const forgedSha = sha256(bytes);
+      const forgedRel = `reviews/${forgedSha}.json`;
+      event.data.report_sha256 = forgedSha;
+      event.data.report = `.deep-loop/runs/${item.f.runId}/${forgedRel}`;
+      item.snapshot.artifacts = { [forgedRel]: { state: 'present', bytes, sha256: forgedSha } };
+    }],
+  ]) {
+    const item = capture();
+    mutate(item);
+    assert.deepEqual(verify(item), { ok: false, reason: 'checker-import-proof-invalid' }, label);
+  }
 });
 
 test('import accepts only the checker plugin as canonical reviewer_id', () => {

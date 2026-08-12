@@ -2,16 +2,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { baselineNode20RegularFiles } from './helpers/baseline-node20-walk.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -379,13 +380,13 @@ test('CLI spawn-style reset-desktop on terminal run: exit 1 + JSON ok:false RUN_
 // generation-mismatch 등 그 외 ok:false는 기존 exit 0 + JSON 유지.
 test('CLI lease acquire: terminal → exit 3 run-terminal; non-terminal generation-mismatch → exit 0 (contract preserved)', () => {
   const { root, owner, gen } = seedTerminal('completed');
-  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude']);
+  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'TERMINALATTEMPT01']);
   assert.equal(r.status, 3, r.stdout + r.stderr);
   assert.equal(JSON.parse(r.stdout).reason, 'run-terminal');
   // 비terminal + stale generation → 기존 계약(exit 0 + JSON)
   const fresh = mkdtempSync(join(tmpdir(), 'dl-term-nt-'));
   const { runId: r2 } = initRun(fresh, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
-  const r2res = run(fresh, ['lease', 'acquire', '--owner', 'other-run', '--generation', '9', '--runtime', 'claude']);
+  const r2res = run(fresh, ['lease', 'acquire', '--owner', 'other-run', '--generation', '9', '--runtime', 'claude', '--attempt-id', 'TERMINALATTEMPT02']);
   assert.equal(r2res.status, 0, r2res.stdout + r2res.stderr);
   assert.equal(JSON.parse(r2res.stdout).reason, 'generation-mismatch');
   void r2;
@@ -398,7 +399,7 @@ test('CLI lease acquire returns a retryable JSON envelope for concurrent lock co
   // must surface the same structured transient result, never a raw Node stack.
   mkdirSync(lock);
   try {
-    const args = ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--run-id', runId];
+    const args = ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'LOCKBUSYATTEMPT01', '--run-id', runId];
     const results = await Promise.all([runAsync(root, args), runAsync(root, args)]);
     for (const result of results) {
       assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -459,7 +460,7 @@ test('CLI lease acquire requires a valued runtime', () => {
 test('CLI lease acquire classifies an invalid runtime enum or stored runtime state as exit 1', () => {
   const { root, runId, owner, gen } = seedTerminal('running');
 
-  const invalid = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'other']);
+  const invalid = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'other', '--attempt-id', 'RUNTIMEATTEMPT01']);
   assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
   assert.match(invalid.stderr, /INVALID_RUNTIME/);
 
@@ -469,7 +470,7 @@ test('CLI lease acquire classifies an invalid runtime enum or stored runtime sta
   const raw = JSON.stringify(data, null, 2);
   writeFileSync(join(runDir(root, runId), 'loop.json'), raw);
   writeFileSync(join(runDir(root, runId), '.loop.hash'), contentHash(raw));
-  const invalidState = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude']);
+  const invalidState = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'RUNTIMEATTEMPT02']);
   assert.equal(invalidState.status, 1, invalidState.stdout + invalidState.stderr);
   assert.match(invalidState.stderr, /INVALID_RUNTIME_STATE/);
   assert.doesNotMatch(invalidState.stderr, /\n\s+at /, 'classified runtime-state errors must not leak a stack');
@@ -492,6 +493,7 @@ test('CLI lease acquire rejects malformed autonomy without a wrong-runtime takeo
   const beforeEvents = existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null;
   const result = run(root, [
     'lease', 'acquire', '--owner', 'CLAUDE-OWNER', '--generation', String(gen), '--runtime', 'claude',
+    '--attempt-id', 'AUTONOMYATTEMPT01',
   ]);
 
   assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -505,7 +507,7 @@ test('CLI lease acquire rejects malformed autonomy without a wrong-runtime takeo
 test('CLI lease acquire runtime mismatch exits 3 with structured RUNTIME_FENCED and mutates nothing', () => {
   const { root, runId, owner, gen } = seedTerminal('running');
   const before = structuredClone(readState(root, runId).data);
-  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'codex']);
+  const r = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime', 'codex', '--attempt-id', 'RUNTIMEATTEMPT03']);
   assert.equal(r.status, 3, r.stdout + r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), {
     ok: false,
@@ -545,7 +547,7 @@ test('CLI lease release on terminal run is intentionally allowed (cleanup path) 
   assert.equal(JSON.parse(r.stdout).ok, true);
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
   // 정리 후에도 불활성: 재획득 거부 + business write 거부
-  const acq = run(root, ['lease', 'acquire', '--owner', 'other-run', '--generation', String(gen), '--runtime', 'claude']);
+  const acq = run(root, ['lease', 'acquire', '--owner', 'other-run', '--generation', String(gen), '--runtime', 'claude', '--attempt-id', 'TERMINALATTEMPT03']);
   assert.equal(acq.status, 3);
   assert.equal(JSON.parse(acq.stdout).reason, 'run-terminal');
   const w = run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '[]', '--owner', owner, '--generation', String(gen)]);
@@ -760,4 +762,519 @@ test('semantic public import graph admits no raw state reader or lock consumer o
       assert.deepEqual(raw, [], `${relative(process.cwd(), path)}: raw state bindings`);
     }
   }
+});
+
+function seedActivationCli(runtime = 'claude') {
+  const f = seedTerminal('running', undefined, runtime);
+  const released = run(f.root, [
+    'lease', 'release', '--owner', f.owner, '--generation', String(f.gen), '--run-id', f.runId,
+  ]);
+  assert.equal(released.status, 0, released.stdout + released.stderr);
+  const owner = 'CLIACTIVATIONOWNER';
+  const acquired = run(f.root, [
+    'lease', 'acquire', '--owner', owner, '--generation', '1', '--runtime', runtime,
+    '--attempt-id', 'CLIACTIVATIONATTEMPT', '--run-id', f.runId,
+  ]);
+  assert.equal(acquired.status, 0, acquired.stdout + acquired.stderr);
+  assert.equal(JSON.parse(acquired.stdout).proceed, true);
+  return { ...f, owner, gen: 2, attemptId: 'CLIACTIVATIONATTEMPT' };
+}
+
+function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime = 'claude') {
+  return run(f.root, [
+    'lease', 'activate', '--owner', owner, '--generation', String(generation),
+    '--runtime', runtime, '--run-id', f.runId, ...extra,
+  ]);
+}
+
+function storedActivateCli(f, {
+  root = f.root, owner = f.owner, generation = f.gen, runtime = 'claude',
+  attemptId = f.attemptId, privateHome,
+} = {}) {
+  const home = privateHome || mkdtempSync(join(tmpdir(), 'dl-stored-fence-home-'));
+  const result = spawnSync(process.execPath, [
+    CLI, 'lease', 'activate', '--stored-token', '--owner', owner,
+    '--generation', String(generation), '--runtime', runtime, '--attempt-id', attemptId,
+    '--run-id', f.runId, '--project-root', root,
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_STATE_HOME: join(home, '.state'),
+      LOCALAPPDATA: join(home, 'AppData', 'Local'),
+    },
+  });
+  return { ...result, privateHome: home };
+}
+
+function privateActivationRoot(home) {
+  return process.platform === 'darwin'
+    ? join(home, 'Library', 'Application Support', 'deep-loop')
+    : join(home, '.state', 'deep-loop');
+}
+
+function reapCli(f, extra = [], owner = f.owner, generation = f.gen) {
+  return run(f.root, [
+    'lease', 'reap', '--owner', owner, '--generation', String(generation),
+    '--run-id', f.runId, ...extra,
+  ]);
+}
+
+function activationVerbCli(f, verb, fenceArgs) {
+  const verbArgs = verb === 'activate'
+    ? [
+      '--runtime', 'claude', '--attempt-id', f.attemptId,
+      '--activation-token', 'CliTaxonomyToken_01',
+    ]
+    : [];
+  return run(f.root, [
+    'lease', verb, ...fenceArgs, ...verbArgs, '--run-id', f.runId,
+  ]);
+}
+
+test('SLICE-010 new lease verbs classify omitted, bare, and empty fence options as usage exit 2', () => {
+  const cases = [
+    { label: 'owner omitted', fenceArgs: ['--generation', '2'], field: 'owner' },
+    { label: 'owner bare', fenceArgs: ['--owner', '--generation', '2'], field: 'owner' },
+    { label: 'owner empty', fenceArgs: ['--owner=', '--generation', '2'], field: 'owner' },
+    { label: 'generation omitted', fenceArgs: ['--owner', 'CLIACTIVATIONOWNER'], field: 'generation' },
+    { label: 'generation bare', fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation'], field: 'generation' },
+    { label: 'generation empty', fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation='], field: 'generation' },
+  ];
+  for (const verb of ['activate', 'reap']) {
+    for (const { label, fenceArgs, field } of cases) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, fenceArgs);
+      assert.equal(result.status, 2, `${verb} ${label}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, new RegExp(`USAGE: --${field}`));
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, `${verb} ${label}`);
+    }
+  }
+});
+
+test('SLICE-010 new lease verbs reject every duplicate fence option ordering as usage exit 2', () => {
+  const cases = [
+    {
+      label: 'owner bare then valid',
+      fenceArgs: ['--owner', '--owner', 'CLIACTIVATIONOWNER', '--generation', '2'],
+    },
+    {
+      label: 'owner valid then bare',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--owner', '--generation', '2'],
+    },
+    {
+      label: 'owner empty then valid',
+      fenceArgs: ['--owner=', '--owner', 'CLIACTIVATIONOWNER', '--generation', '2'],
+    },
+    {
+      label: 'owner valid then empty',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--owner=', '--generation', '2'],
+    },
+    {
+      label: 'owner valid then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--owner', 'OTHEROWNER', '--generation', '2'],
+    },
+    {
+      label: 'generation bare then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '--generation', '2'],
+    },
+    {
+      label: 'generation valid then bare',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '2', '--generation'],
+    },
+    {
+      label: 'generation invalid then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '0', '--generation', '2'],
+    },
+    {
+      label: 'generation valid then invalid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '2', '--generation', '0'],
+    },
+    {
+      label: 'generation valid then valid',
+      fenceArgs: ['--owner', 'CLIACTIVATIONOWNER', '--generation', '2', '--generation', '3'],
+    },
+  ];
+  for (const verb of ['activate', 'reap']) {
+    for (const { label, fenceArgs } of cases) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, fenceArgs);
+      assert.equal(result.status, 2, `${verb} ${label}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /USAGE: --(owner|generation)/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, `${verb} ${label}`);
+    }
+  }
+});
+
+test('SLICE-010 new lease verbs classify malformed generations as invalid-value exit 1', () => {
+  for (const verb of ['activate', 'reap']) {
+    for (const generation of ['0', '-1', '1.5', 'abc', '9007199254740992']) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, [
+        '--owner', f.owner, '--generation', generation,
+      ]);
+      assert.equal(result.status, 1,
+        `${verb} generation=${generation}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /INVALID_GENERATION/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before,
+        `${verb} generation=${generation}`);
+    }
+  }
+});
+
+test('SLICE-010 new lease verbs reserve exit 3 for valid-shaped stale fences', () => {
+  for (const verb of ['activate', 'reap']) {
+    for (const fenceArgs of [
+      ['--owner', 'STALEOWNER', '--generation', '2'],
+      ['--owner', 'CLIACTIVATIONOWNER', '--generation', '999'],
+    ]) {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = activationVerbCli(f, verb, fenceArgs);
+      assert.equal(result.status, 3, `${verb} ${fenceArgs.join(' ')}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /LEASE_FENCED: (owner|generation)-mismatch/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before,
+        `${verb} ${fenceArgs.join(' ')}`);
+    }
+  }
+});
+
+test('SLICE-004 CLI lease activate records --now and returns activated', () => {
+  const f = seedActivationCli();
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliActivationToken_01',
+    '--now', '2026-08-06T08:09:10.000Z',
+  ]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, reason: 'activated' });
+  const state = readState(f.root, f.runId).data;
+  assert.equal(state.session_chain.lease.activation.activated_at, '2026-08-06T08:09:10.000Z');
+  assert.equal(state.session_chain.lease.activation_deadline_at, null);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'lease-activated').length, 1);
+});
+
+test('stored-token activation creates a private secret, activates, reuses it, and leaks no raw token', () => {
+  const f = seedActivationCli();
+  const privateHome = mkdtempSync(join(tmpdir(), 'dl-stored-home-'));
+  const argv = [
+    CLI, 'lease', 'activate', '--stored-token', '--owner', f.owner,
+    '--generation', String(f.gen), '--runtime', 'claude', '--attempt-id', f.attemptId,
+    '--run-id', f.runId, '--project-root', f.root,
+  ];
+  const invoke = () => spawnSync(process.execPath, argv, {
+    encoding: 'utf8', env: { ...process.env, HOME: privateHome },
+  });
+  const first = invoke();
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.deepEqual(JSON.parse(first.stdout), { ok: true, reason: 'activated' });
+  const second = invoke();
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.deepEqual(JSON.parse(second.stdout), { ok: true, reason: 'already-activated' });
+
+  const directory = process.platform === 'darwin'
+    ? join(privateHome, 'Library', 'Application Support', 'deep-loop', 'activation-secrets')
+    : join(privateHome, '.local', 'state', 'deep-loop', 'activation-secrets');
+  const files = readdirSync(directory);
+  assert.equal(files.length, 1);
+  const secret = JSON.parse(readFileSync(join(directory, files[0]), 'utf8')).token;
+  assert.match(secret, /^[A-Za-z0-9_-]{43}$/);
+  assert.doesNotMatch(first.stdout + first.stderr + second.stdout + second.stderr, new RegExp(secret));
+  const durable = terminalDurableBytes(f.root, f.runId);
+  for (const bytes of Object.values(durable).filter(Boolean)) {
+    assert.equal(bytes.includes(Buffer.from(secret)), false, 'raw token leaked into kernel durable bytes');
+  }
+  for (const file of baselineNode20RegularFiles(f.root)) {
+    const bytes = readFileSync(file);
+    assert.equal(bytes.includes(Buffer.from(secret)), false,
+      `raw token leaked into project artifact ${relative(f.root, file)}`);
+  }
+  assert.equal(readState(f.root, f.runId).data.session_chain.lease.activation.activation_token_digest,
+    contentHash(secret));
+});
+
+test('stored-token mode is bare exactly once and mutually exclusive with raw-token mode', () => {
+  for (const flags of [
+    ['--stored-token=true'],
+    ['--stored-token', '--stored-token'],
+    ['--stored-token', '--activation-token', 'CliCompatibilityToken_01'],
+    ['--stored-token', '--secret-root', '/attacker/path'],
+  ]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = activateCli(f, ['--attempt-id', f.attemptId, ...flags]);
+    assert.equal(result.status, 2, `${flags.join(' ')}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /stored-token/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
+test('stored-token activation preserves owner, generation, and runtime fences as exit 3 without mutation', () => {
+  for (const [label, overrides, expected] of [
+    ['owner', { owner: 'STALEOWNER' }, /LEASE_FENCED: owner-mismatch/],
+    ['generation', { generation: 999 }, /LEASE_FENCED: generation-mismatch/],
+    ['runtime', { runtime: 'codex' }, /RUNTIME_FENCED/],
+  ]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = storedActivateCli(f, overrides);
+    assert.equal(result.status, 3, `${label}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, expected, label);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, label);
+    assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+      `${label}: rejected fence must leave no private-store residue`);
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(result.privateHome), label);
+  }
+});
+
+test('stored-token activation preserves a copied-root project fence as exit 3 without mutation', () => {
+  const f = seedActivationCli();
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-stored-project-fence-'));
+  cpSync(join(f.root, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  const before = terminalDurableBytes(candidateRoot, f.runId);
+  const result = storedActivateCli(f, { root: candidateRoot });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
+  assert.deepEqual(terminalDurableBytes(candidateRoot, f.runId), before);
+  assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+    'project fence must leave no private-store residue');
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(result.privateHome));
+});
+
+test('stored-token structured and invalid-state rejections leave no private-store residue', () => {
+  for (const [label, mutate, overrides, status, expected] of [
+    ['paused', data => { data.status = 'paused'; data.pause_reason = 'human-hold'; }, {}, 0, /RUN_PAUSED/],
+    ['terminal', data => { data.status = 'completed'; }, {}, 0, /RUN_TERMINAL/],
+    ['attempt mismatch', () => {}, { attemptId: 'OTHERATTEMPT0001' }, 0, /attempt-mismatch/],
+    ['expired', data => { data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z'; }, {}, 0, /activation-deadline-expired/],
+    ['malformed deadline', data => { data.session_chain.lease.activation_deadline_at = 'not-an-iso-deadline'; }, {}, 1, /ACTIVATION_DEADLINE_INVALID/],
+  ]) {
+    const f = seedActivationCli();
+    const { data } = readState(f.root, f.runId);
+    mutate(data);
+    const raw = JSON.stringify(data, null, 2);
+    writeFileSync(join(runDir(f.root, f.runId), 'loop.json'), raw);
+    writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = storedActivateCli(f, overrides);
+    assert.equal(result.status, status, `${label}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stdout + result.stderr, expected, label);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, label);
+    assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+      `${label}: rejection must leave no private-store residue`);
+  }
+});
+
+test('stored-token private-store IO failure is exit 1 with kernel mutation zero', () => {
+  if (process.platform === 'win32') return; // Windows ACL polarity is injected in activation-secret.test.mjs.
+  const f = seedActivationCli();
+  const privateHome = mkdtempSync(join(tmpdir(), 'dl-stored-io-home-'));
+  const base = process.platform === 'darwin'
+    ? join(privateHome, 'Library', 'Application Support')
+    : join(privateHome, '.state');
+  mkdirSync(dirname(base), { recursive: true });
+  writeFileSync(base, 'not-a-directory');
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = storedActivateCli(f, { privateHome });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ACTIVATION_SECRET_IO_UNAVAILABLE/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(privateHome));
+});
+
+test('stored-token retry never creates a replacement token after activation is already durable', () => {
+  const f = seedActivationCli();
+  const activated = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'RawCompatibilityToken_01',
+  ]);
+  assert.equal(activated.status, 0, activated.stdout + activated.stderr);
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = storedActivateCli(f);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ACTIVATION_SECRET_IO_UNAVAILABLE/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  assert.equal(existsSync(privateActivationRoot(result.privateHome)), false,
+    'an activated generation without its original store must not mint a replacement token');
+});
+
+test('SLICE-004 CLI expired activation is structured exit zero and mutation-free', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliExpiredToken_01',
+    '--now', '1900-01-01T00:00:00.000Z',
+  ]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: false, reason: 'activation-deadline-expired',
+  });
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI malformed nonnull activation deadline is exit one and mutation-free', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = 'not-an-iso-deadline';
+  const raw = JSON.stringify(data, null, 2);
+  const dir = runDir(f.root, f.runId);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliMalformedToken_01',
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /ACTIVATION_DEADLINE_INVALID/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 expired activate versus reap CLI race serializes to reap-only expiry', async () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  const activateArgs = [
+    'lease', 'activate', '--owner', f.owner, '--generation', String(f.gen),
+    '--runtime', 'claude', '--attempt-id', f.attemptId,
+    '--activation-token', 'CliExpiredRaceToken_01', '--run-id', f.runId,
+  ];
+  const reapArgs = [
+    'lease', 'reap', '--owner', f.owner, '--generation', String(f.gen), '--run-id', f.runId,
+  ];
+  let [activation, expiry] = await Promise.all([
+    runAsync(f.root, activateArgs),
+    runAsync(f.root, reapArgs),
+  ]);
+  if (activation.status === 1 && /LOCK_BUSY/.test(activation.stderr)) {
+    activation = await runAsync(f.root, activateArgs);
+  }
+  if (expiry.status === 1 && /LOCK_BUSY/.test(expiry.stderr)) {
+    expiry = await runAsync(f.root, reapArgs);
+  }
+  assert.equal(activation.status, 0, activation.stdout + activation.stderr);
+  assert.ok([
+    'activation-deadline-expired',
+    'RUN_PAUSED',
+  ].includes(JSON.parse(activation.stdout).reason), activation.stdout);
+  assert.equal(expiry.status, 0, expiry.stdout + expiry.stderr);
+  assert.deepEqual(JSON.parse(expiry.stdout), {
+    ok: true, reason: 'activation-expired', transition: 'preserve-pause',
+  });
+  const events = readLines(f.root, f.runId);
+  assert.equal(events.filter(event => event.type === 'lease-activated').length, 0);
+  assert.equal(events.filter(event => event.type === 'activation-expired').length, 1);
+  assert.equal(readState(f.root, f.runId).data.status, 'paused');
+});
+
+test('SLICE-007 CLI lease reap settles an expired pending acquisition', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  const result = reapCli(f);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true, reason: 'activation-expired', transition: 'preserve-pause',
+  });
+  assert.equal(readState(f.root, f.runId).data.status, 'paused');
+});
+
+test('SLICE-007 CLI lease reap rejects the --now argument itself without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = reapCli(f, ['--now', '2999-01-01T00:00:00.000Z']);
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stderr, /USAGE: lease reap does not accept --now/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-007 CLI lease reap maps stale owner fences to exit 3 without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = reapCli(f, [], 'STALEOWNER');
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-010 CLI lease reap maps terminal state to invalid-state exit 1 after the fresh fence', () => {
+  const f = seedActivationCli();
+  const { data } = readState(f.root, f.runId);
+  data.status = 'completed';
+  writeState(f.root, f.runId, data);
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = reapCli(f);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /RUN_TERMINAL/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI omitted or empty activation attempt is usage exit 2 without mutation', () => {
+  for (const attemptArgs of [[], ['--attempt-id', '']]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = activateCli(f, [
+      ...attemptArgs, '--activation-token', 'CliActivationToken_02',
+    ]);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
+test('SLICE-004 CLI malformed activation attempt is invalid-value exit 1 without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', 'bad!', '--activation-token', 'CliActivationToken_03',
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /INVALID_ATTEMPT_ID/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI omitted or empty activation token is usage exit 2 without mutation', () => {
+  for (const tokenArgs of [[], ['--activation-token', '']]) {
+    const f = seedActivationCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = activateCli(f, [
+      '--attempt-id', f.attemptId, ...tokenArgs,
+    ]);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
+test('SLICE-004 CLI malformed activation token is invalid-value exit 1 without mutation', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'bad!',
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /INVALID_ACTIVATION_TOKEN/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('SLICE-004 CLI runtime fence precedes owner and generation fences', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const runtime = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliActivationToken_04',
+  ], 'WRONG', 999, 'codex');
+  assert.equal(runtime.status, 3, runtime.stdout + runtime.stderr);
+  assert.match(runtime.stderr, /RUNTIME_FENCED/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+
+  const owner = activateCli(f, [
+    '--attempt-id', f.attemptId, '--activation-token', 'CliActivationToken_04',
+  ], 'WRONG', f.gen, 'claude');
+  assert.equal(owner.status, 3, owner.stdout + owner.stderr);
+  assert.match(owner.stderr, /LEASE_FENCED: owner-mismatch/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
 });

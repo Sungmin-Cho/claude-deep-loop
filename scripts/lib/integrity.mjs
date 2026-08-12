@@ -2629,6 +2629,9 @@ export function verifyHead(root, runId, expected) {
 // 모든 이벤트 기록(cost 포함)은 이 경로를 통해야 앵커가 stale되지 않는다 (Codex impl r2 🟡).
 // mutate(loop, spent): 호출자별 상태 변경(예: budget.spent) — 선택.
 // preCheck(loop): lock 안 fresh loop 위에서 실행 — throw하면 append 전에 중단 (Codex r3 🔴: 가드 원자성).
+// opts.beforeDurableCommit({ guard }): fresh loop의 caller/terminal/schema eligibility 뒤, 첫 durable append 전에
+// 실행하는 좁은 private-publication seam. Throw하면 kernel bytes는 그대로이며 callback은 lock ownership을
+// 스스로 갱신할 수 있다.
 // opts.floor (#3): a business-intent mutation is charged a minimum floor of `opts.floor` turns via a PAIRED cost
 // event appended in the SAME lock/anchor, so a driver cannot neutralize the turns budget / per_session_turn_cap by
 // under-reporting or skipping `budget record`. Omitting floor (control-plane appends, recordCost) keeps the old
@@ -2701,13 +2704,20 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     // #6 (spec §3.2 note 6): the guard ctx is ALWAYS passed. Callers whose preCheck needs a `…Locked` helper
     // (lease.mjs / recover.mjs capsule validation) read it here; a preCheck declaring only (loop) is unaffected.
     if (preCheck) preCheck(loop, { guard });   // throws BEFORE append → anchor stays consistent
-    // Invariant: do not add a throwing guard after preCheck; preCheck side effects are coupled to this ordering.
+    // Only the narrow private-publication hook below may throw after preCheck. Callers must keep preCheck
+    // observational; the hook is deliberately after every fresh eligibility gate and before kernel durability.
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
     // 여기 도달했는데 terminal이면 "어떤 preCheck도 못 잡은" fence-less 경로 — 최후 방벽.
     // finish 이벤트는 preCheck 시점 non-terminal(전이는 mutate 단계)이라 자연 통과; double-finish는 차단된다.
     if (!rootRecovery && (loop.status === 'completed' || loop.status === 'stopped')) {
       throw new Error('RUN_TERMINAL: append');
+    }
+    const eligible = validate(loop);
+    if (!eligible.ok) throw new Error(`STATE_INVALID: ${eligible.errors.join('; ')}`);
+    if (opts.beforeDurableCommit) {
+      opts.beforeDurableCommit({ guard });
+      guard.assertOwned();
     }
     // Codex impl r12 🔴: verify the existing log (chain + tail vs stored anchor) BEFORE appending. Otherwise a
     // suffix-truncated/tampered log would be laundered — a new append + fresh anchor would hide the loss and

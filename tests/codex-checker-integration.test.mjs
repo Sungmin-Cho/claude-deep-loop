@@ -15,7 +15,7 @@ import {
   importReviewOutcome,
   recordReviewOutcome,
 } from '../scripts/lib/review.mjs';
-import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { captureReconciledRunSnapshot, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
@@ -77,6 +77,16 @@ function approveCodexRuntime(f) {
 
 function measuredUsage() {
   return { num_turns: 1, tokens: 12, input_tokens: 5, output_tokens: 7 };
+}
+
+function processDiagnostic(overrides = {}) {
+  return {
+    reason_code: 'child-nonzero-exit',
+    process_phase: 'child-execution',
+    stderr: { sha256: sha256(Buffer.from('checker secret')), byte_count: 14, truncated: false },
+    stdout: { sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false },
+    ...overrides,
+  };
 }
 
 function hostDeps(f, { verdict = 'APPROVE', reviewer = f.reviewer } = {}) {
@@ -203,10 +213,12 @@ test('blockIndependentReview atomically blocks the exact claim and human-pauses 
   const f = seed();
   claim(f);
   const before = events(f.root, f.runId).length;
+  const diagnostic = processDiagnostic();
   const result = blockIndependentReview(f.root, f.runId, {
     episodeId: f.checkerId,
     attemptId: 'attempt-01',
     reason: 'checker-process-failed',
+    processDiagnostic: diagnostic,
     fence: f.fence,
   });
   assert.deepEqual(result, { ok: true, status: 'blocked', reason: 'checker-process-failed' });
@@ -215,6 +227,7 @@ test('blockIndependentReview atomically blocks the exact claim and human-pauses 
   assert.equal(checker.status, 'blocked');
   assert.equal(checker.block_reason, 'checker-process-failed');
   assert.equal(checker.needs_human, true);
+  assert.deepEqual(checker.checker_process_diagnostic, diagnostic);
   assert.equal(checker.review_source, undefined);
   assert.equal(loop.status, 'paused');
   assert.equal(loop.pause_reason, 'independent-review:checker-process-failed');
@@ -223,7 +236,58 @@ test('blockIndependentReview atomically blocks the exact claim and human-pauses 
   const appended = events(f.root, f.runId).slice(before);
   assert.equal(appended.length, 1);
   assert.equal(appended[0].type, 'independent-review-blocked');
+  assert.deepEqual(appended[0].data, {
+    episode_id: f.checkerId,
+    attempt_id: 'attempt-01',
+    reason: 'checker-process-failed',
+    checker_process_diagnostic: diagnostic,
+  });
   assert.equal(appended.some(event => event.type === 'review-outcome'), false);
+  const reconciled = captureReconciledRunSnapshot(f.root, f.runId);
+  const reconciledChecker = reconciled.data.episodes.find(e => e.id === f.checkerId);
+  const reconciledEvent = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
+  assert.deepEqual(reconciledChecker.checker_process_diagnostic, reconciledEvent.data.checker_process_diagnostic);
+});
+
+test('blockIndependentReview rejects a raw-field persistence mutant before event or state mutation', () => {
+  const f = seed();
+  claim(f);
+  const before = events(f.root, f.runId).length;
+  const mutant = processDiagnostic();
+  mutant.stderr.raw = 'checker secret';
+  assert.throws(() => blockIndependentReview(f.root, f.runId, {
+    episodeId: f.checkerId,
+    attemptId: 'attempt-01',
+    reason: 'checker-process-failed',
+    processDiagnostic: mutant,
+    fence: f.fence,
+  }), /REVIEW_BLOCK_DIAGNOSTIC_INVALID/);
+  assert.equal(events(f.root, f.runId).length, before);
+  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
+});
+
+test('blockIndependentReview rejects missing stdout and impossible reason-phase pairs without mutation', () => {
+  for (const [label, mutate] of [
+    ['missing stdout', value => { delete value.stdout; }],
+    ['impossible pair', value => { value.process_phase = 'receipt-write'; }],
+  ]) {
+    const f = seed();
+    claim(f);
+    const before = events(f.root, f.runId).length;
+    const mutant = processDiagnostic();
+    mutate(mutant);
+    assert.throws(() => blockIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerId,
+      attemptId: 'attempt-01',
+      reason: 'checker-process-failed',
+      processDiagnostic: mutant,
+      fence: f.fence,
+    }), /REVIEW_BLOCK_DIAGNOSTIC_INVALID/, label);
+    assert.equal(events(f.root, f.runId).length, before, label);
+    const checker = readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId);
+    assert.equal(checker.status, 'in_progress', label);
+    assert.equal(checker.checker_process_diagnostic, undefined, label);
+  }
 });
 
 test('claimed import binds attempt and claim-time artifact bytes, then records attempt in envelope/event', () => {
@@ -537,15 +601,70 @@ test('checker process failure blocks and pauses once without proof or fabricated
   const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
   const result = driveHeadlessRun({
     root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
-    checkerRunFn: () => ({ ok: false, reason: 'timeout' }),
+    checkerRunFn: () => ({ ok: false, reason: 'exit-7', process_diagnostic: processDiagnostic() }),
   });
   assert.equal(result.action, 'checker-blocked');
   assert.equal(result.reason, 'checker-process-failed');
   const state = readState(f.root, f.runId).data;
   assert.equal(state.status, 'paused');
   assert.equal(state.episodes.find(e => e.id === f.checkerId).status, 'blocked');
+  assert.deepEqual(state.episodes.find(e => e.id === f.checkerId).checker_process_diagnostic, processDiagnostic());
+  const blocked = events(f.root, f.runId).findLast(event => event.type === 'independent-review-blocked');
+  assert.deepEqual(blocked.data.checker_process_diagnostic, processDiagnostic());
+  assert.equal(JSON.stringify({ state, blocked }).includes('checker secret'), false);
   assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts);
   assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
+});
+
+test('malformed checker diagnostic fails closed without copying attacker fields or secrets', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    checkerRunFn: () => ({
+      ok: false,
+      reason: 'attacker reason /tmp/private',
+      process_diagnostic: { stderr: { raw: 'checker secret' }, path: '/tmp/private' },
+    }),
+  });
+  assert.equal(result.action, 'checker-blocked');
+  const loop = readState(f.root, f.runId).data;
+  const diagnostic = loop.episodes.find(e => e.id === f.checkerId).checker_process_diagnostic;
+  assert.equal(diagnostic.reason_code, 'diagnostic-invalid');
+  assert.equal(diagnostic.process_phase, 'checker-adapter');
+  assert.equal(JSON.stringify({ loop, log: events(f.root, f.runId) }).includes('checker secret'), false);
+  assert.equal(JSON.stringify({ loop, log: events(f.root, f.runId) }).includes('/tmp/private'), false);
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts);
+});
+
+test('host normalizes missing stdout and impossible pairs before durable event-state reconciliation', () => {
+  for (const [label, mutate] of [
+    ['missing stdout', value => { delete value.stdout; }],
+    ['impossible pair', value => { value.process_phase = 'receipt-write'; }],
+  ]) {
+    const f = seed();
+    const deps = hostDeps(f);
+    const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+    const mutant = processDiagnostic();
+    mutate(mutant);
+    const result = driveHeadlessRun({
+      root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+      checkerRunFn: () => ({ ok: false, reason: 'exit-7', process_diagnostic: mutant }),
+    });
+    assert.equal(result.action, 'checker-blocked', label);
+    const reconciled = captureReconciledRunSnapshot(f.root, f.runId);
+    const checker = reconciled.data.episodes.find(e => e.id === f.checkerId);
+    const blocked = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
+    assert.deepEqual(checker.checker_process_diagnostic, {
+      reason_code: 'diagnostic-invalid',
+      process_phase: 'checker-adapter',
+      stderr: { sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false },
+      stdout: { sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false },
+    }, label);
+    assert.deepEqual(checker.checker_process_diagnostic, blocked.data.checker_process_diagnostic, label);
+    assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts, label);
+  }
 });
 
 test('headless checker immutable prompt carries anchored contract and evidence from the durable claim', () => {
@@ -581,7 +700,14 @@ test('a measured checker turn with no final message is charged once while proof 
   const deps = hostDeps(f);
   const result = driveHeadlessRun({
     root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
-    checkerRunFn: () => ({ ok: false, reason: 'checker-final-message-invalid', usage: measuredUsage() }),
+    checkerRunFn: () => ({
+      ok: false,
+      reason: 'checker-final-message-invalid',
+      usage: measuredUsage(),
+      process_diagnostic: processDiagnostic({
+        reason_code: 'checker-final-message-invalid', process_phase: 'final-message',
+      }),
+    }),
     checkerImportFn: () => { throw new Error('missing final bytes must never reach import'); },
   });
 
@@ -591,6 +717,7 @@ test('a measured checker turn with no final message is charged once while proof 
   const state = readState(f.root, f.runId).data;
   assert.equal(state.status, 'paused');
   assert.equal(state.episodes.find(e => e.id === f.checkerId).status, 'blocked');
+  assert.equal(state.episodes.find(e => e.id === f.checkerId).checker_process_diagnostic.reason_code, 'checker-final-message-invalid');
   assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
   assert.deepEqual(
     events(f.root, f.runId).filter(event => event.type === 'cost' && event.data.reported_turns === 1)

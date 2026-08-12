@@ -622,12 +622,24 @@ for (const runtime of ['claude', 'codex']) {
       '--owner', handoff.childRunId,
       '--generation', '1',
       '--runtime', runtime,
+      '--attempt-id', 'WORKSTREAMATTEMPT01',
       '--now', FIXED_NOW,
       '--run-id', runId,
     ]), 'boundary child acquire');
     assert.equal(acquired.ok, true);
     assert.equal(acquired.reason, 'acquired');
     assert.equal(acquired.generation, 2);
+    const activated = jsonResult(cli(root, [
+      'lease', 'activate',
+      '--owner', handoff.childRunId,
+      '--generation', '2',
+      '--runtime', runtime,
+      '--attempt-id', 'WORKSTREAMATTEMPT01',
+      '--activation-token', 'WorkstreamActivationToken_01',
+      '--now', FIXED_NOW,
+      '--run-id', runId,
+    ]), 'boundary child activate');
+    assert.deepEqual(activated, { ok: true, reason: 'activated' });
 
     const fence2 = mutationArgs(runId, handoff.childRunId, 2);
     jsonResult(cli(root, [

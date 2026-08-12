@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validate } from '../scripts/lib/schema.mjs';
+import {
+  CHECKER_PROCESS_PHASES,
+  CHECKER_PROCESS_REASON_CODES,
+  loadSchema,
+  validate,
+  validCheckerProcessDiagnostic,
+} from '../scripts/lib/schema.mjs';
 import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { classifyPatch } from '../scripts/lib/state.mjs';
 
@@ -14,6 +20,34 @@ function minimalValid() {
   };
 }
 
+function validActivationReceipt() {
+  return {
+    owner_run_id: 'OWNER',
+    generation: 2,
+    from_generation: 1,
+    to_generation: 2,
+    attempt_id: 'attempt-001',
+    activation_token_digest: 'a'.repeat(64),
+    activated_at: '2026-08-05T00:00:00.000Z',
+  };
+}
+
+function validExpiryReceipt() {
+  return {
+    decision_kind: 'activation-expiry',
+    evidence_kind: 'kernel-activation-deadline',
+    authority: 'kernel-clock',
+    transition: 'preserve-pause',
+    run_id: 'RUN',
+    subject_owner_run_id: 'OWNER',
+    subject_attempt_id: 'attempt-001',
+    subject_from_generation: 1,
+    subject_to_generation: 2,
+    deadline_at: '2026-08-05T00:00:00.000Z',
+    decided_at: '2026-08-05T00:15:00.000Z',
+  };
+}
+
 const OPEN_WORKSTREAM_SCOPE = Object.freeze({
   kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
   closed_at: null, superseded_at: null,
@@ -21,6 +55,192 @@ const OPEN_WORKSTREAM_SCOPE = Object.freeze({
 
 test('valid loop.json passes', () => {
   assert.equal(validate(minimalValid()).ok, true);
+});
+
+test('schema registry includes activation lifecycle event kinds', () => {
+  const schema = loadSchema();
+  assert.ok(schema.event_types.includes('lease-activated'));
+  assert.ok(schema.event_types.includes('activation-expired'));
+});
+
+test('checker process diagnostic is backward-compatible but exact, closed, and path-free when present', () => {
+  const stream = { sha256: 'a'.repeat(64), byte_count: 0, truncated: false };
+  const diagnostic = {
+    reason_code: 'child-nonzero-exit',
+    process_phase: 'child-execution',
+    stderr: stream,
+    stdout: { sha256: 'b'.repeat(64), byte_count: 17, truncated: true },
+  };
+  assert.equal(validCheckerProcessDiagnostic(diagnostic), true);
+  assert.ok(CHECKER_PROCESS_REASON_CODES.includes(diagnostic.reason_code));
+  assert.ok(CHECKER_PROCESS_PHASES.includes(diagnostic.process_phase));
+
+  const absent = minimalValid();
+  absent.episodes.push({ id: '001-checker', status: 'blocked', request_rel: 'episodes/001-checker/request.md' });
+  assert.equal(validate(absent).ok, true, 'legacy episode without diagnostic remains valid');
+
+  const present = structuredClone(absent);
+  present.episodes[0].checker_process_diagnostic = diagnostic;
+  assert.equal(validate(present).ok, true);
+
+  const mutants = [
+    ['missing stdout', value => { delete value.stdout; }],
+    ['raw stderr', value => { value.stderr.raw = 'SECRET'; }],
+    ['attacker path', value => { value.path = '/tmp/secret'; }],
+    ['extra argv', value => { value.argv = ['--secret']; }],
+    ['open reason', value => { value.reason_code = 'exit-37:/secret'; }],
+    ['prototype reason', value => { value.reason_code = 'toString'; }],
+    ['open phase', value => { value.process_phase = 'attacker-phase'; }],
+    ['negative count', value => { value.stderr.byte_count = -1; }],
+    ['non-canonical hash', value => { value.stderr.sha256 = 'A'.repeat(64); }],
+    ['non-boolean truncation', value => { value.stderr.truncated = 0; }],
+  ];
+  for (const [label, mutate] of mutants) {
+    const candidate = structuredClone(present);
+    mutate(candidate.episodes[0].checker_process_diagnostic);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+
+  const validPairs = [
+    ['process-config-invalid', 'request'],
+    ['child-spawn-failed', 'child-spawn'],
+    ['child-timeout', 'child-execution'],
+    ['child-nonzero-exit', 'child-execution'],
+    ['child-stdin-failed', 'child-stdin'],
+    ['child-output-overflow', 'child-protocol'],
+    ['child-protocol-invalid', 'child-protocol'],
+    ['usage-unmeasurable', 'usage-parse'],
+    ['usage-receipt-write-failed', 'receipt-write'],
+    ['worker-request-invalid', 'request'],
+    ['worker-request-overflow', 'request'],
+    ['worker-spawn-failed', 'worker-spawn'],
+    ['worker-timeout', 'worker-transport'],
+    ['worker-result-overflow', 'worker-transport'],
+    ['worker-terminated', 'worker-transport'],
+    ['worker-nonzero-exit', 'worker-transport'],
+    ['worker-protocol-invalid', 'worker-transport'],
+    ['checker-worker-invalid', 'checker-adapter'],
+    ['checker-usage-invalid', 'checker-adapter'],
+    ['checker-final-message-invalid', 'final-message'],
+    ['checker-process-error', 'checker-adapter'],
+    ['diagnostic-invalid', 'checker-adapter'],
+  ];
+  assert.deepEqual(CHECKER_PROCESS_REASON_CODES, validPairs.map(([reason]) => reason));
+  for (const [reason_code, process_phase] of validPairs) {
+    assert.equal(validCheckerProcessDiagnostic({ ...diagnostic, reason_code, process_phase }), true,
+      `${reason_code}/${process_phase}`);
+  }
+
+  for (const [reason_code, process_phase] of [
+    ['usage-receipt-write-failed', 'child-execution'],
+    ['child-nonzero-exit', 'receipt-write'],
+    ['worker-protocol-invalid', 'final-message'],
+    ['checker-final-message-invalid', 'checker-adapter'],
+  ]) {
+    assert.equal(validCheckerProcessDiagnostic({ ...diagnostic, reason_code, process_phase }), false,
+      `impossible pair ${reason_code}/${process_phase}`);
+  }
+});
+
+test('activation deadline config accepts inclusive bounds and rejects out-of-range values', () => {
+  for (const [value, expected] of [[59, false], [60, true], [86400, true], [86401, false]]) {
+    const loop = minimalValid();
+    loop.session_chain.activation_deadline_sec = value;
+    const result = validate(loop);
+    assert.equal(result.ok, expected, `${value}: ${result.errors.join('; ')}`);
+  }
+});
+
+test('activation deadline config requires integer seconds', () => {
+  for (const value of [60.5, '900', null]) {
+    const loop = minimalValid();
+    loop.session_chain.activation_deadline_sec = value;
+    assert.equal(validate(loop).ok, false, String(value));
+  }
+});
+
+test('lease rejects simultaneous stale TTL and activation deadline timers', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.expires_at = '2026-08-05T00:10:00.000Z';
+  loop.session_chain.lease.activation_deadline_at = '2026-08-05T00:15:00.000Z';
+  const result = validate(loop);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some(error => error.includes('must not both be non-null')));
+});
+
+test('legacy lease without activation fields and with null attempt receipt remains valid', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.acquisition_receipt = {
+    takeover_kind: 'boundary-handoff', child_run_id: 'CHILD', superseded_owner_run_id: 'PARENT',
+    boundary_event: { seq: 1, checksum: 'b'.repeat(64) }, project_root_digest: 'c'.repeat(64),
+    project_binding_generation: 1, handoff_rel: 'handoffs/next.md', reservation_key: 'reservation',
+    from_generation: 1, to_generation: 2, at: '2026-08-05T00:00:00.000Z', attempt_id: null,
+  };
+  assert.equal(Object.hasOwn(loop.session_chain.lease, 'activation_deadline_at'), false);
+  assert.equal(Object.hasOwn(loop.session_chain.lease, 'activation'), false);
+  assert.equal(Object.hasOwn(loop.session_chain.lease, 'expiry_receipt'), false);
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+});
+
+test('activation receipt accepts the exact seven-key shape', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.activation = validActivationReceipt();
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+});
+
+test('activation receipt rejects a missing required key', () => {
+  for (const key of Object.keys(validActivationReceipt())) {
+    const loop = minimalValid();
+    loop.session_chain.lease.activation = validActivationReceipt();
+    delete loop.session_chain.lease.activation[key];
+    assert.equal(validate(loop).ok, false, key);
+  }
+});
+
+test('activation receipt rejects an extra key', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.activation = { ...validActivationReceipt(), extra: true };
+  assert.equal(validate(loop).ok, false);
+});
+
+test('activation receipt rejects wrong types and non-64-hex digests', () => {
+  for (const mutate of [
+    receipt => { receipt.generation = '2'; },
+    receipt => { receipt.activation_token_digest = 'A'.repeat(64); },
+  ]) {
+    const loop = minimalValid();
+    loop.session_chain.lease.activation = validActivationReceipt();
+    mutate(loop.session_chain.lease.activation);
+    assert.equal(validate(loop).ok, false);
+  }
+});
+
+test('expiry receipt accepts the exact eleven-key shape', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.expiry_receipt = validExpiryReceipt();
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+});
+
+test('expiry receipt rejects a missing required key', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.expiry_receipt = validExpiryReceipt();
+  delete loop.session_chain.lease.expiry_receipt.subject_attempt_id;
+  assert.equal(validate(loop).ok, false);
+});
+
+test('expiry receipt rejects an extra key', () => {
+  const loop = minimalValid();
+  loop.session_chain.lease.expiry_receipt = { ...validExpiryReceipt(), extra: true };
+  assert.equal(validate(loop).ok, false);
+});
+
+test('expiry receipt rejects every closed-enum field outside its singleton domain', () => {
+  for (const field of ['decision_kind', 'evidence_kind', 'authority', 'transition']) {
+    const loop = minimalValid();
+    loop.session_chain.lease.expiry_receipt = validExpiryReceipt();
+    loop.session_chain.lease.expiry_receipt[field] = 'wrong-enum';
+    assert.equal(validate(loop).ok, false, field);
+  }
 });
 
 test('autonomy must be a non-null, non-array object', () => {

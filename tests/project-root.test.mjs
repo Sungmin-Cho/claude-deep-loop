@@ -48,7 +48,7 @@ import {
 } from '../scripts/lib/budget.mjs';
 import { resetBreaker } from '../scripts/lib/breaker.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease } from '../scripts/lib/lease.mjs';
+import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
@@ -335,6 +335,7 @@ function movedRunWithProcessReceipt({
   let settlementFence = { owner: runId, generation: 1, intent: 'accounting' };
   if (terminal) {
     assert.equal(acquireLease(originalRoot, runId, {
+      attemptId: 'MIGRATEDATTEMPT01',
       owner: handoff.childRunId,
       expectGeneration: 1,
       runtime: 'codex',
@@ -1266,6 +1267,7 @@ test('Task 13 root recovery acquire is the sole fresh-process takeover path', as
     '--owner', child.run_id,
     '--generation', String(before.session_chain.lease.generation),
     '--runtime', 'codex',
+    '--attempt-id', 'PROJECTROOTATTEMPT01',
     '--project-root', moved.candidateRoot,
     '--run-id', moved.runId,
   ]);
@@ -1280,6 +1282,7 @@ test('Task 13 root recovery acquire is the sole fresh-process takeover path', as
     '--generation', String(before.session_chain.lease.generation),
     '--binding-generation', String(before.project.binding_generation),
     '--runtime', 'codex',
+    '--attempt-id', child.root_recovery_operation_id,
     '--candidate-project-root', moved.candidateRoot,
     '--run-id', moved.runId,
   ], freshRoot('dl-root-acquire-cwd-'));
@@ -1748,6 +1751,7 @@ test('Round1 acceptance RED: acquisition gates preserve the exact root reservati
     const snapshot = durableSnapshot(moved.candidateRoot, moved.runId);
     assert.throws(
       () => acquireRootRecovery(moved.candidateRoot, moved.runId, {
+        attemptId: 'ROOTRECOVERYREJECT01',
         capsuleRel: child.recovery_rel,
         owner: child.run_id,
         expectGeneration: before.session_chain.lease.generation,

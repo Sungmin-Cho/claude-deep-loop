@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -43,9 +45,56 @@ const DEEP_LOOP_ROOT = canonicalRealpath(join(HERE, '..'));
 const FIXTURE = join(HERE, 'fixtures', 'fake-codex-isolated.cjs');
 const NOW0 = new Date('2026-07-11T00:00:00.000Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00.000Z');
+const STATE_MODULE_URL = new URL('../scripts/lib/state.mjs', import.meta.url).href;
+const WAIT_WORD = new Int32Array(new SharedArrayBuffer(4));
 
 const sha256File = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const PROCESS_EXECUTABLE_SHA256 = sha256File(process.execPath);
+
+function holdKernelLockUntilReleased(root, runId) {
+  const markerDir = mkdtempSync(join(tmpdir(), 'dl-held-kernel-lock-'));
+  const acquiredPath = join(markerDir, 'acquired');
+  const releasePath = join(markerDir, 'release');
+  const childSource = `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { withLock } from ${JSON.stringify(STATE_MODULE_URL)};
+    const [root, runId, acquiredPath, releasePath] = process.argv.slice(1);
+    const waitWord = new Int32Array(new SharedArrayBuffer(4));
+    withLock(root, runId, () => {
+      writeFileSync(acquiredPath, 'held');
+      while (!existsSync(releasePath)) Atomics.wait(waitWord, 0, 0, 10);
+    });
+  `;
+  const child = spawn(process.execPath, [
+    '--input-type=module', '-e', childSource, root, runId, acquiredPath, releasePath,
+  ], { cwd: root, stdio: 'ignore' });
+  const acquiredDeadline = Date.now() + 5_000;
+  while (!existsSync(acquiredPath) && Date.now() < acquiredDeadline) {
+    Atomics.wait(WAIT_WORD, 0, 0, 10);
+  }
+  if (!existsSync(acquiredPath)) {
+    child.kill('SIGKILL');
+    throw new Error('held kernel lock did not acquire');
+  }
+  let released = false;
+  return {
+    release() {
+      if (released) return;
+      released = true;
+      writeFileSync(releasePath, 'release');
+      const lockPath = join(runDir(root, runId), '.lock');
+      const releaseDeadline = Date.now() + 5_000;
+      while (existsSync(lockPath) && Date.now() < releaseDeadline) {
+        Atomics.wait(WAIT_WORD, 0, 0, 10);
+      }
+      if (existsSync(lockPath)) {
+        child.kill('SIGKILL');
+        throw new Error('held kernel lock did not release');
+      }
+      rmSync(markerDir, { recursive: true, force: true });
+    },
+  };
+}
 
 function driveHeadlessRun(options = {}) {
   return driveHeadlessRunImpl({
@@ -347,6 +396,46 @@ test('hostile maker transport crosses the real worker once and preserves only bo
   assert.equal(second.action, 'no-pending-handoff');
   assert.equal(h.calls().length, beforeSecondTick, 'a completed maker transport must not retry');
   assert.deepEqual(existsSync(h.markerDir) ? readdirSync(h.markerDir) : [], []);
+});
+
+test('fake Codex consumer rejects structured acquire and activation denials before terminal completion', () => {
+  for (const mode of ['acquire-non-proceed', 'activate-attempt-mismatch']) {
+    const h = createHostHarness({ makerMode: mode });
+    const { result, makerResult, makerCalls } = h.runMaker();
+
+    assert.equal(makerCalls, 1, mode);
+    assert.equal(makerResult.ok, false, `${mode}: structured denial must fail the worker`);
+    assert.equal(makerResult.usage, undefined, `${mode}: no turn.completed usage may be accepted`);
+    assert.equal(result.action, 'fail-closed', `${mode}: host must not recognize a resumed child`);
+    assert.equal(result.ok, false, `${mode}: denial must not become a success-shaped result`);
+    assert.equal(result.reason, 'exit-11', mode);
+    assert.equal(makerResult.reason, 'exit-11', mode);
+    const events = readLines(h.root, h.runId);
+    assert.equal(events.some(event => ['finish', 'workstream-terminal', 'terminal-detected'].includes(event.type)), false, mode);
+    assert.equal(events.filter(event => event.type === 'lease-activated').length, 0, mode);
+    assert.equal(
+      events.filter(event => event.type === 'lease-acquired').length,
+      mode === 'activate-attempt-mismatch' ? 1 : 0,
+      mode,
+    );
+    const state = readState(h.root, h.runId).data;
+    assert.equal(['completed', 'stopped'].includes(state.status), false, mode);
+  }
+});
+
+test('fake Codex consumer rejects malformed acquire JSON before terminal completion', () => {
+  const h = createHostHarness({ makerMode: 'acquire-malformed-json' });
+  const { result, makerResult } = h.runMaker();
+
+  assert.equal(makerResult.ok, false, 'malformed kernel JSON must fail the worker');
+  assert.equal(makerResult.usage, undefined, 'no turn.completed usage may be accepted');
+  assert.equal(result.action, 'fail-closed', 'host must not recognize a resumed child');
+  assert.equal(result.ok, false, 'malformed JSON must not become success-shaped');
+  assert.equal(result.reason, 'exit-11');
+  assert.equal(makerResult.reason, 'exit-11');
+  assert.equal(readLines(h.root, h.runId).some(
+    event => ['finish', 'workstream-terminal', 'terminal-detected'].includes(event.type),
+  ), false);
 });
 
 test('timeout, non-zero, and malformed maker JSONL discard usage and never retry after the CAS', () => {
@@ -1189,6 +1278,11 @@ test('a real checker receipt settles after an exact imported review is terminall
   assert.equal(result.action, 'checker-complete', JSON.stringify(result));
   assert.equal(result.recorded, true, JSON.stringify(result));
   assert.equal(result.continuation, false);
+  assert.equal(existsSync(join(runDir(h.root, h.runId), '.headless-host.lock')), false);
+  assert.equal(
+    readdirSync(runDir(h.root, h.runId)).some(name => name.startsWith('.headless-host.lock.release-')),
+    false,
+  );
   const state = readState(h.root, h.runId).data;
   assert.equal(state.status, 'stopped');
   const checkerCost = readLines(h.root, h.runId).find(
@@ -1260,6 +1354,11 @@ test('post-preflight executable or authenticated-home drift rolls back before a 
 test('claimed read-only checker imports exact final bytes once and commits content-addressed proof parity', () => {
   const h = createHostHarness();
   assert.equal(h.runMaker().result.action, 'resumed');
+  // The isolated maker has returned successfully, so this legacy continuation fixture is
+  // post-activation. Clear only its timer; activation proof belongs to a later slice.
+  const afterActivation = readState(h.root, h.runId).data;
+  afterActivation.session_chain.lease.activation_deadline_at = null;
+  writeState(h.root, h.runId, afterActivation);
   const review = seedIndependentChecker(h);
   const checkerRawPath = join(h.codexHome, 'checker-final.json');
   h.writeControl({ checkerRawPath });
@@ -1286,6 +1385,11 @@ test('claimed read-only checker imports exact final bytes once and commits conte
   assert.equal(result.action, 'checker-complete');
   assert.equal(result.recorded, true);
   assert.equal(result.continuation, true);
+  assert.equal(existsSync(join(runDir(h.root, h.runId), '.headless-host.lock')), false);
+  assert.equal(
+    readdirSync(runDir(h.root, h.runId)).some(name => name.startsWith('.headless-host.lock.release-')),
+    false,
+  );
   assert.equal(checkerCalls, 1);
   assert.deepEqual(h.calls().map(call => call.kind), [
     'preflight-read', 'preflight-write', 'maker', 'checker',
@@ -1348,7 +1452,187 @@ test('claimed read-only checker imports exact final bytes once and commits conte
   assert.equal(explicitCosts.at(-1).data.turns, 0, 'checker explicit cost must absorb its review-outcome floor');
   assert.equal(events.filter(event => event.type === 'handoff-emitted').length, 2, 'maker handoff plus one checker continuation');
   assert.equal(existsSync(h.markerDir), false);
+  assertUnconfirmedImportWithoutProofBlocksOnNextTick();
+  assertCommittedImportLostAckReconcilesAndRoutes();
 });
+
+function checkerResultWithVerdict(h, options, verdict) {
+  const result = runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker });
+  if (verdict === 'APPROVE') return result;
+  const message = JSON.parse(result.finalMessage.toString('utf8'));
+  return {
+    ...result,
+    finalMessage: Buffer.from(JSON.stringify({
+      ...message,
+      verdict,
+      report_body: `# deterministic recovered ${verdict}`,
+    })),
+  };
+}
+
+function assertCommittedImportLostAckReconcilesAndRoutes() {
+  for (const scenario of [
+    { label: 'approved', verdict: 'APPROVE', breakerBefore: 0, terminal: 'approved', continuation: true },
+    { label: 'request-changes', verdict: 'REQUEST_CHANGES', breakerBefore: 0, terminal: 'rejected', continuation: true },
+    { label: 'breaker-third', verdict: 'REQUEST_CHANGES', breakerBefore: 2, terminal: 'rejected', continuation: false },
+  ]) {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  const review = seedIndependentChecker(h);
+  if (scenario.breakerBefore > 0) {
+    const state = readState(h.root, h.runId).data;
+    state.circuit_breaker.consecutive_request_changes = scenario.breakerBefore;
+    writeState(h.root, h.runId, state);
+  }
+  const attemptId = `attempt-task-2.8-lost-ack-${scenario.label}`;
+  let heldLock = null;
+  let first;
+  try {
+    first = driveHeadlessRun({
+      ...h.baseOptions,
+      expect: { owner: h.handoff.childRunId, generation: 2 },
+      now: NOW1 + 18_000,
+      timeoutMs: 20_000,
+      attemptIdFactory: () => attemptId,
+      checkerRunFn: options => checkerResultWithVerdict(h, options, scenario.verdict),
+      checkerImportFn: (options, bytes) => {
+        const imported = importReviewViaCli(options, bytes);
+        assert.equal(imported.ok, true, JSON.stringify(imported));
+        heldLock = holdKernelLockUntilReleased(h.root, h.runId);
+        return { ok: false, reason: 'checker-import-timeout' };
+      },
+    });
+  } finally {
+    heldLock?.release();
+  }
+
+  assert.deepEqual(first, {
+    ok: false,
+    action: 'checker-import-unconfirmed',
+    reason: 'checker-import-proof-lock-busy',
+    import_reason: 'checker-import-timeout',
+    checkerEpisodeId: review.checkerId,
+    attemptId,
+    continuation: false,
+    usage: { num_turns: 1, tokens: 36, input_tokens: 17, output_tokens: 19 },
+    recorded: false,
+  });
+  assert.equal(existsSync(join(runDir(h.root, h.runId), '.headless-host.lock')), false);
+  assert.equal(
+    readdirSync(runDir(h.root, h.runId)).some(name => name.startsWith('.headless-host.lock.release-')),
+    false,
+  );
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'independent-review-blocked').length, 0);
+  const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 1, scenario.label);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 0, scenario.label);
+
+  let checkerRetries = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 18_100,
+    checkerRunFn: () => {
+      checkerRetries += 1;
+      throw new Error(`a committed ${scenario.label} checker must never respawn after lost acknowledgement`);
+    },
+  });
+
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.action, 'checker-complete', JSON.stringify(second));
+  assert.equal(second.recorded, true, JSON.stringify(second));
+  assert.equal(second.continuation, scenario.continuation, JSON.stringify(second));
+  assert.equal(checkerRetries, 0);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 0);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 0);
+  const state = readState(h.root, h.runId).data;
+  const checker = state.episodes.find(episode => episode.id === review.checkerId);
+  assert.equal(checker.status, scenario.terminal);
+  assert.equal(checker.review_source, 'imported-stdin');
+  assert.equal(checker.attempt_id, attemptId);
+  assert.equal(state.status, scenario.breakerBefore === 2 ? 'paused' : 'running');
+  assert.equal(state.circuit_breaker.tripped, scenario.breakerBefore === 2);
+  const events = readLines(h.root, h.runId);
+  assert.equal(events.filter(event => event.type === 'review-outcome').length, 1);
+  assert.equal(events.filter(event => event.type === 'independent-review-blocked').length, 0);
+  assert.equal(
+    events.filter(event => event.type === 'handoff-emitted').length,
+    scenario.continuation ? 2 : 1,
+    scenario.label,
+  );
+  assert.deepEqual(
+    events.filter(event => event.type === 'cost' && event.data.reported_turns === 1)
+      .map(event => event.data.reported_tokens),
+    [5, 12, 24, 36],
+  );
+  }
+}
+
+function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  const review = seedIndependentChecker(h);
+  const attemptId = 'attempt-task-2.8-lost-ack-no-proof';
+  let heldLock = null;
+  let first;
+  try {
+    first = driveHeadlessRun({
+      ...h.baseOptions,
+      expect: { owner: h.handoff.childRunId, generation: 2 },
+      now: NOW1 + 18_200,
+      timeoutMs: 20_000,
+      attemptIdFactory: () => attemptId,
+      checkerRunFn: options => runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker }),
+      checkerImportFn: () => {
+        heldLock = holdKernelLockUntilReleased(h.root, h.runId);
+        return { ok: false, reason: 'checker-import-exit-1' };
+      },
+    });
+  } finally {
+    heldLock?.release();
+  }
+  assert.equal(first.action, 'checker-import-unconfirmed', JSON.stringify(first));
+  assert.equal(first.recorded, false);
+  const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 1);
+  const recoveryName = readdirSync(receiptDir).find(name => name.endsWith('-checker-unconfirmed.json'));
+  linkSync(
+    join(receiptDir, recoveryName),
+    join(receiptDir, recoveryName.replace('-checker-unconfirmed.json', '-checker.json')),
+  );
+  assert.equal(
+    readdirSync(receiptDir).filter(name => name.includes('checker')).length,
+    2,
+    'crash after marker link but before source unlink leaves two names for one immutable inode',
+  );
+  let checkerRetries = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 18_300,
+    checkerRunFn: () => {
+      checkerRetries += 1;
+      throw new Error('a post-import unconfirmed checker must reconcile without respawn');
+    },
+  });
+  assert.equal(second.ok, false, JSON.stringify(second));
+  assert.equal(second.action, 'checker-blocked', JSON.stringify(second));
+  assert.equal(second.recorded, true, JSON.stringify(second));
+  assert.equal(checkerRetries, 0);
+  assert.equal(readdirSync(receiptDir).filter(name => name.includes('checker')).length, 0);
+  const state = readState(h.root, h.runId).data;
+  assert.equal(state.status, 'paused');
+  assert.equal(state.episodes.find(episode => episode.id === review.checkerId).status, 'blocked');
+  const events = readLines(h.root, h.runId);
+  assert.equal(events.filter(event => event.type === 'review-outcome').length, 0);
+  assert.equal(events.filter(event => event.type === 'independent-review-blocked').length, 1);
+  assert.equal(events.filter(event => event.data?.process_kind === 'checker').length, 1);
+  assert.deepEqual(
+    events.filter(event => event.type === 'cost' && event.data.reported_turns === 1)
+      .map(event => event.data.reported_tokens),
+    [5, 12, 24, 36],
+  );
+}
 
 test('artifact drift after a measured checker turn leaves no proof, charges once, and pauses without retry', () => {
   const h = createHostHarness();

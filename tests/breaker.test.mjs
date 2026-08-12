@@ -9,6 +9,7 @@ import { readState, runDir } from '../scripts/lib/state.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { acquireLease, reapLease, releaseLease } from '../scripts/lib/lease.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
@@ -65,6 +66,52 @@ test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', 
   const r = resetBreaker(root, runId, { fence: { owner: runId, generation: 1, intent: 'breaker-reset' } });
   assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
   assert.equal(checkBreaker(readState(root, runId).data).tripped, false);
+});
+
+function activationPendingBreakerPause() {
+  const { root, runId } = seed();
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  const owner = 'SLICE008BREAKEROWNER';
+  const acquired = acquireLease(root, runId, {
+    owner,
+    expectGeneration: 1,
+    runtime: 'claude',
+    attemptId: 'SLICE008BREAKERATTEMPT',
+    clock: () => Date.parse('2000-01-01T00:00:00.000Z'),
+  });
+  assert.equal(acquired.proceed, true);
+  tripBreaker(root, runId, 'consecutive-request-changes');
+  const { data } = readState(root, runId);
+  data.session_chain.lease.activation_deadline_at = '2000-01-01T00:00:00.000Z';
+  writeState(root, runId, data);
+  return { root, runId, owner, generation: acquired.generation };
+}
+
+test('SLICE-008 F20 breaker reset rearms activation from the private safety clock', () => {
+  const f = activationPendingBreakerPause();
+  const safetyNow = Date.parse('2026-08-09T11:00:00.000Z');
+  assert.deepEqual(resetBreaker(f.root, f.runId, {
+    fence: { owner: f.owner, generation: f.generation, intent: 'breaker-reset' },
+    clock: () => safetyNow,
+  }), { ok: true, status: 'running' });
+  assert.equal(
+    readState(f.root, f.runId).data.session_chain.lease.activation_deadline_at,
+    '2026-08-09T11:15:00.000Z',
+  );
+});
+
+test('SLICE-008 F20 breaker reset cannot immediately reap the rearmed principal', () => {
+  const f = activationPendingBreakerPause();
+  const safetyNow = Date.parse('2026-08-09T11:00:00.000Z');
+  resetBreaker(f.root, f.runId, {
+    fence: { owner: f.owner, generation: f.generation, intent: 'breaker-reset' },
+    clock: () => safetyNow,
+  });
+  assert.deepEqual(reapLease(f.root, f.runId, {
+    owner: f.owner,
+    generation: f.generation,
+    clock: () => safetyNow,
+  }), { ok: false, reason: 'deadline-not-expired' });
 });
 
 // ── v1.6 직접-writer terminal 가드 (spec §2.3-7 / §4-5g) ─────────────────────
