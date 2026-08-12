@@ -1251,7 +1251,7 @@ const handlers = {
       }
       const reapFlags = new Set(['owner', 'generation', 'project-root', 'run-id']);
       if (!knownFlagVocabulary(rest, reapFlags) || !exactFlagGrammar(rest, reapFlags)) {
-        error('USAGE: --owner/--generation and every lease reap flag must appear exactly once');
+        error('USAGE: lease reap accepts known flags only, each at most once');
         return 2;
       }
     }

@@ -565,6 +565,10 @@ test('CLI lease acquire and reap grammar gates are structurally before root and 
     assert.notEqual(grammar, -1);
     assert.ok(grammar < root, `${verb} grammar must precede root selection`);
     assert.doesNotMatch(leaseRoute.slice(0, grammar), /rootOf\(|runIdOf\(/);
+    const blockEnd = verb === 'acquire'
+      ? leaseRoute.indexOf("if (verb === 'reap')", grammar)
+      : root;
+    assert.match(leaseRoute.slice(grammar, blockEnd), /exactFlagGrammar\(rest, \w+Flags\)/);
   }
 });
 
@@ -610,6 +614,35 @@ test('CLI lease acquire rejects duplicate project-root in either ordering withou
     assert.deepEqual(terminalDurableBytes(root, runId), before);
     assert.equal(existsSync(alternate), false);
   }
+});
+
+test('CLI lease acquire rejects duplicate run-id in either ordering without mutation', () => {
+  for (const reverse of [false, true]) {
+    const { root, runId, owner, gen } = seedTerminal('running');
+    const decoyRunId = 'NONEXISTENT_ACQUIRE_RUN';
+    const runIds = reverse ? [decoyRunId, runId] : [runId, decoyRunId];
+    const before = terminalDurableBytes(root, runId);
+    const result = spawnSync(process.execPath, [
+      CLI, 'lease', 'acquire', '--owner', owner, '--generation', String(gen),
+      '--runtime', 'claude', '--attempt-id', 'ACQUIRERUNIDATTEMPT',
+      '--project-root', root, '--run-id', runIds[0], '--run-id', runIds[1],
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /USAGE:/);
+    assert.deepEqual(terminalDurableBytes(root, runId), before);
+    assert.equal(existsSync(runDir(root, decoyRunId)), false);
+  }
+});
+
+test('CLI lease reap grammar diagnostic describes optional flags as at-most-once', () => {
+  const source = readFileSync(CLI, 'utf8');
+  const lease = source.indexOf('lease: async (a) => {');
+  const reapGate = source.slice(
+    source.indexOf("if (verb === 'reap')", lease),
+    source.indexOf('const root = rootOf(f);', lease),
+  );
+  assert.match(reapGate, /lease reap accepts known flags only, each at most once/);
+  assert.doesNotMatch(reapGate, /every lease reap flag must appear exactly once/);
 });
 
 // §2.3 의도 고정 (impl r1 adversarial 기각 근거의 테스트화): lease release는 terminal에서 **의도적으로 허용**
@@ -978,7 +1011,9 @@ test('SLICE-010 new lease verbs reject every duplicate fence option ordering as 
       const before = terminalDurableBytes(f.root, f.runId);
       const result = activationVerbCli(f, verb, fenceArgs);
       assert.equal(result.status, 2, `${verb} ${label}\n${result.stdout}${result.stderr}`);
-      assert.match(result.stderr, /USAGE: --(owner|generation)/);
+      assert.match(result.stderr, verb === 'activate'
+        ? /USAGE: --(owner|generation)/
+        : /USAGE: lease reap accepts known flags only, each at most once/);
       assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, `${verb} ${label}`);
     }
   }
