@@ -16,6 +16,7 @@ import { canonicalProjectRoot } from './project-root.mjs';
 import {
   validate,
   validCheckerIdentityDiagnostic,
+  validCheckerImportDiagnostic,
   validCheckerProcessDiagnostic,
 } from './schema.mjs';
 import { assertScopeAllows } from './session-scope.mjs';
@@ -222,14 +223,15 @@ export function claimIndependentReview(root, runId, options = {}) {
 export function blockIndependentReview(root, runId, options = {}) {
   if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_BLOCK_INPUT_INVALID');
   const {
-    episodeId, attemptId, reason, fence, processDiagnostic, identityDiagnostic,
+    episodeId, attemptId, reason, fence, processDiagnostic, identityDiagnostic, importDiagnostic,
   } = options;
   validFence(fence, 'blockIndependentReview');
   if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_BLOCK_ATTEMPT_INVALID');
   const safeReason = boundedBlockReason(reason);
-  if ((processDiagnostic !== undefined && identityDiagnostic !== undefined)
+  if ([processDiagnostic, identityDiagnostic, importDiagnostic].filter(value => value !== undefined).length > 1
     || (processDiagnostic !== undefined && !validCheckerProcessDiagnostic(processDiagnostic))
-    || (identityDiagnostic !== undefined && !validCheckerIdentityDiagnostic(identityDiagnostic))) {
+    || (identityDiagnostic !== undefined && !validCheckerIdentityDiagnostic(identityDiagnostic))
+    || (importDiagnostic !== undefined && !validCheckerImportDiagnostic(importDiagnostic))) {
     throw new Error('REVIEW_BLOCK_DIAGNOSTIC_INVALID');
   }
   const frozenDiagnostic = processDiagnostic === undefined
@@ -238,12 +240,18 @@ export function blockIndependentReview(root, runId, options = {}) {
   const frozenIdentityDiagnostic = identityDiagnostic === undefined
     ? undefined
     : structuredClone(identityDiagnostic);
+  const frozenImportDiagnostic = importDiagnostic === undefined
+    ? undefined
+    : structuredClone(importDiagnostic);
   let locked;
   appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
     episode_id: episodeId, attempt_id: attemptId, reason: safeReason,
     ...(frozenDiagnostic === undefined ? {} : { checker_process_diagnostic: frozenDiagnostic }),
     ...(frozenIdentityDiagnostic === undefined ? {} : {
       checker_identity_diagnostic: frozenIdentityDiagnostic,
+    }),
+    ...(frozenImportDiagnostic === undefined ? {} : {
+      checker_import_diagnostic: frozenImportDiagnostic,
     }),
   } }, (loop) => {
     const checker = locked.checker;
@@ -253,6 +261,7 @@ export function blockIndependentReview(root, runId, options = {}) {
     if (frozenIdentityDiagnostic !== undefined) {
       checker.checker_identity_diagnostic = frozenIdentityDiagnostic;
     }
+    if (frozenImportDiagnostic !== undefined) checker.checker_import_diagnostic = frozenImportDiagnostic;
     checker.needs_human = true;
     loop.status = 'paused';
     loop.pause_reason = `independent-review:${safeReason}`;

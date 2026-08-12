@@ -6,6 +6,7 @@ import {
   loadSchema,
   validate,
   validCheckerIdentityDiagnostic,
+  validCheckerImportDiagnostic,
   validCheckerProcessDiagnostic,
 } from '../scripts/lib/schema.mjs';
 import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
@@ -178,6 +179,40 @@ test('checker identity diagnostic is optional, exact, closed, and mutually exclu
     stdout: { sha256: 'b'.repeat(64), byte_count: 0, truncated: false },
   };
   assert.equal(validate(both).ok, false, 'identity and process diagnostics are mutually exclusive');
+});
+
+test('checker import diagnostic is optional, exact, closed, and mutually exclusive with other diagnostics', () => {
+  const stream = { sha256: 'a'.repeat(64), byte_count: 0, truncated: false };
+  const valid = {
+    reason_code: 'import-nonzero-exit', import_phase: 'child-execution',
+    input: stream, stdout: stream, stderr: stream,
+  };
+  assert.equal(validCheckerImportDiagnostic(valid), true);
+  const absent = minimalValid();
+  absent.episodes.push({ id: '001-checker', status: 'blocked', request_rel: 'episodes/001-checker/request.md' });
+  assert.equal(validate(absent).ok, true);
+  const present = structuredClone(absent);
+  present.episodes[0].checker_import_diagnostic = valid;
+  assert.equal(validate(present).ok, true);
+  for (const [label, mutate] of [
+    ['missing input', value => { delete value.input; }],
+    ['raw stderr', value => { value.stderr.raw = 'SECRET'; }],
+    ['attacker path', value => { value.path = '/tmp/secret'; }],
+    ['open reason', value => { value.reason_code = 'checker-import-exit-37'; }],
+    ['open phase', value => { value.import_phase = 'attacker-phase'; }],
+    ['impossible pair', value => { value.import_phase = 'output-parse'; }],
+  ]) {
+    const candidate = structuredClone(present);
+    mutate(candidate.episodes[0].checker_import_diagnostic);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+  for (const field of ['checker_process_diagnostic', 'checker_identity_diagnostic']) {
+    const mixed = structuredClone(present);
+    mixed.episodes[0][field] = field === 'checker_process_diagnostic'
+      ? { reason_code: 'child-nonzero-exit', process_phase: 'child-execution', stderr: stream, stdout: stream }
+      : { reason_code: 'capture-integrity-drift', identity_phase: 'post-process', identity_axis: 'capture-skill' };
+    assert.equal(validate(mixed).ok, false, `import and ${field} are mutually exclusive`);
+  }
 });
 
 test('checker identity diagnostic accepts every initial-capture integrity axis and rejects phase drift', () => {

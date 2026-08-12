@@ -89,6 +89,26 @@ export function validCheckerProcessDiagnostic(value) {
     && validProcessStreamMetadata(value.stderr)
     && validProcessStreamMetadata(value.stdout);
 }
+const CHECKER_IMPORT_REASON_PHASES = Object.freeze({
+  'import-input-invalid': Object.freeze(['input-validation']),
+  'import-fence-invalid': Object.freeze(['request-validation']),
+  'import-spawn-failed': Object.freeze(['child-spawn']),
+  'import-timeout': Object.freeze(['child-execution']),
+  'import-terminated': Object.freeze(['child-execution']),
+  'import-nonzero-exit': Object.freeze(['child-execution']),
+  'import-output-invalid': Object.freeze(['output-parse']),
+  'import-proof-missing': Object.freeze(['proof-reconciliation']),
+  'import-diagnostic-invalid': Object.freeze(['import-adapter']),
+});
+
+export function validCheckerImportDiagnostic(value) {
+  return exactObject(value, ['reason_code', 'import_phase', 'input', 'stdout', 'stderr'])
+    && Object.hasOwn(CHECKER_IMPORT_REASON_PHASES, value.reason_code)
+    && CHECKER_IMPORT_REASON_PHASES[value.reason_code].includes(value.import_phase)
+    && validProcessStreamMetadata(value.input)
+    && validProcessStreamMetadata(value.stdout)
+    && validProcessStreamMetadata(value.stderr);
+}
 const CHECKER_IDENTITY_REASON_PHASE_AXES = Object.freeze({
   'source-provenance-drift': Object.freeze({
     capture: Object.freeze([
@@ -511,8 +531,12 @@ function validateEpisodeV040(ep, errors) {
     && !validCheckerIdentityDiagnostic(ep.checker_identity_diagnostic)) {
     errors.push('episodes[].checker_identity_diagnostic must be an exact closed secret-safe identity diagnostic');
   }
-  if (Object.hasOwn(ep, 'checker_process_diagnostic')
-    && Object.hasOwn(ep, 'checker_identity_diagnostic')) {
+  if (Object.hasOwn(ep, 'checker_import_diagnostic')
+    && !validCheckerImportDiagnostic(ep.checker_import_diagnostic)) {
+    errors.push('episodes[].checker_import_diagnostic must be an exact closed secret-safe import diagnostic');
+  }
+  if (['checker_process_diagnostic', 'checker_identity_diagnostic', 'checker_import_diagnostic']
+    .filter(key => Object.hasOwn(ep, key)).length > 1) {
     errors.push('episodes[] checker diagnostics are mutually exclusive');
   }
   const invalidated = ep.invalidated_review_claims;

@@ -172,6 +172,55 @@ test('importReviewViaCli forwards the identical Buffer through trusted Node argv
   assert.deepEqual(result, { ok: true, value: { ok: true } });
 });
 
+test('importReviewViaCli returns only closed byte metadata for granular import failures', async () => {
+  const { importReviewViaCli } = await checkerModule();
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-import-diagnostic-')));
+  const kernelPath = join(root, 'deep-loop.mjs');
+  writeFileSync(kernelPath, '');
+  const input = Buffer.from('{"secret":"INPUT_SECRET"}');
+  const stdout = Buffer.from('STDOUT_SECRET');
+  const stderr = Buffer.from('STDERR_SECRET');
+  const result = importReviewViaCli({
+    processExecutable: process.execPath, kernelPath, projectRoot: root,
+    runId: 'RUN-1', owner: 'OWNER-1', generation: 7,
+    spawnSyncImpl: () => ({ status: 23, signal: null, stdout, stderr }),
+  }, input);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'checker-import-failed');
+  assert.deepEqual(result.import_diagnostic, {
+    reason_code: 'import-nonzero-exit', import_phase: 'child-execution',
+    input: { sha256: '0db58f586b340907445885e76d289b168d54c376bde557488e7b37faee8acc7f', byte_count: 25, truncated: false },
+    stdout: { sha256: '299d37ae77035229bcb4b30ffdd6d736da524d1cdc10e43cf95cc3bb5d7c2fa3', byte_count: 13, truncated: false },
+    stderr: { sha256: 'bfc2a1e721925ebfea42691ebb4b489a87d47f1c0a0394ee67b235f8f02fbd3e', byte_count: 13, truncated: false },
+  });
+  const encoded = JSON.stringify(result);
+  assert.equal(encoded.includes('SECRET'), false);
+  assert.equal(encoded.includes('/tmp'), false);
+  assert.equal(result.import_diagnostic.reason_code.includes('23'), false,
+    'exit status is not durable diagnostic vocabulary');
+});
+
+test('importReviewViaCli closes every process and protocol failure phase', async () => {
+  const { importReviewViaCli } = await checkerModule();
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-import-phases-')));
+  const kernelPath = join(root, 'deep-loop.mjs');
+  writeFileSync(kernelPath, '');
+  const base = { processExecutable: process.execPath, kernelPath, projectRoot: root, runId: 'R', owner: 'O', generation: 1 };
+  for (const [label, spawnSyncImpl, reason_code, import_phase, truncated] of [
+    ['spawn throw', () => { throw new Error('SECRET'); }, 'import-spawn-failed', 'child-spawn', false],
+    ['timeout', () => ({ error: { code: 'ETIMEDOUT' }, stdout: 'partial', stderr: '' }), 'import-timeout', 'child-execution', false],
+    ['overflow', () => ({ error: { code: 'ENOBUFS' }, stdout: 'partial', stderr: '' }), 'import-spawn-failed', 'child-spawn', true],
+    ['terminated', () => ({ signal: 'SIGKILL', stdout: '', stderr: '' }), 'import-terminated', 'child-execution', false],
+    ['invalid output', () => ({ status: 0, signal: null, stdout: 'SECRET-not-json', stderr: '' }), 'import-output-invalid', 'output-parse', false],
+  ]) {
+    const result = importReviewViaCli({ ...base, spawnSyncImpl }, Buffer.from('{}'));
+    assert.equal(result.import_diagnostic.reason_code, reason_code, label);
+    assert.equal(result.import_diagnostic.import_phase, import_phase, label);
+    assert.equal(result.import_diagnostic.stdout.truncated, truncated, label);
+    assert.equal(JSON.stringify(result).includes('SECRET'), false, label);
+  }
+});
+
 test('trusted checker skill resolution accepts one exact cache candidate and rejects missing or ambiguous candidates', async () => {
   const { resolveTrustedCheckerSkill } = await checkerModule();
   const home = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-home-')));

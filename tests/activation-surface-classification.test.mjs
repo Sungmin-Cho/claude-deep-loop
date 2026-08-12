@@ -56,7 +56,7 @@ test('STEP0-3 guard 4 link-only extractor reports every scripts namespace withou
   const output = JSON.parse(result.stdout);
   assert.equal(output.schema_version, 1);
   assert.equal(output.file_count, 65);
-  assert.equal(output.raw_export_name_count, 393);
+  assert.equal(output.raw_export_name_count, 394);
   assert.equal(output.failures.length, 0);
   const linkedIds = output.files.flatMap((file) =>
     file.export_names.map((name) => `${file.module}#${name}`)).sort(byteSort);
@@ -145,23 +145,23 @@ test('STEP0-3 guard 1 rejects the approved non-mjs reversal instead of silently 
   }]);
 });
 
-test('STEP0-3 static export parser matches the measured 393 raw and 385 canonical surface', async () => {
+test('STEP0-3 static export parser matches the measured 394 raw and 386 canonical surface', async () => {
   const analyzer = await import(STATIC_ANALYZER);
   const result = analyzer.extractExportSurface({ files: recursiveFiles(join(ROOT, 'scripts')) });
   assert.deepEqual(result.failures, []);
-  assert.equal(result.raw_ids.length, 393);
-  assert.equal(result.canonical_ids.length, 385);
+  assert.equal(result.raw_ids.length, 394);
+  assert.equal(result.canonical_ids.length, 386);
 });
 
-test('STEP0-3 live overlay closes the measured current delta with a disjoint 385-row partition', async () => {
+test('STEP0-3 live overlay closes the measured current delta with a disjoint 386-row partition', async () => {
   const analyzer = await import(STATIC_ANALYZER);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
   assert.deepEqual(live.counts, {
-    L: 33, B: 7, X: 34, E2: 149, E3: 14, E4: 21, E5: 1, E7: 86, E8: 40,
+    L: 33, B: 7, X: 34, E2: 150, E3: 14, E4: 21, E5: 1, E7: 86, E8: 40,
   });
-  assert.equal(live.rows.size, 385);
+  assert.equal(live.rows.size, 386);
   assert.deepEqual(live.rows.get('review.mjs#configureReviewFlags'), {
     classification: 'L', reason: 'leasecheck-dominated',
   });
@@ -233,6 +233,7 @@ test('STEP0-3 live overlay closes the measured current delta with a disjoint 385
     'schema.mjs#CHECKER_PROCESS_REASON_CODES',
     'schema.mjs#CHECKER_PROCESS_REASON_PHASES',
     'schema.mjs#validCheckerIdentityDiagnostic',
+    'schema.mjs#validCheckerImportDiagnostic',
     'schema.mjs#validCheckerProcessDiagnostic',
     'schema.mjs#validProcessStreamMetadata',
   ].includes(id)), [
@@ -248,6 +249,7 @@ test('STEP0-3 live overlay closes the measured current delta with a disjoint 385
     ['schema.mjs#CHECKER_PROCESS_REASON_CODES', { classification: 'E8', reason: 'non-callable-value' }],
     ['schema.mjs#CHECKER_PROCESS_REASON_PHASES', { classification: 'E8', reason: 'non-callable-value' }],
     ['schema.mjs#validCheckerIdentityDiagnostic', { classification: 'E2', reason: 'no-run-state-write' }],
+    ['schema.mjs#validCheckerImportDiagnostic', { classification: 'E2', reason: 'no-run-state-write' }],
     ['schema.mjs#validCheckerProcessDiagnostic', { classification: 'E2', reason: 'no-run-state-write' }],
     ['schema.mjs#validProcessStreamMetadata', { classification: 'E2', reason: 'no-run-state-write' }],
   ]);
@@ -264,7 +266,7 @@ test('STEP0-3 every current-delta row is required and rejects a wrong category',
   const config = JSON.parse(overlay.slice(start, finish));
   const render = value => `${overlay.slice(0, start)}\n${JSON.stringify(value)}\n${overlay.slice(finish)}`;
   const currentDelta = config.add.slice(12);
-  assert.equal(currentDelta.length, 73);
+  assert.equal(currentDelta.length, 74);
   for (const row of currentDelta) {
     const removed = structuredClone(config);
     removed.add = removed.add.filter(({ id }) => id !== row.id);
@@ -399,7 +401,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
 
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.violations, []);
-  assert.equal(result.rows.length, 385);
+  assert.equal(result.rows.length, 386);
   assert.deepEqual(result.rows.find(({ id }) => id === 'headless-host.mjs#acquireHeadlessHostLock'), {
     id: 'headless-host.mjs#acquireHeadlessHostLock',
     classification: 'X',
@@ -416,7 +418,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
           'integrity.mjs#reconcileAnchoredPublicationLocked',
         ],
         coordinates: [
-          'scripts/lib/headless-host.mjs:212',
+          'scripts/lib/headless-host.mjs:213',
           'scripts/lib/state.mjs:270',
           'scripts/lib/integrity.mjs:1953',
           'scripts/lib/integrity.mjs:1806',
@@ -431,7 +433,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
           'integrity.mjs#reconcileAnchoredPublicationLocked',
         ],
         coordinates: [
-          'scripts/lib/headless-host.mjs:212',
+          'scripts/lib/headless-host.mjs:213',
           'scripts/lib/state.mjs:270',
           'scripts/lib/integrity.mjs:1953',
           'scripts/lib/integrity.mjs:1806',

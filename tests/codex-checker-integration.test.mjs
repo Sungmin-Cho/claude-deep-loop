@@ -478,6 +478,30 @@ test('blockIndependentReview rejects a raw-field persistence mutant before event
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
+test('blockIndependentReview rejects raw import metadata and mixed diagnostics before mutation', () => {
+  const stream = { sha256: sha256(Buffer.alloc(0)), byte_count: 0, truncated: false };
+  const diagnostic = {
+    reason_code: 'import-nonzero-exit', import_phase: 'child-execution',
+    input: stream, stdout: stream, stderr: stream,
+  };
+  for (const [label, mutate, extra] of [
+    ['raw import stderr', value => { value.stderr.raw = 'IMPORT_SECRET'; }, {}],
+    ['mixed process diagnostic', () => {}, { processDiagnostic: processDiagnostic() }],
+  ]) {
+    const f = seed();
+    claim(f);
+    const before = events(f.root, f.runId).length;
+    const mutant = structuredClone(diagnostic);
+    mutate(mutant);
+    assert.throws(() => blockIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerId, attemptId: 'attempt-01', reason: 'checker-import-failed',
+      importDiagnostic: mutant, ...extra, fence: f.fence,
+    }), /REVIEW_BLOCK_DIAGNOSTIC_INVALID/, label);
+    assert.equal(events(f.root, f.runId).length, before, label);
+    assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress', label);
+  }
+});
+
 test('blockIndependentReview rejects missing stdout and impossible reason-phase pairs without mutation', () => {
   for (const [label, mutate] of [
     ['missing stdout', value => { delete value.stdout; }],
@@ -971,6 +995,48 @@ test('host rejects a false-positive import adapter success that created no durab
   assert.equal(state.episodes.find(e => e.id === f.checkerId).status, 'blocked');
   assert.equal(state.session_chain.lease.handoff_phase, 'idle');
   assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
+});
+
+test('measured checker import failure persists one closed import diagnostic, costs once, and imports no review', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  const stream = { sha256: sha256(Buffer.from('safe-metadata')), byte_count: 13, truncated: false };
+  const diagnostic = {
+    reason_code: 'import-nonzero-exit', import_phase: 'child-execution',
+    input: stream, stdout: stream, stderr: stream,
+  };
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    checkerImportFn: () => ({ ok: false, reason: 'checker-import-failed', import_diagnostic: diagnostic }),
+  });
+  assert.equal(result.action, 'checker-blocked');
+  assert.equal(result.reason, 'checker-import-failed');
+  assert.equal(result.recorded, true);
+  const snapshot = captureReconciledRunSnapshot(f.root, f.runId);
+  const checker = snapshot.data.episodes.find(e => e.id === f.checkerId);
+  const blocked = snapshot.logLines.findLast(e => e.type === 'independent-review-blocked');
+  assert.deepEqual(checker.checker_import_diagnostic, diagnostic);
+  assert.deepEqual(blocked.data.checker_import_diagnostic, diagnostic);
+  assert.equal(snapshot.logLines.filter(e => e.type === 'review-outcome').length, 0);
+  assert.equal(snapshot.logLines.filter(e => e.type === 'cost' && e.data.reported_turns === 1).length, 1);
+});
+
+test('malformed import adapter diagnostic is closed without raw secret persistence', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    checkerImportFn: () => ({
+      ok: false, reason: 'attacker /tmp/secret',
+      import_diagnostic: { stderr: { raw: 'IMPORT_SECRET' }, argv: ['--token', 'SECRET'] },
+    }),
+  });
+  const snapshot = captureReconciledRunSnapshot(f.root, f.runId);
+  const checker = snapshot.data.episodes.find(e => e.id === f.checkerId);
+  assert.equal(checker.checker_import_diagnostic.reason_code, 'import-diagnostic-invalid');
+  assert.equal(checker.checker_import_diagnostic.import_phase, 'import-adapter');
+  assert.equal(JSON.stringify(snapshot).includes('SECRET'), false);
+  assert.equal(JSON.stringify(snapshot).includes('/tmp/secret'), false);
 });
 
 test('durable human resume policy prevents a pending checker from entering unattended claim or spawn', () => {

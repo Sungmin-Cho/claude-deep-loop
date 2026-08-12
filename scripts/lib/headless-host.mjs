@@ -59,6 +59,7 @@ import { nextAction } from './next-action.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 import {
   validCheckerIdentityDiagnostic,
+  validCheckerImportDiagnostic,
   validCheckerProcessDiagnostic,
 } from './schema.mjs';
 import {
@@ -496,6 +497,9 @@ function captureExactRecoveredCheckerBlock(projectRoot, runId, { checkerEpisodeI
         episode_id: checkerEpisodeId,
         attempt_id: attemptId,
         reason: 'checker-import-failed',
+        ...(checker.checker_import_diagnostic === undefined ? {} : {
+          checker_import_diagnostic: checker.checker_import_diagnostic,
+        }),
       });
   } catch (error) {
     if (String(error?.message || error).startsWith('LOCK_BUSY:')) return null;
@@ -533,6 +537,18 @@ function normalizedCheckerFailureDiagnostic(result) {
     return closedCheckerProcessDiagnostic(null, 'checker-final-message-invalid', 'final-message');
   }
   return closedCheckerProcessDiagnostic(null);
+}
+
+function closedCheckerImportDiagnostic(value, inputBytes = Buffer.alloc(0), reasonCode = 'import-diagnostic-invalid', importPhase = 'import-adapter') {
+  if (validCheckerImportDiagnostic(value)) return structuredClone(value);
+  const input = Buffer.isBuffer(inputBytes) ? inputBytes : Buffer.alloc(0);
+  return {
+    reason_code: reasonCode,
+    import_phase: importPhase,
+    input: { sha256: createHash('sha256').update(input).digest('hex'), byte_count: input.length, truncated: false },
+    stderr: { sha256: EMPTY_STREAM_SHA256, byte_count: 0, truncated: false },
+    stdout: { sha256: EMPTY_STREAM_SHA256, byte_count: 0, truncated: false },
+  };
 }
 
 function routeCompletedChecker({
@@ -934,7 +950,7 @@ function driveIndependentChecker({
       checkerEpisodeId: pending.id, attemptId: null,
     };
   }
-  const blockClaim = (reason, processDiagnostic = undefined, identityDiagnosticValue = undefined) => {
+  const blockClaim = (reason, processDiagnostic = undefined, identityDiagnosticValue = undefined, importDiagnostic = undefined) => {
     try {
       blockReviewFn(projectRoot, runId, {
         episodeId: pending.id,
@@ -944,6 +960,7 @@ function driveIndependentChecker({
         ...(identityDiagnosticValue === undefined ? {} : {
           identityDiagnostic: identityDiagnosticValue,
         }),
+        ...(importDiagnostic === undefined ? {} : { importDiagnostic }),
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
       });
       return {
@@ -965,8 +982,9 @@ function driveIndependentChecker({
     usageReceipt = null,
     processDiagnostic = undefined,
     identityDiagnosticValue = undefined,
+    importDiagnostic = undefined,
   ) => {
-    const blocked = blockClaim(reason, processDiagnostic, identityDiagnosticValue);
+    const blocked = blockClaim(reason, processDiagnostic, identityDiagnosticValue, importDiagnostic);
     let pauseOutcome = null;
     if (blocked.action === 'checker-stranded') {
       pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
@@ -1306,6 +1324,11 @@ function driveIndependentChecker({
       'checker-import-failed',
       checkerResult.usage,
       checkerResult.usageReceipt ?? null,
+      undefined,
+      undefined,
+      closedCheckerImportDiagnostic(imported?.import_diagnostic, checkerResult.finalMessage,
+        imported?.reason === 'checker-import-proof-missing' ? 'import-proof-missing' : 'import-diagnostic-invalid',
+        imported?.reason === 'checker-import-proof-missing' ? 'proof-reconciliation' : 'import-adapter'),
     );
   }
 

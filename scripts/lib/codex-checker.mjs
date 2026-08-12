@@ -31,6 +31,29 @@ const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
 const SAFE_BINDING = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const CAPTURE_RECORD_BYTES = 16 * 1024;
 
+function streamMetadata(value, truncated = false) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value == null ? '' : String(value));
+  return {
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    byte_count: bytes.length,
+    truncated,
+  };
+}
+
+function importFailure(reasonCode, importPhase, input, result = null, truncated = false) {
+  return {
+    ok: false,
+    reason: 'checker-import-failed',
+    import_diagnostic: {
+      reason_code: reasonCode,
+      import_phase: importPhase,
+      input: streamMetadata(input),
+      stdout: streamMetadata(result?.stdout, truncated),
+      stderr: streamMetadata(result?.stderr, truncated),
+    },
+  };
+}
+
 function validatedProcessStreams(result) {
   const streams = result?.process_streams;
   return streams != null
@@ -484,10 +507,13 @@ export function importReviewViaCli({
   const kernel = absolutePath(kernelPath, 'checker-import-kernel-invalid');
   const root = absolutePath(projectRoot, 'checker-import-root-invalid');
   if (!Buffer.isBuffer(rawBytes) || rawBytes.length === 0 || rawBytes.length > REVIEW_IMPORT_MAX_BYTES) {
-    return { ok: false, reason: 'checker-import-bytes-invalid' };
+    return importFailure('import-input-invalid', 'input-validation',
+      Buffer.isBuffer(rawBytes) ? rawBytes : Buffer.alloc(0));
   }
   if (typeof runId !== 'string' || runId.length === 0 || typeof owner !== 'string' || owner.length === 0
-    || !Number.isInteger(generation)) return { ok: false, reason: 'checker-import-fence-invalid' };
+    || !Number.isInteger(generation)) {
+    return importFailure('import-fence-invalid', 'request-validation', rawBytes);
+  }
   let result;
   try {
     result = spawnSyncImpl(node, [
@@ -503,17 +529,27 @@ export function importReviewViaCli({
       shell: false,
       windowsHide: true,
     });
-  } catch (error) {
-    return { ok: false, reason: `checker-import-spawn-error:${error?.message || error}` };
+  } catch {
+    return importFailure('import-spawn-failed', 'child-spawn', rawBytes);
   }
-  if (result?.error) return { ok: false, reason: result.error.code === 'ETIMEDOUT' ? 'checker-import-timeout' : 'checker-import-spawn-error' };
-  if (result?.signal != null) return { ok: false, reason: 'checker-import-terminated' };
-  if (result?.status !== 0) return { ok: false, reason: `checker-import-exit-${result?.status}`, stderr: String(result?.stderr || '').slice(0, 512) };
+  if (result?.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      return importFailure('import-timeout', 'child-execution', rawBytes, result);
+    }
+    return importFailure('import-spawn-failed', 'child-spawn', rawBytes, result,
+      result.error.code === 'ENOBUFS');
+  }
+  if (result?.signal != null) {
+    return importFailure('import-terminated', 'child-execution', rawBytes, result);
+  }
+  if (result?.status !== 0) {
+    return importFailure('import-nonzero-exit', 'child-execution', rawBytes, result);
+  }
   try {
     const value = JSON.parse(result.stdout);
     if (value == null || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid');
     return { ok: true, value };
   } catch {
-    return { ok: false, reason: 'checker-import-output-invalid' };
+    return importFailure('import-output-invalid', 'output-parse', rawBytes, result);
   }
 }
