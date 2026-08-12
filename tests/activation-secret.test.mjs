@@ -2,13 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync,
-  realpathSync,
+  chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync,
+  rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { activateStoredLease } from '../scripts/lib/activation-secret.mjs';
-import { createDirectoryJunction, createFileSymlink } from './helpers/fs-fixtures.mjs';
+import {
+  canonicalRealpath, createDirectoryJunction, createFileSymlink,
+} from './helpers/fs-fixtures.mjs';
 
 const ROOT = '/canonical/project';
 const RUN = '01KSTOREDSECRETRUN00000000';
@@ -76,6 +78,9 @@ test('Windows ACL execution uses one fixed encoded program and keeps the target 
   const source = readFileSync(new URL('../scripts/lib/activation-secret.mjs', import.meta.url), 'utf8');
   assert.match(source, /'-EncodedCommand', ACL_ENCODED_COMMAND/);
   assert.doesNotMatch(source, /'-Command', ACL_SCRIPT, path, kind/);
+  assert.match(source, /StreamReader.*OpenStandardInput\(\).*UTF8Encoding/s,
+    'PowerShell 5.1 must decode Node stdin as UTF-8 instead of the console code page');
+  assert.doesNotMatch(source, /\[Console\]::In\.ReadToEnd\(\)/);
 
   const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-win-encoded-'));
   const calls = [];
@@ -91,9 +96,39 @@ test('Windows ACL execution uses one fixed encoded program and keeps the target 
   assert.equal(calls[0].args.includes('-EncodedCommand'), true);
   assert.equal(calls[0].args.some(arg => arg === stateRoot || arg.includes(stateRoot)), false);
   assert.deepEqual(JSON.parse(calls[0].options.input), {
-    path: join(realpathSync(stateRoot), 'deep-loop'), kind: 'directory',
+    path: join(canonicalRealpath(stateRoot), 'deep-loop'), kind: 'directory',
   });
   assert.deepEqual(calls[0].options.stdio, ['pipe', 'ignore', 'ignore']);
+});
+
+test('Windows native PowerShell applies and verifies ACLs for a non-ASCII private store', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-한글-'));
+  const env = { ...process.env, LOCALAPPDATA: stateRoot };
+  let calls = 0;
+  try {
+    const activateLeaseFn = (_root, _runId, options) => {
+      calls += 1;
+      const token = options.activationTokenProvider({
+        guard: { assertOwned() {}, renew() {} }, allowCreate: calls === 1,
+      });
+      return { ok: true, reason: calls === 1 ? 'activated' : 'already-activated', token };
+    };
+    const deps = {
+      env,
+      canonicalProjectRootFn: value => value,
+      activateLeaseFn,
+    };
+    assert.deepEqual(activateStoredLease(ROOT, RUN, BINDING, deps),
+      { ok: true, reason: 'activated' });
+    assert.deepEqual(activateStoredLease(ROOT, RUN, BINDING, deps),
+      { ok: true, reason: 'already-activated' });
+    assert.equal(readdirSync(join(canonicalRealpath(stateRoot), 'deep-loop', 'activation-secrets')).length, 1);
+  } finally {
+    rmSync(stateRoot, { recursive: true, force: true, maxRetries: 3 });
+  }
+  assert.equal(existsSync(stateRoot), false);
 });
 
 test('stored activation publishes one opaque private exact-schema secret and reuses it', () => {

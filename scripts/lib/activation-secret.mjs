@@ -41,7 +41,7 @@ function stateRoot({ platform, env, homedirFn, testStateRoot }) {
 
 const ACL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json; $keys = @($payload.PSObject.Properties.Name); if ($keys.Count -ne 2 -or $keys -notcontains 'path' -or $keys -notcontains 'kind') { exit 40 }
+$reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false)); $payload = $reader.ReadToEnd() | ConvertFrom-Json; $keys = @($payload.PSObject.Properties.Name); if ($keys.Count -ne 2 -or $keys -notcontains 'path' -or $keys -notcontains 'kind') { exit 40 }
 $target = $payload.path; $kind = $payload.kind; if ($target -isnot [string] -or $target.Length -eq 0 -or $kind -notin @('directory', 'file')) { exit 40 }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = Get-Acl -LiteralPath $target
