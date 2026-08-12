@@ -78,7 +78,7 @@ test('all mutating routes reject missing, value-less, empty, and duplicate run-i
     ['root', 'recovery', 'acquire'], ['root', 'rebind'], ['root', 'recover'],
     ['runtime-executable', 'approve'], ['launcher-executable', 'approve'],
     ['checkpoint', 'emit'], ['checkpoint', 'observe'], ['checkpoint', 'restore'],
-    ['lease', 'acquire'], ['lease', 'release'],
+    ['lease', 'acquire'], ['lease', 'activate'], ['lease', 'reap'], ['lease', 'release'],
     ['workstream', 'new'], ['workstream', 'set'], ['workstream', 'terminal'],
     ['episode', 'new'], ['episode', 'record'], ['episode', 'abandon'],
     ['review', 'dispatch'], ['review', 'record'], ['review', 'import'],

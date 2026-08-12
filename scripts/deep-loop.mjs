@@ -339,7 +339,8 @@ function projectRunResolution(result) {
 export const MUTATING_ROUTE_INVENTORY = Object.freeze([
   'root recovery acquire', 'root rebind', 'root recover',
   'runtime-executable approve', 'launcher-executable approve',
-  'checkpoint emit', 'checkpoint observe', 'checkpoint restore', 'lease acquire', 'lease release',
+  'checkpoint emit', 'checkpoint observe', 'checkpoint restore',
+  'lease acquire', 'lease activate', 'lease reap', 'lease release',
   'workstream new', 'workstream set', 'workstream terminal',
   'episode new', 'episode record', 'episode abandon',
   'review dispatch', 'review record', 'review import',
