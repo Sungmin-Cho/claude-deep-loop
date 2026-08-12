@@ -87,9 +87,12 @@ The durable artifact inventory under `.deep-loop/runs/<run-id>/` includes:
 - `compact-restore-intents/<operation-id>.prepared.json` for a fixed-shape restore publication intent;
 - `transactions/<operation-id>/prepared.json` and `transactions/<operation-id>/committed.json` for the write-ahead log (**WAL**);
 - `recoveries/<child-run-id>-affinity-recovery.json`, boundary-recovery capsules, and `recoveries/root/<replacement-session-id>.json` root-relocation capsules;
+- `checker-captures/<binding-sha256>/{plugin.json,SKILL.md,capture.json}` for the immutable, run-owned independent-checker source snapshot;
 - `terminal/launch-command.txt` plus bound `terminal/launch-command.meta.json` launch metadata.
 
 The WAL reconciles before ordinary reads or mutations. An incomplete, invalid, or identity-mismatched prepared/committed publication is **fail-stop**: it cannot be skipped to continue from a partially published state.
+
+An independent Codex checker never executes its trusted doctrine from the mutable plugin cache. The host first verifies the selected deep-review path, version, manifest bytes, and skill bytes, then exclusively publishes the exact bytes into the run-owned capture and launches the child with that captured `SKILL.md`. A later byte-identical cache refresh is nonfatal because provenance is compared by canonical path, version, and SHA-256; path/version/content drift still fails closed. Capture directory/file metadata and SHA-256 remain strict before and after the child, so even byte-identical capture replacement blocks import. Pre-spawn identity failure incurs no checker cost; post-process failure retains the measured checker cost exactly once and imports nothing.
 
 ### acquire↔resume contract
 

@@ -109,6 +109,19 @@ test('READMEs document stored activation custody, compatibility boundary, and de
   }
 });
 
+test('maintainer and user docs bind independent Codex checkers to strict run-owned captures', () => {
+  for (const path of [...USER_DOCS, 'AGENTS.md']) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /checker-captures\//, `${path}: run-owned checker capture path missing`);
+    assert.match(source, /byte-identical[\s\S]{0,240}(?:cache|capture)/i,
+      `${path}: byte-identical cache/capture polarity missing`);
+    assert.match(source, /pre-spawn[\s\S]{0,200}(?:cost|checker cost)/i,
+      `${path}: pre-spawn cost polarity missing`);
+    assert.match(source, /post-process[\s\S]{0,240}(?:import|cost)/i,
+      `${path}: post-process import/cost polarity missing`);
+  }
+});
+
 test('stored activation docs bind Windows ACL execution to trusted SystemRoot and forbid PATH lookup', () => {
   for (const path of [...USER_DOCS, 'AGENTS.md']) {
     const source = readFileSync(join(R, path), 'utf8');

@@ -99,6 +99,21 @@ function hostDeps(f, { verdict = 'APPROVE', reviewer = f.reviewer } = {}) {
   };
   const codexHome = { canonical_path: '/home/test/.codex', device: '1', inode: '2', birthtime_ns: '3', platform: process.platform };
   const raw = Buffer.from(JSON.stringify(input(f, 'attempt-host', { verdict, reviewer_id: reviewer })));
+  const capturedSkill = {
+    source: {
+      plugin_directory: skillIdentity.plugin_directory.canonical_path,
+      manifest_path: skillIdentity.manifest.canonical_path,
+      skill_path: skillIdentity.skill.canonical_path,
+      plugin_name: 'deep-review',
+      plugin_version: skillIdentity.plugin_version,
+      manifest_sha256: skillIdentity.manifest.sha256,
+      skill_sha256: skillIdentity.skill.sha256,
+    },
+    directory: { canonical_path: `/capture/${f.runId}/attempt-host`, device: '9', inode: '10', mode: '16832' },
+    record: { canonical_path: `/capture/${f.runId}/attempt-host/capture.json`, sha256: '3'.repeat(64) },
+    manifest: { canonical_path: `/capture/${f.runId}/attempt-host/plugin.json`, sha256: skillIdentity.manifest.sha256 },
+    skill: { canonical_path: `/capture/${f.runId}/attempt-host/SKILL.md`, sha256: skillIdentity.skill.sha256 },
+  };
   return {
     expect: { owner: f.runId, generation: 1 },
     env: { PATH: '/usr/bin', CODEX_HOME: codexHome.canonical_path },
@@ -106,6 +121,7 @@ function hostDeps(f, { verdict = 'APPROVE', reviewer = f.reviewer } = {}) {
     resolveCodexHome: () => codexHome,
     preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
     resolveCheckerSkill: () => skillIdentity,
+    captureCheckerSkillFn: ({ expected }) => expected ?? capturedSkill,
     checkerRunFn: (options) => {
       assert.equal(options.env.DEEP_LOOP_OWNER, f.checkerId, 'read-only checker must not receive the live lease owner');
       assert.notEqual(options.env.DEEP_LOOP_OWNER, f.runId);
@@ -124,6 +140,147 @@ function hostDeps(f, { verdict = 'APPROVE', reviewer = f.reviewer } = {}) {
     attemptIdFactory: () => 'attempt-host',
   };
 }
+
+test('byte-identical checker cache replacement uses the run-owned capture and remains importable', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  let resolves = 0;
+  let checkerSkillPath;
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    resolveCheckerSkill: () => {
+      const source = deps.resolveCheckerSkill();
+      resolves += 1;
+      if (resolves === 1) return source;
+      return {
+        ...source,
+        plugin_directory: { ...source.plugin_directory, inode: `replacement-${resolves}` },
+        manifest: { ...source.manifest, inode: `replacement-${resolves}`, mtime_ns: String(resolves) },
+        skill: { ...source.skill, inode: `replacement-${resolves}`, ctime_ns: String(resolves) },
+      };
+    },
+    checkerRunFn: options => {
+      checkerSkillPath = options.checkerSkillPath;
+      return deps.checkerRunFn(options);
+    },
+  });
+  assert.equal(result.action, 'checker-complete');
+  assert.equal(checkerSkillPath, `/capture/${f.runId}/attempt-host/SKILL.md`);
+  assert.ok(resolves >= 3, 'source provenance is checked at selection, pre-spawn, and post-process');
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 1);
+});
+
+test('post-process capture tamper blocks import, persists a closed axis, and charges once', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  let captureChecks = 0;
+  let importCalls = 0;
+  const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    captureCheckerSkillFn: options => {
+      captureChecks += 1;
+      if (captureChecks === 3) throw new Error('checker-capture-integrity-drift:skill');
+      return deps.captureCheckerSkillFn(options);
+    },
+    checkerImportFn: () => { importCalls += 1; throw new Error('tampered capture must not import'); },
+  });
+  assert.equal(result.action, 'checker-blocked');
+  assert.equal(result.reason, 'checker-identity-drift');
+  assert.equal(result.recorded, true);
+  assert.equal(importCalls, 0);
+  const reconciled = captureReconciledRunSnapshot(f.root, f.runId);
+  const checker = reconciled.data.episodes.find(episode => episode.id === f.checkerId);
+  const blocked = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
+  assert.deepEqual(checker.checker_identity_diagnostic, {
+    reason_code: 'capture-integrity-drift',
+    identity_phase: 'post-process',
+    identity_axis: 'capture-skill',
+  });
+  assert.deepEqual(checker.checker_identity_diagnostic, blocked.data.checker_identity_diagnostic);
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts + 1);
+  assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
+});
+
+test('capture publication failure blocks before checker cost or import with a closed store axis', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  let checkerCalls = 0;
+  let importCalls = 0;
+  const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    captureCheckerSkillFn: () => { throw new Error('checker-capture-publication-failed'); },
+    checkerRunFn: () => { checkerCalls += 1; throw new Error('capture failure must not spawn'); },
+    checkerImportFn: () => { importCalls += 1; throw new Error('capture failure must not import'); },
+  });
+  assert.equal(result.action, 'checker-blocked');
+  assert.equal(checkerCalls, 0);
+  assert.equal(importCalls, 0);
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts);
+  const checker = readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId);
+  assert.deepEqual(checker.checker_identity_diagnostic, {
+    reason_code: 'capture-publication-failed', identity_phase: 'capture', identity_axis: 'capture-store',
+  });
+});
+
+test('source path, version, and content drift block before capture child cost or import', () => {
+  const cases = [
+    ['path', source => ({ ...source, skill: { ...source.skill, canonical_path: '/other/SKILL.md' } }), 'source-path'],
+    ['version', source => ({ ...source, plugin_version: '2.0.0' }), 'source-version'],
+    ['manifest', source => ({ ...source, manifest: { ...source.manifest, sha256: '9'.repeat(64) } }), 'source-manifest-content'],
+    ['skill', source => ({ ...source, skill: { ...source.skill, sha256: '8'.repeat(64) } }), 'source-skill-content'],
+  ];
+  for (const [label, mutate, axis] of cases) {
+    const f = seed();
+    const deps = hostDeps(f);
+    let resolves = 0;
+    let checkerCalls = 0;
+    let importCalls = 0;
+    const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+    const result = driveHeadlessRun({
+      root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+      resolveCheckerSkill: () => {
+        const source = deps.resolveCheckerSkill();
+        resolves += 1;
+        return resolves === 1 ? source : mutate(source);
+      },
+      checkerRunFn: () => { checkerCalls += 1; throw new Error('source drift must not spawn'); },
+      checkerImportFn: () => { importCalls += 1; throw new Error('source drift must not import'); },
+    });
+    assert.equal(result.action, 'checker-blocked', label);
+    assert.equal(checkerCalls, 0, label);
+    assert.equal(importCalls, 0, label);
+    assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts, label);
+    const checker = readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId);
+    assert.deepEqual(checker.checker_identity_diagnostic, {
+      reason_code: 'source-provenance-drift', identity_phase: 'capture', identity_axis: axis,
+    }, label);
+  }
+});
+
+test('host identity exceptions persist their closed axis instead of collapsing into source availability', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  let validations = 0;
+  let checkerCalls = 0;
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    revalidateExecutable: approval => {
+      validations += 1;
+      if (validations > 1) throw new Error('raw executable replacement path /secret');
+      return deps.revalidateExecutable(approval);
+    },
+    checkerRunFn: () => { checkerCalls += 1; throw new Error('host drift must not spawn'); },
+  });
+  assert.equal(result.action, 'checker-blocked');
+  assert.equal(checkerCalls, 0);
+  const checker = readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId);
+  assert.deepEqual(checker.checker_identity_diagnostic, {
+    reason_code: 'host-identity-drift', identity_phase: 'pre-spawn', identity_axis: 'runtime-executable',
+  });
+  assert.equal(JSON.stringify(checker).includes('/secret'), false);
+});
 
 function claim(f, attemptId = 'attempt-01') {
   return claimIndependentReview(f.root, f.runId, {
@@ -247,6 +404,33 @@ test('blockIndependentReview atomically blocks the exact claim and human-pauses 
   const reconciledChecker = reconciled.data.episodes.find(e => e.id === f.checkerId);
   const reconciledEvent = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
   assert.deepEqual(reconciledChecker.checker_process_diagnostic, reconciledEvent.data.checker_process_diagnostic);
+});
+
+test('blockIndependentReview atomically preserves one exact identity diagnostic and rejects mixed diagnostics', () => {
+  const diagnostic = {
+    reason_code: 'capture-integrity-drift', identity_phase: 'post-process', identity_axis: 'capture-skill',
+  };
+  const f = seed();
+  claim(f);
+  blockIndependentReview(f.root, f.runId, {
+    episodeId: f.checkerId, attemptId: 'attempt-01', reason: 'checker-identity-drift',
+    identityDiagnostic: diagnostic, fence: f.fence,
+  });
+  const reconciled = captureReconciledRunSnapshot(f.root, f.runId);
+  const checker = reconciled.data.episodes.find(episode => episode.id === f.checkerId);
+  const blocked = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
+  assert.deepEqual(checker.checker_identity_diagnostic, diagnostic);
+  assert.deepEqual(blocked.data.checker_identity_diagnostic, diagnostic);
+
+  const mixed = seed();
+  claim(mixed);
+  const before = events(mixed.root, mixed.runId).length;
+  assert.throws(() => blockIndependentReview(mixed.root, mixed.runId, {
+    episodeId: mixed.checkerId, attemptId: 'attempt-01', reason: 'checker-identity-drift',
+    identityDiagnostic: diagnostic, processDiagnostic: processDiagnostic(), fence: mixed.fence,
+  }), /REVIEW_BLOCK_DIAGNOSTIC_INVALID/);
+  assert.equal(events(mixed.root, mixed.runId).length, before);
+  assert.equal(readState(mixed.root, mixed.runId).data.episodes.find(e => e.id === mixed.checkerId).status, 'in_progress');
 });
 
 test('blockIndependentReview rejects a raw-field persistence mutant before event or state mutation', () => {

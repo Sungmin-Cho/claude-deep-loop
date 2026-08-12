@@ -13,7 +13,11 @@ import { containedRealFile } from './fs-safe.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
-import { validate, validCheckerProcessDiagnostic } from './schema.mjs';
+import {
+  validate,
+  validCheckerIdentityDiagnostic,
+  validCheckerProcessDiagnostic,
+} from './schema.mjs';
 import { assertScopeAllows } from './session-scope.mjs';
 import {
   isProofCapableChecker,
@@ -142,25 +146,38 @@ export function claimIndependentReview(root, runId, options = {}) {
 
 export function blockIndependentReview(root, runId, options = {}) {
   if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_BLOCK_INPUT_INVALID');
-  const { episodeId, attemptId, reason, fence, processDiagnostic } = options;
+  const {
+    episodeId, attemptId, reason, fence, processDiagnostic, identityDiagnostic,
+  } = options;
   validFence(fence, 'blockIndependentReview');
   if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_BLOCK_ATTEMPT_INVALID');
   const safeReason = boundedBlockReason(reason);
-  if (processDiagnostic !== undefined && !validCheckerProcessDiagnostic(processDiagnostic)) {
+  if ((processDiagnostic !== undefined && identityDiagnostic !== undefined)
+    || (processDiagnostic !== undefined && !validCheckerProcessDiagnostic(processDiagnostic))
+    || (identityDiagnostic !== undefined && !validCheckerIdentityDiagnostic(identityDiagnostic))) {
     throw new Error('REVIEW_BLOCK_DIAGNOSTIC_INVALID');
   }
   const frozenDiagnostic = processDiagnostic === undefined
     ? undefined
     : structuredClone(processDiagnostic);
+  const frozenIdentityDiagnostic = identityDiagnostic === undefined
+    ? undefined
+    : structuredClone(identityDiagnostic);
   let locked;
   appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
     episode_id: episodeId, attempt_id: attemptId, reason: safeReason,
     ...(frozenDiagnostic === undefined ? {} : { checker_process_diagnostic: frozenDiagnostic }),
+    ...(frozenIdentityDiagnostic === undefined ? {} : {
+      checker_identity_diagnostic: frozenIdentityDiagnostic,
+    }),
   } }, (loop) => {
     const checker = locked.checker;
     checker.status = 'blocked';
     checker.block_reason = safeReason;
     if (frozenDiagnostic !== undefined) checker.checker_process_diagnostic = frozenDiagnostic;
+    if (frozenIdentityDiagnostic !== undefined) {
+      checker.checker_identity_diagnostic = frozenIdentityDiagnostic;
+    }
     checker.needs_human = true;
     loop.status = 'paused';
     loop.pause_reason = `independent-review:${safeReason}`;

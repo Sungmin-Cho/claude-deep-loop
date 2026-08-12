@@ -129,6 +129,13 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    generic `leaseCheck`, `appendAnchored`, `budget record` and all CLI mutations remain
    terminal-rejected. That receipt is completion bookkeeping, so pre-finish insights
    remain a valid snapshot that intentionally excludes the final process measurement.
+   Before an independent Codex checker child starts, the host verifies the selected
+   deep-review manifest and skill bytes and publishes an immutable, run-owned capture
+   under `checker-captures/`. The child reads only that capture. A byte-identical cache
+   replacement is allowed after provenance is established, while source path, version,
+   or content drift and any capture metadata/content drift fail closed. Post-process
+   capture failure charges a measured checker turn exactly once and never imports it;
+   pre-spawn failure has no checker cost.
 7. **`withLock` is non-reentrant** — never take a lock inside a locked callback.
    Kernel durable writes are confined to `<root>/.deep-loop/`. The sole carve-out is
    `DEEP_LOOP_ROOT/scripts/lib/activation-secret.mjs`: the execution-child stored-activation client

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,8 +48,8 @@ test('STEP0-3 guard 4 link-only extractor reports every scripts namespace withou
   assert.equal(result.stderr, '');
   const output = JSON.parse(result.stdout);
   assert.equal(output.schema_version, 1);
-  assert.equal(output.file_count, 59);
-  assert.equal(output.raw_export_name_count, 320);
+  assert.equal(output.file_count, 65);
+  assert.equal(output.raw_export_name_count, 392);
   assert.equal(output.failures.length, 0);
   const linkedIds = output.files.flatMap((file) =>
     file.export_names.map((name) => `${file.module}#${name}`)).sort(byteSort);
@@ -64,6 +64,35 @@ test('STEP0-3 guard 4 fails closed when the vm-modules child flag is absent', ()
   ], { encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /VM_MODULES_UNAVAILABLE: run with --experimental-vm-modules/);
+});
+
+test('STEP0-3 link-only extractor links repo-contained mjs dependencies but rejects escape and symlink decoys', () => {
+  const run = (scriptsRoot) => spawnSync(process.execPath, [
+    '--no-warnings', '--experimental-vm-modules', LINK_ONLY_EXTRACTOR, '--scripts-root', scriptsRoot,
+  ], { encoding: 'utf8' });
+  const scratch = mkdtempSync(join(tmpdir(), 'wsu1-link-boundary-'));
+  const scripts = join(scratch, 'scripts');
+  const evals = join(scratch, 'evals');
+  mkdirSync(scripts);
+  mkdirSync(evals);
+  writeFileSync(join(evals, 'dep.mjs'), 'export const value = 1;\n');
+  writeFileSync(join(scripts, 'main.mjs'), "export { value } from '../evals/dep.mjs';\n");
+  const linked = run(scripts);
+  assert.equal(linked.status, 0, linked.stderr);
+  assert.equal(JSON.parse(linked.stdout).raw_export_name_count, 1);
+
+  const outside = join(dirname(scratch), `${scratch.slice(scratch.lastIndexOf('/') + 1)}-outside.mjs`);
+  writeFileSync(outside, 'export const escaped = true;\n');
+  writeFileSync(join(scripts, 'main.mjs'), `export { escaped } from '../../${outside.slice(outside.lastIndexOf('/') + 1)}';\n`);
+  const escaped = run(scripts);
+  assert.notEqual(escaped.status, 0);
+  assert.match(escaped.stderr, /IMPORT_OUTSIDE_REPOSITORY/);
+
+  writeFileSync(join(scripts, 'main.mjs'), "export { value } from '../evals/linked.mjs';\n");
+  symlinkSync(join(evals, 'dep.mjs'), join(evals, 'linked.mjs'));
+  const symlink = run(scripts);
+  assert.notEqual(symlink.status, 0);
+  assert.match(symlink.stderr, /UNSAFE_REPOSITORY_IMPORT/);
 });
 
 test('STEP0-3 local design auxiliary check matches all four pinned seed spans', () => {
@@ -109,23 +138,23 @@ test('STEP0-3 guard 1 rejects the approved non-mjs reversal instead of silently 
   }]);
 });
 
-test('STEP0-3 static export parser matches the measured 320 raw and 312 canonical surface', async () => {
+test('STEP0-3 static export parser matches the measured 392 raw and 384 canonical surface', async () => {
   const analyzer = await import(STATIC_ANALYZER);
   const result = analyzer.extractExportSurface({ files: recursiveFiles(join(ROOT, 'scripts')) });
   assert.deepEqual(result.failures, []);
-  assert.equal(result.raw_ids.length, 320);
-  assert.equal(result.canonical_ids.length, 312);
+  assert.equal(result.raw_ids.length, 392);
+  assert.equal(result.canonical_ids.length, 384);
 });
 
-test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 312-row partition', async () => {
+test('STEP0-3 live overlay closes the measured current delta with a disjoint 384-row partition', async () => {
   const analyzer = await import(STATIC_ANALYZER);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
   assert.deepEqual(live.counts, {
-    L: 28, B: 7, X: 34, E2: 116, E3: 12, E4: 15, E5: 1, E7: 73, E8: 26,
+    L: 32, B: 7, X: 34, E2: 149, E3: 14, E4: 21, E5: 1, E7: 86, E8: 40,
   });
-  assert.equal(live.rows.size, 312);
+  assert.equal(live.rows.size, 384);
   assert.deepEqual([
     'attended-launch.mjs#revokeAttendedLaunch',
     'budget.mjs#settleTerminalCodexMakerCost',
@@ -183,6 +212,7 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
   ]);
   assert.deepEqual([...live.rows.entries()].filter(([id]) => [
     'activation-secret.mjs#activateStoredLease',
+    'codex-checker.mjs#captureTrustedCheckerSkill',
     'headless-host.mjs#acquireHeadlessHostLock',
     'lease.mjs#activateLease',
     'lease.mjs#reapLease',
@@ -192,10 +222,12 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     'schema.mjs#CHECKER_PROCESS_PHASES',
     'schema.mjs#CHECKER_PROCESS_REASON_CODES',
     'schema.mjs#CHECKER_PROCESS_REASON_PHASES',
+    'schema.mjs#validCheckerIdentityDiagnostic',
     'schema.mjs#validCheckerProcessDiagnostic',
     'schema.mjs#validProcessStreamMetadata',
   ].includes(id)), [
     ['activation-secret.mjs#activateStoredLease', { classification: 'X', reason: 'enforcement-origin' }],
+    ['codex-checker.mjs#captureTrustedCheckerSkill', { classification: 'E4', reason: 'non-run-state-durable-write' }],
     ['headless-host.mjs#acquireHeadlessHostLock', { classification: 'X', reason: 'damage-repair' }],
     ['lease.mjs#activateLease', { classification: 'X', reason: 'enforcement-origin' }],
     ['lease.mjs#reapLease', { classification: 'X', reason: 'enforcement-origin' }],
@@ -205,9 +237,42 @@ test('STEP0-3 live overlay closes the measured twelve-id delta with a disjoint 3
     ['schema.mjs#CHECKER_PROCESS_PHASES', { classification: 'E8', reason: 'non-callable-value' }],
     ['schema.mjs#CHECKER_PROCESS_REASON_CODES', { classification: 'E8', reason: 'non-callable-value' }],
     ['schema.mjs#CHECKER_PROCESS_REASON_PHASES', { classification: 'E8', reason: 'non-callable-value' }],
+    ['schema.mjs#validCheckerIdentityDiagnostic', { classification: 'E2', reason: 'no-run-state-write' }],
     ['schema.mjs#validCheckerProcessDiagnostic', { classification: 'E2', reason: 'no-run-state-write' }],
     ['schema.mjs#validProcessStreamMetadata', { classification: 'E2', reason: 'no-run-state-write' }],
   ]);
+});
+
+test('STEP0-3 every current-delta row is required and rejects a wrong category', async () => {
+  const analyzer = await import(STATIC_ANALYZER);
+  const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
+  const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
+  const begin = '<!-- F26-LIVE-JSON-BEGIN -->';
+  const end = '<!-- F26-LIVE-JSON-END -->';
+  const start = overlay.indexOf(begin) + begin.length;
+  const finish = overlay.indexOf(end, start);
+  const config = JSON.parse(overlay.slice(start, finish));
+  const render = value => `${overlay.slice(0, start)}\n${JSON.stringify(value)}\n${overlay.slice(finish)}`;
+  const currentDelta = config.add.slice(12);
+  assert.equal(currentDelta.length, 72);
+  for (const row of currentDelta) {
+    const removed = structuredClone(config);
+    removed.add = removed.add.filter(({ id }) => id !== row.id);
+    assert.throws(() => analyzer.parseLiveClassification({ seed, overlay: render(removed) }),
+      /CLASSIFICATION_COUNT_MISMATCH/, `removal mutant ${row.id}`);
+  }
+  const missingOverride = structuredClone(config);
+  missingOverride.override = [];
+  assert.throws(() => analyzer.parseLiveClassification({ seed, overlay: render(missingOverride) }),
+    /CLASSIFICATION_COUNT_MISMATCH/, 'restore override removal mutant');
+  for (const row of currentDelta) {
+    const wrong = structuredClone(config);
+    const target = wrong.add.find(({ id }) => id === row.id);
+    target.classification = target.classification === 'E2' ? 'E7' : 'E2';
+    target.reason = target.classification === 'E2' ? 'no-run-state-write' : 'expanded-read-pure-non-run-state';
+    assert.throws(() => analyzer.parseLiveClassification({ seed, overlay: render(wrong) }),
+      /CLASSIFICATION_COUNT_MISMATCH/, `wrong-category mutant ${row.id}`);
+  }
 });
 
 test('STEP0-3 structural exceptions require their closed source preconditions', async () => {
@@ -324,7 +389,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
 
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.violations, []);
-  assert.equal(result.rows.length, 312);
+  assert.equal(result.rows.length, 384);
   assert.deepEqual(result.rows.find(({ id }) => id === 'headless-host.mjs#acquireHeadlessHostLock'), {
     id: 'headless-host.mjs#acquireHeadlessHostLock',
     classification: 'X',
@@ -341,10 +406,10 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
           'integrity.mjs#reconcileAnchoredPublicationLocked',
         ],
         coordinates: [
-          'scripts/lib/headless-host.mjs:208',
+          'scripts/lib/headless-host.mjs:212',
           'scripts/lib/state.mjs:270',
-          'scripts/lib/integrity.mjs:709',
-          'scripts/lib/integrity.mjs:575',
+          'scripts/lib/integrity.mjs:1953',
+          'scripts/lib/integrity.mjs:1806',
         ],
       },
       {
@@ -356,10 +421,10 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
           'integrity.mjs#reconcileAnchoredPublicationLocked',
         ],
         coordinates: [
-          'scripts/lib/headless-host.mjs:208',
+          'scripts/lib/headless-host.mjs:212',
           'scripts/lib/state.mjs:270',
-          'scripts/lib/integrity.mjs:709',
-          'scripts/lib/integrity.mjs:575',
+          'scripts/lib/integrity.mjs:1953',
+          'scripts/lib/integrity.mjs:1806',
         ],
       },
     ],
@@ -405,6 +470,43 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
     && path.at(-1) === 'integrity.mjs#appendAnchored'), true);
   assert.equal(stored.evidence.some(({ kind }) => kind === 'no-path'), false,
     'default dependency aliases must not seal stale no-path evidence');
+});
+
+test('STEP0-3 higher-order authorize gates dominate writes and gate-removal mutants fail closed', async () => {
+  const analyzer = await import(STATIC_ANALYZER);
+  const analyze = (name, source) => {
+    const scratch = mkdtempSync(join(tmpdir(), 'wsu1-authorize-boundary-'));
+    const file = join(scratch, name);
+    writeFileSync(file, source);
+    const id = `${name}#surface`;
+    return analyzer.analyzeClassification({
+      files: [file],
+      live: { rows: new Map([[id, { classification: 'L', reason: 'leasecheck-dominated' }]]) },
+      requireExactSurface: false,
+    });
+  };
+  const source = [
+    "import { withFencedReconciledMutationLock } from './integrity.mjs';",
+    "import { writeCompactRestoreState } from './state.mjs';",
+    "import { leaseCheck } from './lease.mjs';",
+    'export function surface(root, runId, fence) {',
+    '  return withFencedReconciledMutationLock(root, runId, (_guard, { data }) => {',
+    '    writeCompactRestoreState(root, runId, data, data.updated_at);',
+    '  }, { authorize: (_guard, { data }) => leaseCheck(data, fence) });',
+    '}',
+  ].join('\n');
+  const guarded = analyze('guarded.mjs', source);
+  assert.deepEqual(guarded.violations, []);
+  assert.equal(guarded.rows[0].leasecheck_dominance, 'dominates');
+  for (const mutant of [
+    source.replace('leaseCheck(data, fence)', 'true'),
+    source.replace('writeCompactRestoreState(root, runId, data, data.updated_at);',
+      'writeCompactRestoreState(root, runId, data, data.updated_at);\n    return true;')
+      .replace(', { authorize: (_guard, { data }) => leaseCheck(data, fence) }', ''),
+  ]) {
+    const result = analyze('mutant.mjs', mutant);
+    assert.equal(result.violations.some(({ code }) => code === 'L_WRITE_NOT_DOMINATED'), true);
+  }
 });
 
 test('STEP0-3 dual pending-block proof rejects missing, misplaced, conditional, and partial guards', async () => {

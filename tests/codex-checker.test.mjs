@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
@@ -195,4 +197,76 @@ test('trusted checker skill resolution accepts one exact cache candidate and rej
 
   install('2.0.0');
   assert.throws(() => resolveTrustedCheckerSkill({ codexHome: home }), /checker-skill-ambiguous/);
+});
+
+test('trusted checker capture publishes exact run-owned bytes and tolerates source metadata replacement', async () => {
+  const { captureTrustedCheckerSkill, resolveTrustedCheckerSkill } = await checkerModule();
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-capture-')));
+  const runId = 'RUN-1';
+  mkdirSync(join(root, '.deep-loop', 'runs', runId), { recursive: true });
+  const home = join(root, 'codex-home');
+  const plugin = join(home, 'plugins', 'cache', 'market', 'deep-review', '1.0.0');
+  const manifestPath = join(plugin, '.codex-plugin', 'plugin.json');
+  const skillPath = join(plugin, 'skills', 'deep-review-loop', 'SKILL.md');
+  mkdirSync(join(plugin, '.codex-plugin'), { recursive: true });
+  mkdirSync(join(plugin, 'skills', 'deep-review-loop'), { recursive: true });
+  const manifestBytes = Buffer.from('{"name":"deep-review","version":"1.0.0","skills":"./skills/"}');
+  const skillBytes = Buffer.from('---\nname: deep-review-loop\n---\n# trusted\n');
+  writeFileSync(manifestPath, manifestBytes);
+  writeFileSync(skillPath, skillBytes);
+  const source = resolveTrustedCheckerSkill({ codexHome: home });
+  const captured = captureTrustedCheckerSkill({
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01', source,
+  });
+  assert.deepEqual(readdirSync(captured.directory.canonical_path).sort(), ['SKILL.md', 'capture.json', 'plugin.json']);
+  assert.equal(readFileSync(captured.manifest.canonical_path).equals(manifestBytes), true);
+  assert.equal(readFileSync(captured.skill.canonical_path).equals(skillBytes), true);
+  assert.equal(lstatSync(captured.directory.canonical_path).isSymbolicLink(), false);
+  assert.equal(lstatSync(captured.skill.canonical_path).isFile(), true);
+  const record = JSON.parse(readFileSync(captured.record.canonical_path, 'utf8'));
+  assert.deepEqual(Object.keys(record), ['schema_version', 'binding', 'source', 'captured']);
+  assert.deepEqual(record.binding, {
+    run_id: runId, checker_episode_id: '002-deep-review', attempt_id: 'attempt-01',
+  });
+  assert.equal(record.source.plugin_version, '1.0.0');
+  assert.deepEqual(record.captured, {
+    manifest_rel: 'plugin.json', manifest_sha256: source.manifest.sha256,
+    skill_rel: 'SKILL.md', skill_sha256: source.skill.sha256,
+  });
+
+  unlinkSync(manifestPath);
+  unlinkSync(skillPath);
+  writeFileSync(manifestPath, manifestBytes);
+  writeFileSync(skillPath, skillBytes);
+  const replaced = resolveTrustedCheckerSkill({ codexHome: home });
+  assert.notEqual(replaced.skill.inode, source.skill.inode);
+  assert.deepEqual(captureTrustedCheckerSkill({
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
+    source: replaced, expected: captured,
+  }), captured);
+});
+
+test('trusted checker capture rejects byte-identical capture replacement', async () => {
+  const { captureTrustedCheckerSkill, resolveTrustedCheckerSkill } = await checkerModule();
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-capture-drift-')));
+  const runId = 'RUN-1';
+  mkdirSync(join(root, '.deep-loop', 'runs', runId), { recursive: true });
+  const home = join(root, 'codex-home');
+  const plugin = join(home, 'plugins', 'cache', 'market', 'deep-review', '1.0.0');
+  mkdirSync(join(plugin, '.codex-plugin'), { recursive: true });
+  mkdirSync(join(plugin, 'skills', 'deep-review-loop'), { recursive: true });
+  writeFileSync(join(plugin, '.codex-plugin', 'plugin.json'), JSON.stringify({
+    name: 'deep-review', version: '1.0.0', skills: './skills/',
+  }));
+  writeFileSync(join(plugin, 'skills', 'deep-review-loop', 'SKILL.md'), '---\nname: deep-review-loop\n---\n');
+  const source = resolveTrustedCheckerSkill({ codexHome: home });
+  const captured = captureTrustedCheckerSkill({
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01', source,
+  });
+  const bytes = readFileSync(captured.skill.canonical_path);
+  unlinkSync(captured.skill.canonical_path);
+  writeFileSync(captured.skill.canonical_path, bytes, { mode: 0o400 });
+  assert.throws(() => captureTrustedCheckerSkill({
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01', source, expected: captured,
+  }), /checker-capture-integrity-drift:skill/);
 });

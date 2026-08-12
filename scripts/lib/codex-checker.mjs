@@ -1,13 +1,17 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  writeFileSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
@@ -16,12 +20,16 @@ import { isMeasuredOneTurnUsage } from './budget.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from './bounded-input.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 import { validProcessStreamMetadata } from './schema.mjs';
+import { flushDirectory } from './atomic-write.mjs';
+import { runDir } from './state.mjs';
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_CACHE_DEPTH = 3;
 const CLI_RESULT_BYTES = 512 * 1024;
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
+const SAFE_BINDING = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const CAPTURE_RECORD_BYTES = 16 * 1024;
 
 function validatedProcessStreams(result) {
   const streams = result?.process_streams;
@@ -192,6 +200,160 @@ export function resolveTrustedCheckerSkill({ codexHome } = {}) {
   if (candidates.length === 0) throw new Error('checker-skill-unavailable');
   if (candidates.length !== 1) throw new Error('checker-skill-ambiguous');
   return candidates[0];
+}
+
+function checkerSourceProvenance(source) {
+  const pluginDirectory = absolutePath(source?.plugin_directory?.canonical_path, 'checker-source-path-drift');
+  const manifestPath = absolutePath(source?.manifest?.canonical_path, 'checker-source-path-drift');
+  const skillPath = absolutePath(source?.skill?.canonical_path, 'checker-source-path-drift');
+  if (!contained(pluginDirectory, manifestPath) || !contained(pluginDirectory, skillPath)) {
+    throw new Error('checker-source-path-drift');
+  }
+  if (!SAFE_VERSION.test(source?.plugin_version || '')) throw new Error('checker-source-version-drift');
+  if (!/^[0-9a-f]{64}$/.test(source?.manifest?.sha256 || '')) throw new Error('checker-source-manifest-content-drift');
+  if (!/^[0-9a-f]{64}$/.test(source?.skill?.sha256 || '')) throw new Error('checker-source-skill-content-drift');
+  return {
+    plugin_directory: pluginDirectory,
+    manifest_path: manifestPath,
+    skill_path: skillPath,
+    plugin_name: 'deep-review',
+    plugin_version: source.plugin_version,
+    manifest_sha256: source.manifest.sha256,
+    skill_sha256: source.skill.sha256,
+  };
+}
+
+function sourceDrift(expected, actual) {
+  if (expected.plugin_directory !== actual.plugin_directory
+    || expected.manifest_path !== actual.manifest_path || expected.skill_path !== actual.skill_path) {
+    return 'checker-source-path-drift';
+  }
+  if (expected.plugin_name !== actual.plugin_name || expected.plugin_version !== actual.plugin_version) {
+    return 'checker-source-version-drift';
+  }
+  if (expected.manifest_sha256 !== actual.manifest_sha256) return 'checker-source-manifest-content-drift';
+  if (expected.skill_sha256 !== actual.skill_sha256) return 'checker-source-skill-content-drift';
+  return null;
+}
+
+function exactCaptureRecord(binding, source) {
+  return {
+    schema_version: '1.0',
+    binding,
+    source,
+    captured: {
+      manifest_rel: 'plugin.json',
+      manifest_sha256: source.manifest_sha256,
+      skill_rel: 'SKILL.md',
+      skill_sha256: source.skill_sha256,
+    },
+  };
+}
+
+function writeExclusiveFile(path, bytes, mode) {
+  let fd;
+  try {
+    fd = openSync(path, 'wx', mode);
+    writeFileSync(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  if (process.platform !== 'win32') chmodSync(path, mode);
+}
+
+function exactCaptureNames(directory) {
+  const names = readdirSync(directory).sort();
+  if (JSON.stringify(names) !== JSON.stringify(['SKILL.md', 'capture.json', 'plugin.json'])) {
+    throw new Error('checker-capture-integrity-drift:directory');
+  }
+}
+
+function captureDescriptor(directoryPath, source, binding) {
+  const directory = inspectDirectory(directoryPath);
+  exactCaptureNames(directory.canonical_path);
+  const manifest = inspectCheckerFileIdentity(join(directory.canonical_path, 'plugin.json'), {
+    maxBytes: MAX_MANIFEST_BYTES,
+  });
+  const skill = inspectCheckerFileIdentity(join(directory.canonical_path, 'SKILL.md'));
+  const record = inspectCheckerFileIdentity(join(directory.canonical_path, 'capture.json'), {
+    maxBytes: CAPTURE_RECORD_BYTES,
+  });
+  if (manifest.sha256 !== source.manifest_sha256) throw new Error('checker-capture-integrity-drift:manifest');
+  if (skill.sha256 !== source.skill_sha256) throw new Error('checker-capture-integrity-drift:skill');
+  const expectedRecord = Buffer.from(`${JSON.stringify(exactCaptureRecord(binding, source))}\n`, 'utf8');
+  const recordBytes = readIdentityBytes(record, { maxBytes: CAPTURE_RECORD_BYTES });
+  if (!recordBytes.equals(expectedRecord)) throw new Error('checker-capture-integrity-drift:record');
+  return { source, directory, record, manifest, skill };
+}
+
+export function captureTrustedCheckerSkill({
+  root,
+  runId,
+  checkerEpisodeId,
+  attemptId,
+  source,
+  expected = null,
+} = {}) {
+  const canonicalRoot = absolutePath(root, 'checker-capture-root-invalid');
+  if (!SAFE_BINDING.test(runId || '') || !SAFE_BINDING.test(checkerEpisodeId || '')
+    || !SAFE_BINDING.test(attemptId || '')) throw new Error('checker-capture-binding-invalid');
+  const provenance = checkerSourceProvenance(source);
+  const binding = {
+    run_id: runId,
+    checker_episode_id: checkerEpisodeId,
+    attempt_id: attemptId,
+  };
+  const key = createHash('sha256')
+    .update(runId).update('\0').update(checkerEpisodeId).update('\0').update(attemptId).digest('hex');
+  const base = join(runDir(canonicalRoot, runId), 'checker-captures');
+  const capturePath = join(base, key);
+  if (expected !== null) {
+    const drift = sourceDrift(expected?.source || {}, provenance);
+    if (drift) throw new Error(drift);
+    const inspected = captureDescriptor(capturePath, provenance, binding);
+    if (!sameCheckerIdentity(inspected.directory, expected.directory)) {
+      throw new Error('checker-capture-integrity-drift:directory');
+    }
+    for (const axis of ['record', 'manifest', 'skill']) {
+      if (!sameCheckerIdentity(inspected[axis], expected[axis])) {
+        throw new Error(`checker-capture-integrity-drift:${axis}`);
+      }
+    }
+    return expected;
+  }
+
+  const manifestBytes = readIdentityBytes(source.manifest, { maxBytes: MAX_MANIFEST_BYTES });
+  const skillBytes = readIdentityBytes(source.skill);
+  if (createHash('sha256').update(manifestBytes).digest('hex') !== provenance.manifest_sha256) {
+    throw new Error('checker-source-manifest-content-drift');
+  }
+  if (createHash('sha256').update(skillBytes).digest('hex') !== provenance.skill_sha256) {
+    throw new Error('checker-source-skill-content-drift');
+  }
+  try {
+    mkdirSync(base, { recursive: false, mode: 0o700 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw new Error('checker-capture-publication-failed', { cause: error });
+  }
+  try {
+    inspectDirectory(base, runDir(canonicalRoot, runId));
+    mkdirSync(capturePath, { recursive: false, mode: 0o700 });
+    writeExclusiveFile(join(capturePath, 'plugin.json'), manifestBytes, 0o400);
+    writeExclusiveFile(join(capturePath, 'SKILL.md'), skillBytes, 0o400);
+    flushDirectory(capturePath);
+    writeExclusiveFile(
+      join(capturePath, 'capture.json'),
+      Buffer.from(`${JSON.stringify(exactCaptureRecord(binding, provenance))}\n`, 'utf8'),
+      0o400,
+    );
+    flushDirectory(capturePath);
+    flushDirectory(base);
+  } catch (error) {
+    if (String(error?.message || error).startsWith('checker-capture-')) throw error;
+    throw new Error('checker-capture-publication-failed', { cause: error });
+  }
+  return captureDescriptor(capturePath, provenance, binding);
 }
 
 function canonicalJson(value, seen = new Set()) {

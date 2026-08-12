@@ -5,6 +5,7 @@ import {
   CHECKER_PROCESS_REASON_CODES,
   loadSchema,
   validate,
+  validCheckerIdentityDiagnostic,
   validCheckerProcessDiagnostic,
 } from '../scripts/lib/schema.mjs';
 import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
@@ -140,6 +141,39 @@ test('checker process diagnostic is backward-compatible but exact, closed, and p
     assert.equal(validCheckerProcessDiagnostic({ ...diagnostic, reason_code, process_phase }), false,
       `impossible pair ${reason_code}/${process_phase}`);
   }
+});
+
+test('checker identity diagnostic is optional, exact, closed, and mutually exclusive with process diagnostic', () => {
+  const valid = {
+    reason_code: 'capture-integrity-drift',
+    identity_phase: 'post-process',
+    identity_axis: 'capture-skill',
+  };
+  assert.equal(validCheckerIdentityDiagnostic(valid), true);
+  const absent = minimalValid();
+  absent.episodes.push({ id: '001-checker', status: 'blocked', request_rel: 'episodes/001-checker/request.md' });
+  assert.equal(validate(absent).ok, true);
+  const present = structuredClone(absent);
+  present.episodes[0].checker_identity_diagnostic = valid;
+  assert.equal(validate(present).ok, true);
+  for (const [label, mutate] of [
+    ['raw path', value => { value.path = '/tmp/secret'; }],
+    ['open reason', value => { value.reason_code = 'attacker-reason'; }],
+    ['open phase', value => { value.identity_phase = 'attacker-phase'; }],
+    ['impossible pair', value => { value.identity_phase = 'capture'; }],
+    ['open axis', value => { value.identity_axis = 'attacker-axis'; }],
+  ]) {
+    const candidate = structuredClone(present);
+    mutate(candidate.episodes[0].checker_identity_diagnostic);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+  const both = structuredClone(present);
+  both.episodes[0].checker_process_diagnostic = {
+    reason_code: 'child-nonzero-exit', process_phase: 'child-execution',
+    stderr: { sha256: 'a'.repeat(64), byte_count: 0, truncated: false },
+    stdout: { sha256: 'b'.repeat(64), byte_count: 0, truncated: false },
+  };
+  assert.equal(validate(both).ok, false, 'identity and process diagnostics are mutually exclusive');
 });
 
 test('activation deadline config accepts inclusive bounds and rejects out-of-range values', () => {

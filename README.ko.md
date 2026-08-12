@@ -78,9 +78,12 @@ host 상실 복구도 human-only입니다. 먼저 preserve-pause하고, 확인�
 - fixed-shape restore publication intent `compact-restore-intents/<operation-id>.prepared.json`
 - write-ahead log(**WAL**)용 `transactions/<operation-id>/prepared.json`과 `transactions/<operation-id>/committed.json`
 - `recoveries/<child-run-id>-affinity-recovery.json`, boundary-recovery capsule, `recoveries/root/<replacement-session-id>.json` root-relocation capsule
+- immutable run-owned independent-checker source snapshot인 `checker-captures/<binding-sha256>/{plugin.json,SKILL.md,capture.json}`
 - `terminal/launch-command.txt`와 바인딩된 launch metadata `terminal/launch-command.meta.json`
 
 WAL은 일반 read/mutation 전에 reconcile됩니다. incomplete, invalid, identity-mismatched prepared/committed publication은 **fail-stop**하며 partially published state를 건너뛰어 계속할 수 없습니다.
+
+독립 Codex checker는 mutable plugin cache의 trusted doctrine을 직접 실행하지 않습니다. Host가 선택된 deep-review canonical path, version, manifest/skill bytes를 먼저 검증한 뒤 exact bytes를 run-owned capture에 exclusive publish하고, child에는 captured `SKILL.md`만 전달합니다. 이후 byte-identical cache refresh는 canonical path/version/SHA-256 provenance가 같으므로 허용하지만 path/version/content drift는 fail-closed합니다. Capture directory/file metadata와 SHA-256은 child 전후 모두 strict하므로 byte-identical capture replacement도 import를 차단합니다. Pre-spawn identity failure의 checker cost는 0이고, post-process failure는 측정된 checker cost를 exactly once 유지하면서 import는 0입니다.
 
 ### acquire↔resume 계약
 

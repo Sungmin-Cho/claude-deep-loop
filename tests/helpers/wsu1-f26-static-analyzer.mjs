@@ -438,9 +438,10 @@ export function parseLiveClassification({ seed, overlay } = {}) {
   let config;
   try { config = JSON.parse(overlay.slice(startAt + begin.length, endAt).trim()); }
   catch (error) { throw new Error('CLASSIFICATION_OVERLAY_JSON_INVALID', { cause: error }); }
-  exactObject(config, ['schema_version', 'seed_sha256', 'design_sha256', 'expected_counts', 'base_x_reasons', 'add'], 'OVERLAY');
+  exactObject(config, ['schema_version', 'seed_sha256', 'design_sha256', 'expected_counts', 'base_x_reasons', 'override', 'add'], 'OVERLAY');
   if (config.schema_version !== 1 || !/^[a-f0-9]{64}$/.test(config.seed_sha256)
-    || !/^[a-f0-9]{64}$/.test(config.design_sha256) || !Array.isArray(config.add)) {
+    || !/^[a-f0-9]{64}$/.test(config.design_sha256)
+    || !Array.isArray(config.override) || !Array.isArray(config.add)) {
     throw new Error('CLASSIFICATION_OVERLAY_VALUE_INVALID');
   }
 
@@ -487,6 +488,15 @@ export function parseLiveClassification({ seed, overlay } = {}) {
   if (xAssigned.size !== xIds.size) {
     throw new Error(`CLASSIFICATION_X_REASON_MISSING:${[...xIds].filter((id) => !xAssigned.has(id)).join(',')}`);
   }
+  for (const item of config.override) {
+    exactObject(item, ['id', 'from', 'classification', 'reason'], 'OVERRIDE');
+    const current = rows.get(item.id);
+    if (!current || current.classification !== item.from || item.classification === item.from
+      || !REASONS[item.classification]?.has(item.reason)) {
+      throw new Error(`CLASSIFICATION_OVERRIDE_MISMATCH:${item.id}`);
+    }
+    rows.set(item.id, { classification: item.classification, reason: item.reason });
+  }
   for (const item of config.add) {
     exactObject(item, ['id', 'classification', 'reason'], 'ADD');
     if (!/^[A-Za-z0-9_-]+\.mjs#[A-Za-z_$][A-Za-z0-9_$]*$/.test(item.id)) {
@@ -510,6 +520,7 @@ export function parseLiveClassification({ seed, overlay } = {}) {
 
 const WRITE_PRIMITIVES = new Set([
   'state.mjs#writeState',
+  'state.mjs#writeCompactRestoreState',
   'integrity.mjs#appendEvent',
   'integrity.mjs#appendAnchored',
 ]);
@@ -967,15 +978,21 @@ function directFacts(record, recordsByFile) {
         fact.precheck = rangeLeaseStatus(record, args[4], recordsByFile) || 'does-not-dominate';
         fact.pendingBlock = rangeActivationPendingBlock(tokens, args[4]);
       }
-      if (call.target === 'state.mjs#withReconciledMutationLock') {
+      if (call.target === 'state.mjs#withReconciledMutationLock'
+        || call.target === 'integrity.mjs#withFencedReconciledMutationLock'
+        || call.target === 'state.mjs#withLock') {
         const callback = args[2];
-        const hasWrite = ['writeState', 'appendEvent', 'appendAnchored']
+        const authorize = call.target === 'state.mjs#withLock' ? callback : args[3];
+        fact.precheck = rangeLeaseStatus(record, authorize, recordsByFile)
+          || (rangeHasIdentifier(tokens, callback, 'leaseCheck')
+            ? (rangeIsConditional(tokens, callback, 'leaseCheck') ? 'conditional-dominates' : 'dominates')
+            : 'does-not-dominate');
+        fact.pendingBlock = rangeActivationPendingBlock(tokens, callback);
+        fact.gatewayBoundary = true;
+        const hasWrite = ['writeState', 'writeCompactRestoreState', 'appendEvent', 'appendAnchored']
           .some((identifier) => rangeHasIdentifier(tokens, callback, identifier));
         if (hasWrite) {
-          fact.precheck = rangeHasIdentifier(tokens, callback, 'leaseCheck')
-            ? (rangeIsConditional(tokens, callback, 'leaseCheck') ? 'conditional-dominates' : 'dominates')
-            : 'does-not-dominate';
-          fact.pendingBlock = rangeActivationPendingBlock(tokens, callback);
+          fact.gatewayWrite = true;
         }
       }
       calls.push(fact);
@@ -1048,12 +1065,24 @@ function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
   let path = [];
   let coordinates = [];
   for (const call of facts.calls) {
+    if (call.gatewayWrite) {
+      reaches = true;
+      dominance = mergeDominance(dominance, call.precheck);
+      pendingBlock = mergeDominance(pendingBlock, call.pendingBlock || 'does-not-dominate');
+      if (path.length === 0) {
+        path = [record.id, call.target, 'state.mjs#writeState'];
+        coordinates = [call.coordinate];
+      }
+      continue;
+    }
     if (WRITE_PRIMITIVES.has(call.target)) {
       reaches = true;
       let nextDominance = 'does-not-dominate';
       if (call.target === 'integrity.mjs#appendAnchored') nextDominance = call.precheck;
       else {
-        const enclosing = facts.calls.find((candidate) => candidate.target === 'state.mjs#withReconciledMutationLock'
+        const enclosing = facts.calls.find((candidate) => [
+          'state.mjs#withReconciledMutationLock', 'integrity.mjs#withFencedReconciledMutationLock', 'state.mjs#withLock',
+        ].includes(candidate.target)
           && candidate.open < call.open && call.close < candidate.close && candidate.precheck);
         if (enclosing) nextDominance = enclosing.precheck;
       }
@@ -1061,7 +1090,9 @@ function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
       let nextPendingBlock = 'does-not-dominate';
       if (call.target === 'integrity.mjs#appendAnchored') nextPendingBlock = call.pendingBlock;
       else {
-        const enclosing = facts.calls.find((candidate) => candidate.target === 'state.mjs#withReconciledMutationLock'
+        const enclosing = facts.calls.find((candidate) => [
+          'state.mjs#withReconciledMutationLock', 'integrity.mjs#withFencedReconciledMutationLock', 'state.mjs#withLock',
+        ].includes(candidate.target)
           && candidate.open < call.open && call.close < candidate.close && candidate.pendingBlock);
         if (enclosing) nextPendingBlock = enclosing.pendingBlock;
       }
@@ -1077,8 +1108,10 @@ function analyzeRecord(record, factsById, recordsById, stack = new Set()) {
     const nested = analyzeRecord(child, factsById, recordsById, new Set(stack).add(record.id));
     if (!nested.reaches) continue;
     reaches = true;
-    dominance = mergeDominance(dominance, nested.dominance);
-    pendingBlock = mergeDominance(pendingBlock, nested.pendingBlock);
+    const enclosing = facts.calls.find((candidate) => candidate.gatewayBoundary
+      && candidate.open < call.open && call.close < candidate.close);
+    dominance = mergeDominance(dominance, enclosing?.precheck || nested.dominance);
+    pendingBlock = mergeDominance(pendingBlock, enclosing?.pendingBlock || nested.pendingBlock);
     if (path.length === 0) {
       path = [record.id, ...nested.path];
       coordinates = [call.coordinate, ...nested.coordinates];

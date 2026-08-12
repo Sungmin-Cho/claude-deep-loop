@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import vm from 'node:vm';
-import { readFileSync, lstatSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { readFileSync, lstatSync, realpathSync } from 'node:fs';
+import { basename, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { baselineNode20RegularFiles } from './baseline-node20-walk.mjs';
 
@@ -14,7 +14,7 @@ function parseArgs(argv) {
   if (argv.length !== 2 || argv[0] !== '--scripts-root' || argv[1].length === 0) {
     throw new Error('usage: wsu1-f26-link-only-extractor.mjs --scripts-root <dir>');
   }
-  return resolve(argv[1]);
+  return realpathSync(resolve(argv[1]));
 }
 
 function byteSort(left, right) {
@@ -26,6 +26,7 @@ async function main() {
     throw new Error('VM_MODULES_UNAVAILABLE: run with --experimental-vm-modules');
   }
   const scriptsRoot = parseArgs(process.argv.slice(2));
+  const repositoryRoot = realpathSync(dirname(scriptsRoot));
   const allFiles = baselineNode20RegularFiles(scriptsRoot);
   const invalidExtensions = allFiles.filter((file) => !file.endsWith('.mjs'));
   if (invalidExtensions.length > 0) {
@@ -35,16 +36,23 @@ async function main() {
   const context = vm.createContext({});
   const modules = new Map();
   const failures = [];
-  for (const file of allFiles) {
+  const sourceModule = (file) => {
     const identifier = pathToFileURL(file).href;
+    if (modules.has(identifier)) return modules.get(identifier);
     try {
-      modules.set(identifier, new vm.SourceTextModule(readFileSync(file, 'utf8'), {
+      const module = new vm.SourceTextModule(readFileSync(file, 'utf8'), {
         context,
         identifier,
-      }));
+      });
+      modules.set(identifier, module);
+      return module;
     } catch (error) {
       failures.push({ file, phase: 'parse', message: String(error?.message || error) });
+      return null;
     }
+  };
+  for (const file of allFiles) {
+    sourceModule(file);
   }
   if (failures.length > 0) {
     throw new Error(`MODULE_PARSE_FAILED: ${JSON.stringify(failures)}`);
@@ -69,15 +77,45 @@ async function main() {
   const linker = async (specifier, referencingModule) => {
     const direct = modules.get(specifier);
     if (direct) return direct;
+    if (specifier.startsWith('node:')) {
+      const namespace = await import(specifier);
+      const synthetic = new vm.SyntheticModule(
+        Object.getOwnPropertyNames(namespace), () => {}, { context, identifier: specifier },
+      );
+      modules.set(specifier, synthetic);
+      return synthetic;
+    }
     let resolved;
     try {
       resolved = new URL(specifier, referencingModule.identifier).href;
     } catch (error) {
       throw new Error(`UNRESOLVED_IMPORT: ${specifier} from ${referencingModule.identifier}`, { cause: error });
     }
-    const target = modules.get(resolved);
-    if (!target) throw new Error(`UNRESOLVED_IMPORT: ${specifier} from ${referencingModule.identifier}`);
-    return target;
+    if (!resolved.startsWith('file:')) {
+      throw new Error(`UNRESOLVED_IMPORT: ${specifier} from ${referencingModule.identifier}`);
+    }
+    const lexical = fileURLToPath(resolved);
+    const rel = relative(repositoryRoot, lexical);
+    if (rel === '..' || rel.startsWith(`..${sep}`) || resolve(repositoryRoot, rel) !== resolve(lexical)) {
+      throw new Error(`IMPORT_OUTSIDE_REPOSITORY: ${specifier} from ${referencingModule.identifier}`);
+    }
+    if (extname(lexical) !== '.mjs') {
+      throw new Error(`NON_MJS_IMPORT: ${specifier} from ${referencingModule.identifier}`);
+    }
+    let canonical;
+    let stat;
+    try {
+      stat = lstatSync(lexical);
+      canonical = realpathSync(lexical);
+    } catch (error) {
+      throw new Error(`UNRESOLVED_IMPORT: ${specifier} from ${referencingModule.identifier}`, { cause: error });
+    }
+    const canonicalRel = relative(repositoryRoot, canonical);
+    if (stat.isSymbolicLink() || !stat.isFile()
+      || canonicalRel === '..' || canonicalRel.startsWith(`..${sep}`)) {
+      throw new Error(`UNSAFE_REPOSITORY_IMPORT: ${specifier} from ${referencingModule.identifier}`);
+    }
+    return sourceModule(canonical);
   };
 
   for (const file of allFiles) {

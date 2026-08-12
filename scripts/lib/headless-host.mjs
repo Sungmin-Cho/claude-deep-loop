@@ -49,15 +49,18 @@ import {
   revalidateIndependentReviewClaim,
 } from './review.mjs';
 import {
+  captureTrustedCheckerSkill,
   importReviewViaCli,
   resolveTrustedCheckerSkill,
   runIndependentCodexChecker,
-  sameCheckerIdentity,
 } from './codex-checker.mjs';
 import { emitHandoff } from './handoff.mjs';
 import { nextAction } from './next-action.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
-import { validCheckerProcessDiagnostic } from './schema.mjs';
+import {
+  validCheckerIdentityDiagnostic,
+  validCheckerProcessDiagnostic,
+} from './schema.mjs';
 import {
   locateCapturedImportedReviewArtifact,
   verifyCapturedImportedReviewProof,
@@ -304,6 +307,50 @@ function checkerCapabilityReason(error) {
   if (message.includes('checker-skill-ambiguous')) return 'checker-skill-ambiguous';
   if (message.includes('checker-skill-unavailable')) return 'checker-skill-unavailable';
   return 'checker-skill-invalid';
+}
+
+function checkerSourceSemantics(source) {
+  return {
+    plugin_directory: source?.plugin_directory?.canonical_path,
+    manifest_path: source?.manifest?.canonical_path,
+    skill_path: source?.skill?.canonical_path,
+    plugin_name: 'deep-review',
+    plugin_version: source?.plugin_version,
+    manifest_sha256: source?.manifest?.sha256,
+    skill_sha256: source?.skill?.sha256,
+  };
+}
+
+function identityDiagnostic(reasonCode, identityPhase, identityAxis) {
+  const diagnostic = {
+    reason_code: reasonCode,
+    identity_phase: identityPhase,
+    identity_axis: identityAxis,
+  };
+  if (!validCheckerIdentityDiagnostic(diagnostic)) throw new Error('checker identity diagnostic invalid');
+  return diagnostic;
+}
+
+function captureFailureDiagnostic(error, phase) {
+  const message = String(error?.message || error);
+  if (message.includes('checker-source-path-drift')) {
+    return identityDiagnostic('source-provenance-drift', phase, 'source-path');
+  }
+  if (message.includes('checker-source-version-drift')) {
+    return identityDiagnostic('source-provenance-drift', phase, 'source-version');
+  }
+  if (message.includes('checker-source-manifest-content-drift')) {
+    return identityDiagnostic('source-provenance-drift', phase, 'source-manifest-content');
+  }
+  if (message.includes('checker-source-skill-content-drift')) {
+    return identityDiagnostic('source-provenance-drift', phase, 'source-skill-content');
+  }
+  const capture = message.match(/checker-capture-integrity-drift:(directory|record|manifest|skill)/);
+  if (capture) return identityDiagnostic('capture-integrity-drift', phase, `capture-${capture[1]}`);
+  if (message.includes('checker-capture-publication-failed')) {
+    return identityDiagnostic('capture-publication-failed', 'capture', 'capture-store');
+  }
+  return identityDiagnostic('source-provenance-drift', phase, 'source-availability');
 }
 
 function accountingFailureReason(error) {
@@ -590,6 +637,7 @@ function driveIndependentChecker({
   inspectDirectory,
   inspectResumeSkill,
   resolveCheckerSkill,
+  captureCheckerSkillFn,
   checkerRunFn,
   checkerImportFn,
   emitHandoffFn,
@@ -886,13 +934,16 @@ function driveIndependentChecker({
       checkerEpisodeId: pending.id, attemptId: null,
     };
   }
-  const blockClaim = (reason, processDiagnostic = undefined) => {
+  const blockClaim = (reason, processDiagnostic = undefined, identityDiagnosticValue = undefined) => {
     try {
       blockReviewFn(projectRoot, runId, {
         episodeId: pending.id,
         attemptId: claimed.attemptId,
         reason,
         ...(processDiagnostic === undefined ? {} : { processDiagnostic }),
+        ...(identityDiagnosticValue === undefined ? {} : {
+          identityDiagnostic: identityDiagnosticValue,
+        }),
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
       });
       return {
@@ -908,8 +959,14 @@ function driveIndependentChecker({
       throw error;
     }
   };
-  const settleMeasuredFailure = (reason, usage, usageReceipt = null, processDiagnostic = undefined) => {
-    const blocked = blockClaim(reason, processDiagnostic);
+  const settleMeasuredFailure = (
+    reason,
+    usage,
+    usageReceipt = null,
+    processDiagnostic = undefined,
+    identityDiagnosticValue = undefined,
+  ) => {
+    const blocked = blockClaim(reason, processDiagnostic, identityDiagnosticValue);
     let pauseOutcome = null;
     if (blocked.action === 'checker-stranded') {
       pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
@@ -949,11 +1006,44 @@ function driveIndependentChecker({
     };
   };
 
-  const identityFresh = () => {
+  let checkerCapture;
+  let captureSource;
+  try {
+    captureSource = resolveCheckerSkill({ codexHome: codexHome.canonical_path });
+    const initialSource = checkerSourceSemantics(checkerSkillSnapshot);
+    const freshSource = checkerSourceSemantics(captureSource);
+    if (!sameValue(initialSource, freshSource)) {
+      const axis = initialSource.plugin_directory !== freshSource.plugin_directory
+        || initialSource.manifest_path !== freshSource.manifest_path
+        || initialSource.skill_path !== freshSource.skill_path
+        ? 'source-path'
+        : initialSource.plugin_version !== freshSource.plugin_version
+          ? 'source-version'
+          : initialSource.manifest_sha256 !== freshSource.manifest_sha256
+            ? 'source-manifest-content'
+            : 'source-skill-content';
+      return blockClaim('checker-identity-drift', undefined,
+        identityDiagnostic('source-provenance-drift', 'capture', axis));
+    }
+    checkerCapture = captureCheckerSkillFn({
+      root: projectRoot,
+      runId,
+      checkerEpisodeId: pending.id,
+      attemptId: claimed.attemptId,
+      source: captureSource,
+    });
+  } catch (error) {
+    return blockClaim('checker-identity-drift', undefined, captureFailureDiagnostic(error, 'capture'));
+  }
+
+  const identityFresh = (phase) => {
+    let activeHostAxis = 'run-claim';
     try {
       const freshLoop = captureFreshLoop(projectRoot, runId);
       const freshLease = freshLoop.session_chain?.lease || {};
+      activeHostAxis = 'runtime-executable';
       const freshExecutable = revalidateExecutable(freshLoop.autonomy?.runtime_executable_approval);
+      activeHostAxis = 'checker-env';
       const freshHome = resolveCodexHome({ env, expectedIdentity: codexHome, platform: freshExecutable.platform });
       const freshEnv = buildMinimalCodexEnv({
         platform: freshExecutable.platform,
@@ -964,38 +1054,79 @@ function driveIndependentChecker({
         owner: pending.id,
         generation: parentGeneration,
       });
+      activeHostAxis = null;
       const freshCheckerSkill = resolveCheckerSkill({ codexHome: freshHome.canonical_path });
+      activeHostAxis = 'run-claim';
       const freshClaim = revalidateClaimFn(projectRoot, runId, {
         episodeId: pending.id,
         attemptId: claimed.attemptId,
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
       });
       const checker = freshLoop.episodes.find(episode => episode.id === pending.id);
-      return sessionRuntime(freshLoop) === 'codex'
-        && canonicalProjectRoot(freshLoop.project.root) === projectRoot
-        && freshLease.owner_run_id === parentOwner
-        && freshLease.generation === parentGeneration
-        && checker?.status === 'in_progress'
-        && checker.attempt_id === claimed.attemptId
-        && sameValue(checker.review_claim, claimed.claim)
-        && sameValue(freshClaim.claim, claimed.claim)
-        && sameValue(freshLoop.autonomy?.runtime_executable_approval, initialApproval)
-        && sameValue(freshExecutable, executable)
-        && freshLoop.autonomy?.session_model === initialLoop.autonomy?.session_model
-        && freshLoop.autonomy?.session_effort === initialLoop.autonomy?.session_effort
-        && sameValue(freshEnv, checkerEnv)
-        && sameValue(inspectDirectory(projectRoot), projectDirectorySnapshot)
-        && sameValue(inspectDirectory(deepLoopRoot), pluginDirectorySnapshot)
-        && sameValue(inspectResumeSkill(resumeSkillPath), resumeSkillSnapshot)
-        && sameValue(inspectResumeSkill(outputSchemaPath), outputSchemaSnapshot)
-        && sameValue(inspectResumeSkill(kernelPath), kernelSnapshot)
-        && sameValue(inspectResumeSkill(process.execPath, { maxBytes: TRUSTED_NODE_MAX_BYTES }), nodeSnapshot)
-        && sameCheckerIdentity(freshCheckerSkill, checkerSkillSnapshot);
-    } catch {
-      return false;
+      const scalarHostChecks = [
+        ['run-claim', sessionRuntime(freshLoop) === 'codex'
+          && canonicalProjectRoot(freshLoop.project.root) === projectRoot
+          && freshLease.owner_run_id === parentOwner
+          && freshLease.generation === parentGeneration
+          && checker?.status === 'in_progress'
+          && checker.attempt_id === claimed.attemptId
+          && sameValue(checker.review_claim, claimed.claim)
+          && sameValue(freshClaim.claim, claimed.claim)],
+        ['runtime-executable', sameValue(freshLoop.autonomy?.runtime_executable_approval, initialApproval)
+          && sameValue(freshExecutable, executable)],
+        ['runtime-profile', freshLoop.autonomy?.session_model === initialLoop.autonomy?.session_model
+          && freshLoop.autonomy?.session_effort === initialLoop.autonomy?.session_effort],
+        ['checker-env', sameValue(freshEnv, checkerEnv)],
+      ];
+      const failedHost = scalarHostChecks.find(([, ok]) => !ok);
+      if (failedHost) return identityDiagnostic('host-identity-drift', phase, failedHost[0]);
+      for (const [axis, inspect] of [
+        ['project-root', () => sameValue(inspectDirectory(projectRoot), projectDirectorySnapshot)],
+        ['deep-loop-root', () => sameValue(inspectDirectory(deepLoopRoot), pluginDirectorySnapshot)],
+        ['resume-skill', () => sameValue(inspectResumeSkill(resumeSkillPath), resumeSkillSnapshot)],
+        ['output-schema', () => sameValue(inspectResumeSkill(outputSchemaPath), outputSchemaSnapshot)],
+        ['kernel-cli', () => sameValue(inspectResumeSkill(kernelPath), kernelSnapshot)],
+        ['node-executable', () => sameValue(
+          inspectResumeSkill(process.execPath, { maxBytes: TRUSTED_NODE_MAX_BYTES }), nodeSnapshot,
+        )],
+      ]) {
+        activeHostAxis = axis;
+        if (!inspect()) return identityDiagnostic('host-identity-drift', phase, axis);
+      }
+      activeHostAxis = null;
+      if (!sameValue(checkerSourceSemantics(freshCheckerSkill), checkerCapture.source)) {
+        const expected = checkerCapture.source;
+        const fresh = checkerSourceSemantics(freshCheckerSkill);
+        const axis = expected.plugin_directory !== fresh.plugin_directory
+          || expected.manifest_path !== fresh.manifest_path || expected.skill_path !== fresh.skill_path
+          ? 'source-path'
+          : expected.plugin_version !== fresh.plugin_version
+            ? 'source-version'
+            : expected.manifest_sha256 !== fresh.manifest_sha256
+              ? 'source-manifest-content'
+              : 'source-skill-content';
+        return identityDiagnostic('source-provenance-drift', phase, axis);
+      }
+      captureCheckerSkillFn({
+        root: projectRoot,
+        runId,
+        checkerEpisodeId: pending.id,
+        attemptId: claimed.attemptId,
+        source: freshCheckerSkill,
+        expected: checkerCapture,
+      });
+      return null;
+    } catch (error) {
+      if (activeHostAxis != null) {
+        return identityDiagnostic('host-identity-drift', phase, activeHostAxis);
+      }
+      return captureFailureDiagnostic(error, phase);
     }
   };
-  if (!identityFresh()) return blockClaim('checker-identity-drift');
+  const preSpawnIdentityFailure = identityFresh('pre-spawn');
+  if (preSpawnIdentityFailure) {
+    return blockClaim('checker-identity-drift', undefined, preSpawnIdentityFailure);
+  }
 
   let checkerUsageReceiptDescriptor;
   try {
@@ -1021,7 +1152,7 @@ function driveIndependentChecker({
     checkerResult = checkerRunFn({
       executable: executable.canonical_path,
       projectRoot,
-      checkerSkillPath: checkerSkillSnapshot.skill.canonical_path,
+      checkerSkillPath: checkerCapture.skill.canonical_path,
       outputSchemaPath,
       contract: {
         schema_version: '1.0',
@@ -1068,11 +1199,14 @@ function driveIndependentChecker({
       normalizedCheckerFailureDiagnostic(checkerResult),
     );
   }
-  if (!identityFresh()) {
+  const postProcessIdentityFailure = identityFresh('post-process');
+  if (postProcessIdentityFailure) {
     return settleMeasuredFailure(
       'checker-identity-drift',
       checkerResult.usage,
       checkerResult.usageReceipt ?? null,
+      undefined,
+      postProcessIdentityFailure,
     );
   }
 
@@ -1246,6 +1380,7 @@ function driveHeadlessRunLocked({
   inspectDirectory = inspectDirectoryNode,
   inspectResumeSkill = inspectRegularFileIdentity,
   resolveCheckerSkill = resolveTrustedCheckerSkill,
+  captureCheckerSkillFn = captureTrustedCheckerSkill,
   checkerRunFn = runIndependentCodexChecker,
   checkerImportFn = importReviewViaCli,
   emitHandoffFn = emitHandoff,
@@ -1435,6 +1570,7 @@ function driveHeadlessRunLocked({
     inspectDirectory,
     inspectResumeSkill,
     resolveCheckerSkill,
+    captureCheckerSkillFn,
     checkerRunFn,
     checkerImportFn,
     emitHandoffFn,

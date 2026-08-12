@@ -89,6 +89,46 @@ export function validCheckerProcessDiagnostic(value) {
     && validProcessStreamMetadata(value.stderr)
     && validProcessStreamMetadata(value.stdout);
 }
+const CHECKER_IDENTITY_REASON_PHASE_AXES = Object.freeze({
+  'source-provenance-drift': Object.freeze({
+    capture: Object.freeze([
+      'source-availability', 'source-path', 'source-version', 'source-manifest-content', 'source-skill-content',
+    ]),
+    'pre-spawn': Object.freeze([
+      'source-availability', 'source-path', 'source-version', 'source-manifest-content', 'source-skill-content',
+    ]),
+    'post-process': Object.freeze([
+      'source-availability', 'source-path', 'source-version', 'source-manifest-content', 'source-skill-content',
+    ]),
+  }),
+  'capture-publication-failed': Object.freeze({ capture: Object.freeze(['capture-store']) }),
+  'capture-integrity-drift': Object.freeze({
+    'pre-spawn': Object.freeze([
+      'capture-directory', 'capture-record', 'capture-manifest', 'capture-skill',
+    ]),
+    'post-process': Object.freeze([
+      'capture-directory', 'capture-record', 'capture-manifest', 'capture-skill',
+    ]),
+  }),
+  'host-identity-drift': Object.freeze({
+    'pre-spawn': Object.freeze([
+      'run-claim', 'runtime-executable', 'runtime-profile', 'checker-env', 'project-root',
+      'deep-loop-root', 'resume-skill', 'output-schema', 'kernel-cli', 'node-executable',
+    ]),
+    'post-process': Object.freeze([
+      'run-claim', 'runtime-executable', 'runtime-profile', 'checker-env', 'project-root',
+      'deep-loop-root', 'resume-skill', 'output-schema', 'kernel-cli', 'node-executable',
+    ]),
+  }),
+});
+
+export function validCheckerIdentityDiagnostic(value) {
+  if (!exactObject(value, ['reason_code', 'identity_phase', 'identity_axis'])) return false;
+  const phases = CHECKER_IDENTITY_REASON_PHASE_AXES[value.reason_code];
+  return phases != null
+    && Object.hasOwn(phases, value.identity_phase)
+    && phases[value.identity_phase].includes(value.identity_axis);
+}
 const FROZEN_REVIEW_CLAIM_KEYS = Object.freeze([
   'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
   'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
@@ -463,6 +503,14 @@ function validateEpisodeV040(ep, errors) {
   if (Object.hasOwn(ep, 'checker_process_diagnostic')
     && !validCheckerProcessDiagnostic(ep.checker_process_diagnostic)) {
     errors.push('episodes[].checker_process_diagnostic must be an exact closed secret-safe process diagnostic');
+  }
+  if (Object.hasOwn(ep, 'checker_identity_diagnostic')
+    && !validCheckerIdentityDiagnostic(ep.checker_identity_diagnostic)) {
+    errors.push('episodes[].checker_identity_diagnostic must be an exact closed secret-safe identity diagnostic');
+  }
+  if (Object.hasOwn(ep, 'checker_process_diagnostic')
+    && Object.hasOwn(ep, 'checker_identity_diagnostic')) {
+    errors.push('episodes[] checker diagnostics are mutually exclusive');
   }
   const invalidated = ep.invalidated_review_claims;
   if (invalidated === undefined) return;

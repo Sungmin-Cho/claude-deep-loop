@@ -1456,6 +1456,43 @@ test('claimed read-only checker imports exact final bytes once and commits conte
   assertCommittedImportLostAckReconcilesAndRoutes();
 });
 
+test('checker child uses the run-owned capture when trusted cache bytes are atomically replaced', () => {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  const afterActivation = readState(h.root, h.runId).data;
+  afterActivation.session_chain.lease.activation_deadline_at = null;
+  writeState(h.root, h.runId, afterActivation);
+  seedIndependentChecker(h);
+  h.writeControl({ checkerRawPath: join(h.codexHome, 'checker-capture-final.json') });
+
+  const sourceSkill = join(h.checkerPlugin, 'skills', 'deep-review-loop', 'SKILL.md');
+  const sourceBytes = readFileSync(sourceSkill);
+  const result = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 10_000,
+    timeoutMs: 20_000,
+    attemptIdFactory: () => 'attempt-cache-replacement-e2e',
+    checkerRunFn: options => {
+      const replacement = `${sourceSkill}.replacement`;
+      writeFileSync(replacement, sourceBytes);
+      renameSync(replacement, sourceSkill);
+      return runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker });
+    },
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.action, 'checker-complete');
+  const checkerEntry = h.entries.at(-1);
+  const prompt = checkerEntry.stdin;
+  const captureRoot = join(runDir(h.root, h.runId), 'checker-captures');
+  assert.match(prompt, new RegExp(`${captureRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[/\\\\][a-f0-9]{64}[/\\\\]SKILL\\.md`));
+  assert.equal(prompt.includes(sourceSkill), false, 'checker child must not reopen the mutable source cache');
+  const captures = readdirSync(captureRoot);
+  assert.equal(captures.length, 1);
+  assert.deepEqual(readdirSync(join(captureRoot, captures[0])).sort(), ['SKILL.md', 'capture.json', 'plugin.json']);
+});
+
 function checkerResultWithVerdict(h, options, verdict) {
   const result = runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker });
   if (verdict === 'APPROVE') return result;

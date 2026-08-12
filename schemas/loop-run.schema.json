@@ -31,6 +31,7 @@
     "autonomy.attended_launch_approval": { "type": ["object", "null"] },
     "project.binding_generation": { "type": "integer", "minimum": 1 },
     "episodes[].request_rel": { "type": "string" },
+    "episodes[].checker_identity_diagnostic": { "type": "object" },
     "session_chain.sessions[].handoff_rel": { "type": "string" },
     "session_chain.sessions[].scope": { "type": "object" },
     "session_chain.sessions[].compact_cursor": { "type": "object" }
