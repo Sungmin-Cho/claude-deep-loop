@@ -3,13 +3,13 @@
   "reviewer_id": "deep-review",
   "checker_episode_id": "002-deep-review",
   "target_maker": "001-deep-work",
-  "attempt_id": "16587fe8-3b67-4f6c-a8dd-259cc362c3ca",
+  "attempt_id": "433d3536-fecf-4fbf-bafc-5247e77807f9",
   "verdict": "APPROVE",
-  "report_body": "Critical: 0; Warning: 0; Info: 0. The immutable artifact hashes matched, and the read-only review found no contract-breaking behavior in activation-pending fencing, acquire/activate/reap recovery, stored-token publication, checker capture/import recovery, diagnostic validation, or F26 verification. Business mutations remain guarded inside locked mutation paths, while activation and expiry use fenced, anchored transitions. Tests were not executed because this pass was restricted to read-only review.",
+  "report_body": "APPROVE. No Critical or Warning findings were identified. The lease-acquire closed-vocabulary and per-flag multiplicity gate now rejects unknown, positional, and duplicate arguments before project-root/run resolution or durable acquisition, while preserving the established value and fence exit taxonomy. The related activation/reap grammar ordering, nested lease resume-policy correction, and fixed encoded Windows ACL transport are internally consistent. All 68 artifact SHA-256 values matched the immutable contract. Tests were not executed because this pass was required to remain read-only.",
   "artifacts": [
     {
       "path": ".claude/worktrees/wsu1-acquire-contract/scripts/deep-loop.mjs",
-      "sha256": "b3f840230e17db6f9a9d0ccb8afe3b25ef7d89cb28f398a39e09f09d59b8ab20"
+      "sha256": "ef69136bb5fc1057e76ebf02d39ec87df1d0b5575505ef509c04bc61f19d1b0c"
     },
     {
       "path": ".claude/worktrees/wsu1-acquire-contract/scripts/eval-deep-loop.mjs",
@@ -33,7 +33,7 @@
     },
     {
       "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/activation-secret.mjs",
-      "sha256": "1acc1a4503dec347608db9c89f139575a7cc015993bf1755456b4e0d0e5a3e11"
+      "sha256": "e45ba2e931438a6009a6c319a36fd42be0f6b4f6a5c44601735a1c5268e2f832"
     },
     {
       "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/adapters.mjs",
@@ -145,7 +145,7 @@
     },
     {
       "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/lease.mjs",
-      "sha256": "4796a5f312b95e71ff6a42a4bea83dd7fbd917fed6cee17ca78be40cf78c7d02"
+      "sha256": "130cf3cab1850d5c68f184a3b6a7d43d7b4f4871e22b29ce7a6c0d5e3dbb2283"
     },
     {
       "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/log.mjs",
@@ -281,4 +281,3 @@
     }
   ]
 }
-

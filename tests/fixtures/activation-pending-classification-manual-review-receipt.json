@@ -1,31 +1,31 @@
 {
-  "run_id": "01KZV6ZP5T92K6AWJZ010DA9ZG",
+  "run_id": "01KZVZ47BYR6JMJ6843KZFQF2Y",
   "workstream_id": "ws-01-wsu1-f26-independent-review",
   "worktree_prefix": ".claude/worktrees/wsu1-acquire-contract",
   "point": "wsu1-f26-independent-review",
   "scope": "X_E_RESIDUAL_REASON_SEMANTICS+L_CONDITIONAL_DOMINANCE",
-  "reviewed_source_sha256": "4087986e0a94be64d6b236ed9abdad69eb3e06ba5111c0bcc9cc6c8164b9a450",
+  "reviewed_source_sha256": "c01bce664f0a0137baafbf7e5ad9e7ed60b2f7189b56bb6f11a87021cd5603e4",
   "live_classification_sha256": "2cded4c18d29b456dc200e54f1a9b75a6570489918d60a418b8d553f05c0392e",
   "evidence_rows_sha256": "a31ef0fc1f5dde1ccd360008464461e31a89856e4ab1a6f1c4be07fd9afd23e4",
   "checker_cost_event": {
     "seq": 18,
     "process_context": {
-      "origin_owner": "01KZV6ZP5T92K6AWJZ010DA9ZG",
+      "origin_owner": "01KZVZ47BYR6JMJ6843KZFQF2Y",
       "origin_generation": 1,
       "checker_episode_id": "002-deep-review",
-      "attempt_id": "16587fe8-3b67-4f6c-a8dd-259cc362c3ca",
+      "attempt_id": "433d3536-fecf-4fbf-bafc-5247e77807f9",
       "target_maker": "001-deep-work",
-      "claim_hash": "6fcced966cb7ffeeabafe25ee00e0191748f300fa041718137a8f47689f1d70d"
+      "claim_hash": "6c646e0152ae8a104ef62ec2f9457250da281885caf02568146c46fed7b6a3a2"
     },
-    "claim_hash": "6fcced966cb7ffeeabafe25ee00e0191748f300fa041718137a8f47689f1d70d"
+    "claim_hash": "6c646e0152ae8a104ef62ec2f9457250da281885caf02568146c46fed7b6a3a2"
   },
   "external_observation": {
-    "path": ".deep-review/reports/2026-08-12-wsu1-slice010-external-observation-01KZV6ZP5T92K6AWJZ010DA9ZG.json",
-    "sha256": "1e17b339fb09d6ead1d5f32022448e35780984b29af4a9b80dd51ad5576cff6e",
+    "path": ".claude/worktrees/wsu1-acquire-contract/.deep-review/reports/2026-08-13-wsu1-slice010-external-observation-01KZVZ47BYR6JMJ6843KZFQF2Y.json",
+    "sha256": "a9936813d119e298bfab7f733a2b192a2c2076b1d88ed8aabe20abd7b4d872f7",
     "observer_session_id": "/root/wsu1_slice010_step45_orchestrator"
   },
-  "report_path": ".deep-loop/runs/01KZV6ZP5T92K6AWJZ010DA9ZG/reviews/bd5b66a9245b4a38f6e267b6425d59d9c9d9116c3fd60bb81dffb4460f300a4e.json",
-  "report_sha256": "bd5b66a9245b4a38f6e267b6425d59d9c9d9116c3fd60bb81dffb4460f300a4e",
+  "report_path": ".deep-loop/runs/01KZVZ47BYR6JMJ6843KZFQF2Y/reviews/88aaff1e4a37aca8dec3918aff483297b6d53236214420efc26cd49d6d7bbf4f.json",
+  "report_sha256": "88aaff1e4a37aca8dec3918aff483297b6d53236214420efc26cd49d6d7bbf4f",
   "envelope": {
     "schema_version": "1.0",
     "envelope": {
@@ -35,9 +35,9 @@
         "name": "review-report",
         "version": "1.0"
       },
-      "run_id": "01KZV6ZP5T92K6AWJZ010DA9ZG",
+      "run_id": "01KZVZ47BYR6JMJ6843KZFQF2Y",
       "parent_run_id": null,
-      "generated_at": "2026-08-12T14:56:22.227Z",
+      "generated_at": "2026-08-12T21:53:48.123Z",
       "git": {},
       "provenance": {
         "source_artifacts": [
@@ -115,11 +115,11 @@
           "reviewer_id": "deep-review",
           "checker_episode_id": "002-deep-review",
           "target_maker": "001-deep-work",
-          "attempt_id": "16587fe8-3b67-4f6c-a8dd-259cc362c3ca",
+          "attempt_id": "433d3536-fecf-4fbf-bafc-5247e77807f9",
           "artifacts": [
             {
               "path": ".claude/worktrees/wsu1-acquire-contract/scripts/deep-loop.mjs",
-              "sha256": "b3f840230e17db6f9a9d0ccb8afe3b25ef7d89cb28f398a39e09f09d59b8ab20"
+              "sha256": "ef69136bb5fc1057e76ebf02d39ec87df1d0b5575505ef509c04bc61f19d1b0c"
             },
             {
               "path": ".claude/worktrees/wsu1-acquire-contract/scripts/eval-deep-loop.mjs",
@@ -143,7 +143,7 @@
             },
             {
               "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/activation-secret.mjs",
-              "sha256": "1acc1a4503dec347608db9c89f139575a7cc015993bf1755456b4e0d0e5a3e11"
+              "sha256": "e45ba2e931438a6009a6c319a36fd42be0f6b4f6a5c44601735a1c5268e2f832"
             },
             {
               "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/adapters.mjs",
@@ -255,7 +255,7 @@
             },
             {
               "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/lease.mjs",
-              "sha256": "4796a5f312b95e71ff6a42a4bea83dd7fbd917fed6cee17ca78be40cf78c7d02"
+              "sha256": "130cf3cab1850d5c68f184a3b6a7d43d7b4f4871e22b29ce7a6c0d5e3dbb2283"
             },
             {
               "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/log.mjs",
@@ -395,7 +395,7 @@
     },
     "payload": {
       "verdict": "APPROVE",
-      "report_body": "Critical: 0; Warning: 0; Info: 0. The immutable artifact hashes matched, and the read-only review found no contract-breaking behavior in activation-pending fencing, acquire/activate/reap recovery, stored-token publication, checker capture/import recovery, diagnostic validation, or F26 verification. Business mutations remain guarded inside locked mutation paths, while activation and expiry use fenced, anchored transitions. Tests were not executed because this pass was restricted to read-only review."
+      "report_body": "APPROVE. No Critical or Warning findings were identified. The lease-acquire closed-vocabulary and per-flag multiplicity gate now rejects unknown, positional, and duplicate arguments before project-root/run resolution or durable acquisition, while preserving the established value and fence exit taxonomy. The related activation/reap grammar ordering, nested lease resume-policy correction, and fixed encoded Windows ACL transport are internally consistent. All 68 artifact SHA-256 values matched the immutable contract. Tests were not executed because this pass was required to remain read-only."
     }
   }
 }
