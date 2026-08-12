@@ -1463,7 +1463,8 @@ test('SLICE-007 expired activation settles preserve-pause with an exact receipt 
   const state = readState(f.root, f.runId).data;
   assert.equal(state.status, 'paused');
   assert.equal(state.pause_reason, 'activation-expired');
-  assert.equal(state.resume_policy, 'human');
+  assert.equal(state.session_chain.lease.resume_policy, 'human');
+  assert.equal(Object.hasOwn(state, 'resume_policy'), false);
   assert.equal(state.session_chain.lease.activation_deadline_at, null);
   assert.deepStrictEqual(state.session_chain.lease.expiry_receipt, {
     decision_kind: 'activation-expiry',

@@ -789,13 +789,13 @@ function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime
 
 function storedActivateCli(f, {
   root = f.root, owner = f.owner, generation = f.gen, runtime = 'claude',
-  attemptId = f.attemptId, privateHome,
+  attemptId = f.attemptId, privateHome, extra = [],
 } = {}) {
   const home = privateHome || mkdtempSync(join(tmpdir(), 'dl-stored-fence-home-'));
   const result = spawnSync(process.execPath, [
     CLI, 'lease', 'activate', '--stored-token', '--owner', owner,
     '--generation', String(generation), '--runtime', runtime, '--attempt-id', attemptId,
-    '--run-id', f.runId, '--project-root', root,
+    '--run-id', f.runId, '--project-root', root, ...extra,
   ], {
     encoding: 'utf8',
     env: {
@@ -1012,6 +1012,40 @@ test('stored-token mode is bare exactly once and mutually exclusive with raw-tok
   }
 });
 
+test('lease activate and reap reject unknown, positional, and duplicate flags without mutation', () => {
+  const cases = [
+    ['activate', ['--attempt-id', 'CLIACTIVATIONATTEMPT', '--activation-token', 'CliGrammarToken_01', '--runtimee', 'claude']],
+    ['activate', ['--attempt-id', 'CLIACTIVATIONATTEMPT', '--activation-token', 'CliGrammarToken_01', 'positional']],
+    ['activate', ['--attempt-id', 'CLIACTIVATIONATTEMPT', '--activation-token', 'CliGrammarToken_01', '--runtime', 'claude']],
+    ['activate', ['--attempt-id', 'CLIACTIVATIONATTEMPT', '--activation-token', 'CliGrammarToken_01', '--activation-token', 'CliGrammarToken_01']],
+    ['reap', ['--unknown', 'value']],
+    ['reap', ['positional']],
+    ['reap', ['--run-id', 'SAME_RUN_ID_REPLACED_BELOW']],
+    ['reap', ['--project-root', 'SAME_PROJECT_ROOT_REPLACED_BELOW']],
+  ];
+  for (const [verb, rawExtra] of cases) {
+    const f = seedActivationCli();
+    const extra = rawExtra.map(value => value === 'SAME_RUN_ID_REPLACED_BELOW'
+      ? f.runId
+      : value === 'SAME_PROJECT_ROOT_REPLACED_BELOW' ? f.root : value);
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = verb === 'activate' ? activateCli(f, extra) : reapCli(f, extra);
+    assert.equal(result.status, 2, `${verb} ${extra.join(' ')}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /USAGE:/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before, `${verb} ${extra.join(' ')}`);
+  }
+});
+
+test('stored-token activation rejects duplicate binding flags before private publication', () => {
+  const f = seedActivationCli();
+  const before = terminalDurableBytes(f.root, f.runId);
+  const result = storedActivateCli(f, { extra: ['--runtime', 'claude'] });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stderr, /USAGE:/);
+  assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  assert.equal(existsSync(privateActivationRoot(result.privateHome)), false);
+});
+
 test('stored-token activation preserves owner, generation, and runtime fences as exit 3 without mutation', () => {
   for (const [label, overrides, expected] of [
     ['owner', { owner: 'STALEOWNER' }, /LEASE_FENCED: owner-mismatch/],
@@ -1182,7 +1216,10 @@ test('SLICE-007 CLI lease reap settles an expired pending acquisition', () => {
   assert.deepEqual(JSON.parse(result.stdout), {
     ok: true, reason: 'activation-expired', transition: 'preserve-pause',
   });
-  assert.equal(readState(f.root, f.runId).data.status, 'paused');
+  const settled = readState(f.root, f.runId).data;
+  assert.equal(settled.status, 'paused');
+  assert.equal(settled.session_chain.lease.resume_policy, 'human');
+  assert.equal(Object.hasOwn(settled, 'resume_policy'), false);
 });
 
 test('SLICE-007 CLI lease reap rejects the --now argument itself without mutation', () => {

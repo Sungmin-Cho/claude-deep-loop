@@ -655,7 +655,7 @@ export function reapLease(root, runId, {
   const mutate = (data) => {
     data.status = 'paused';
     data.pause_reason = 'activation-expired';
-    data.resume_policy = 'human';
+    data.session_chain.lease.resume_policy = 'human';
     data.session_chain.lease.expiry_receipt = structuredClone(receiptData);
     data.session_chain.lease.activation_deadline_at = null;
     outcome = { ok: true, reason: 'activation-expired', transition: 'preserve-pause' };

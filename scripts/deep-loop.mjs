@@ -1294,7 +1294,14 @@ const handlers = {
       )) ? 3 : 0;
     }
     if (verb === 'activate') {
-      const runId = runIdOf(root, f);
+      const activationFlags = new Set([
+        'stored-token', 'activation-token', 'owner', 'generation', 'runtime', 'attempt-id',
+        'now', 'project-root', 'run-id',
+      ]);
+      if (!knownFlagVocabulary(rest, activationFlags)) {
+        error('USAGE: lease activate accepts known flags only; stored-token accepts binding flags only');
+        return 2;
+      }
       const fence = parseNewLeaseFenceArgs(f, rest);
       if (!fence.ok) { error(fence.message); return fence.code; }
       const { owner, generation } = fence;
@@ -1316,13 +1323,13 @@ const handlers = {
           error('USAGE: --stored-token must be bare, appear exactly once, and exclude --activation-token');
           return 2;
         }
-        if (!knownFlagVocabulary(rest, new Set([
-          'stored-token', 'owner', 'generation', 'runtime', 'attempt-id', 'now',
-          'project-root', 'run-id',
-        ]))) {
-          error('USAGE: stored-token activation accepts binding flags only');
-          return 2;
-        }
+      }
+      if (!exactFlagGrammar(rest, activationFlags)) {
+        error('USAGE: lease activate accepts each known flag exactly once; stored-token accepts binding flags only');
+        return 2;
+      }
+      const runId = runIdOf(root, f);
+      if (storedOccurrences > 0) {
         try {
           json(activateStoredLease(root, runId, {
             owner, generation, runtime, attemptId, now: parseExplicitNow(f),
@@ -1360,13 +1367,22 @@ const handlers = {
       }
     }
     if (verb === 'reap') {
-      const runId = runIdOf(root, f);
       if (Object.hasOwn(f, 'now')) {
         error('USAGE: lease reap does not accept --now');
         return 2;
       }
+      const reapFlags = new Set(['owner', 'generation', 'project-root', 'run-id']);
+      if (!knownFlagVocabulary(rest, reapFlags)) {
+        error('USAGE: lease reap accepts known flags only');
+        return 2;
+      }
       const fence = parseNewLeaseFenceArgs(f, rest);
       if (!fence.ok) { error(fence.message); return fence.code; }
+      if (!exactFlagGrammar(rest, reapFlags)) {
+        error('USAGE: lease reap accepts each known flag exactly once');
+        return 2;
+      }
+      const runId = runIdOf(root, f);
       const { owner, generation } = fence;
       try {
         json(reapLease(root, runId, { owner, generation }));
