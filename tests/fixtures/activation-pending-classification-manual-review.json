@@ -1,0 +1,284 @@
+{
+  "schema_version": "1.0",
+  "reviewer_id": "deep-review",
+  "checker_episode_id": "002-deep-review",
+  "target_maker": "001-deep-work",
+  "attempt_id": "16587fe8-3b67-4f6c-a8dd-259cc362c3ca",
+  "verdict": "APPROVE",
+  "report_body": "Critical: 0; Warning: 0; Info: 0. The immutable artifact hashes matched, and the read-only review found no contract-breaking behavior in activation-pending fencing, acquire/activate/reap recovery, stored-token publication, checker capture/import recovery, diagnostic validation, or F26 verification. Business mutations remain guarded inside locked mutation paths, while activation and expiry use fenced, anchored transitions. Tests were not executed because this pass was restricted to read-only review.",
+  "artifacts": [
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/deep-loop.mjs",
+      "sha256": "b3f840230e17db6f9a9d0ccb8afe3b25ef7d89cb28f398a39e09f09d59b8ab20"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/eval-deep-loop.mjs",
+      "sha256": "09fcc71586106df7d88ab180dae6c128f207a9eb7d46344848a393e9b955a78c"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/hooks-impl/drive-headless.mjs",
+      "sha256": "06e8bbe3efc626c9cbb93cc7ae68a57c998a96a00259edb812f2566fbccee027"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/hooks-impl/postcompact-observe.mjs",
+      "sha256": "7a1e9a2408b48b0fb6932cd4f1c54e5c6d0bcb4d582f7cfe19cbfad25595d6e3"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/hooks-impl/precompact-handoff.mjs",
+      "sha256": "fc60f57acd124c57239abdf0601864a141b2cd5672a9fd476984f455fdcfa18e"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/hooks-impl/sessionstart-restore.mjs",
+      "sha256": "e0038a7a502b0fb763380d7cede409f2288cc11bc16a881f6841943fe2dacfaf"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/activation-secret.mjs",
+      "sha256": "1acc1a4503dec347608db9c89f139575a7cc015993bf1755456b4e0d0e5a3e11"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/adapters.mjs",
+      "sha256": "ab98efc5c916d1b4937bce1e07b4203957e969ee3eb8fd65d7f64b498798fa43"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/atomic-write.mjs",
+      "sha256": "22af42dc1f8fe8cd75d26d662b63b70a8efea471cfd64d4af7501ca4b78b91b5"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/attended-launch.mjs",
+      "sha256": "f75334fb840b4fd12919e2203029bae87f12da7be04e6a5bc354042c8a3589ff"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/bounded-input.mjs",
+      "sha256": "3aeeac29769b283312c1726253f545de5c46d1a3a87e0176ae2d0666e1f67168"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/breaker.mjs",
+      "sha256": "5bdb78159647dac525d82fb2604f392e2d4223fd1e87904bed01e7881f3b4cd8"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/budget.mjs",
+      "sha256": "8fbf6de61c9b0b5ac84f011bd041b452a74d5d0da7eed618395a3b1d231a64d2"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/checkpoint-validation.mjs",
+      "sha256": "3aa7956706f2ba223ba0a007d007e39220e076c4c86cd65eb22919dc3cf04593"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/checkpoint.mjs",
+      "sha256": "6bf5270dc027bdd14d9252a0432052f96547b169190eb6fefe09c260ce8cbd45"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/codex-checker.mjs",
+      "sha256": "2aeffca7cc9447ba66bc1f220968038214dd858d6bb86cd5a900c75f3193f987"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/codex-preflight.mjs",
+      "sha256": "8fb1355d0c2d5d56e5a2c6c37a67db960dda89e3660a2086819c7c72d6be5d01"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/codex-runtime.mjs",
+      "sha256": "a3423c0fb2fc3843baa8746c8e30948506fc5aa3591416632a69b2936354baab"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/compact-restore-intent.mjs",
+      "sha256": "2a5c7aaa0667a3813df8545878af05884e2f4f2c9fa0fb388670469024759531"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/comprehension.mjs",
+      "sha256": "6c4814371eb3afed895cb8cb8c74780612a76cfad1d8c75ef1cdc023c801266c"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/desktop-handler.mjs",
+      "sha256": "5d2b4db380ca54a2dc98d05dacb4b02f50824ad44a6048b46ea0f8d16a03b183"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/desktop-target.mjs",
+      "sha256": "e548c0c7783f26afe99ffa165ea02fa9620cf4c0038f7662468c8b2cc1d5895b"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/detect-main.mjs",
+      "sha256": "7912aad65f09349a1761611c812695a6f191a671ad3c58213bb6f0347576fc8e"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/detect-terminal.mjs",
+      "sha256": "ee9e3279d3b5a275c4c147022830685e3b4209b148531c644ddbdc97cb04e57d"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/detect.mjs",
+      "sha256": "4f32d82087e0ca88b564687535241fe4f107b3249043a6c6be816de2cf1dcaab"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/envelope.mjs",
+      "sha256": "0637513a42bd9433081467d92e0fdf66358bf3b350d3486c9498189aee24a872"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/episode.mjs",
+      "sha256": "cb874b0bfde65bbb71b091514eb72f020895de324c5eba80710f2be04eddc918"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/finish.mjs",
+      "sha256": "91c1d58c4d88ea43ca089108ab6d6663255a457045f91795cd37a641352f2ebe"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/fs-safe.mjs",
+      "sha256": "fb5035235ad49fbf4e4a4eab9405a2cbafceea7894d12bb07906ef2e0cd6ae9f"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/handoff.mjs",
+      "sha256": "5dfbcb017c8ca064dc9370fb244adb7ace4a486f0697aa62e0c16f4d43f6a997"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/headless-host.mjs",
+      "sha256": "c78e16b7313f137c7b2970500bb1e0c67161dc0d6d242b7e683fd5d1f8f481b8"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/initrun.mjs",
+      "sha256": "f2152797cd1598791dede9b513375aa8651fd3d28abaa4a77808ff06c6e76c73"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/insights.mjs",
+      "sha256": "358b1543ee5f678453a4edc3953efccd6eb61d35232a622ad282e548af8e6a13"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/integrity.mjs",
+      "sha256": "bd60b009ab86633f2652f6f221ec581dab6417613c6d11a509ef7ca2886e8028"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/lease.mjs",
+      "sha256": "4796a5f312b95e71ff6a42a4bea83dd7fbd917fed6cee17ca78be40cf78c7d02"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/log.mjs",
+      "sha256": "276a4fde8440e2fe5fb65a1e0092f27745d8a170f35cb498196061674b957431"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/next-action.mjs",
+      "sha256": "507c1f9ba97cb175e42a07d338bc5d95d432a44919c0515c1ea5a86b3189fdec"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/path-portable.mjs",
+      "sha256": "7b36a7cc78834eab2002c802078388a6284897043d862d45d2ac8b0e8a27750b"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/path-resolve.mjs",
+      "sha256": "dfa015630900bbf2dbe33c7f0a443a7037c178e9d10a051e6dcf4eb0df545492"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/preflight-receipt-journal.mjs",
+      "sha256": "5f71cf4c6001fc8797145c0058a52f39771f65dcb55924fd4658fd7ac02fee82"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/project-root-recovery.mjs",
+      "sha256": "2ee8d63ee79116b25608430dfb9934bb4b53a4eaeb66e7ce7c470ce49e734ed0"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/project-root.mjs",
+      "sha256": "00c8275980c6d8d65e191a9c02b496c34bf2c7631d9e302363cdb7ab3c022119"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/recipes.mjs",
+      "sha256": "4fb21cb88567c6f059abd77247148fab3fe985fada8a59b5bf406a159d46a7c8"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/recover.mjs",
+      "sha256": "b17ff87b41d7b60504257ab3d9938b296c7f56bf9700a42aa45c63ddf4c610f5"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/respawn.mjs",
+      "sha256": "4ce6101ae1215b8c57aaffbfcb634a516abcdcf325e6dee7cfe1f8c6474fdd65"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/review-import.mjs",
+      "sha256": "4175e1f9410d2b1ce11e208e475b82bad5ce18487cbdafef648b3bee5cbd70f6"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/review.mjs",
+      "sha256": "07c0aba8b68ac21b5af6dbe616c4247231c4b37eb1e1acc6cb26354ef2f1ffc9"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/run-context.mjs",
+      "sha256": "5e6c57012ff61cd2752299f80e4b675a95729af6c5e106cf271d31bf2af6bd0f"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/runtime-descriptor.mjs",
+      "sha256": "8230dc64684f528f95ef5e6e2a8fb2809d030e7926a7c7a58c016c41256ebf91"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/runtime-executable.mjs",
+      "sha256": "d2a585fbfac6fe9b7bb3d4d1ad836e9864535074873785b67bb179b916485bbc"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/runtime.mjs",
+      "sha256": "0a19790b29646a659a40857c13548031c5a5baded88d5a04f747d3bc1e0fdf71"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/schema.mjs",
+      "sha256": "f53843c92a69a51b3aa954fa3dfa638728388f41c9d85202f405e88474bb4a29"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/session-profile.mjs",
+      "sha256": "cc4f40e3eff7b18d65f3bb190232032ab1fda2f7f76a1046d85b4c71bbf55bcd"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/session-scope.mjs",
+      "sha256": "a7ee3de5f88310055f225240100a566d3c7d731beb706724878d53deb7aec55c"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/slug.mjs",
+      "sha256": "274c17b6552cb4bde94a4d65563a9ad4b4bf3d8eee8a80ebf1601520e555b920"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/spawn-driver.mjs",
+      "sha256": "e0ca4f8498b206e42936362de5a409c4be560c4b5879017cb0613e3f07193652"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/spawn-optin.mjs",
+      "sha256": "a2897ae17ddd83de5f683c3f61d1304b975625b6abdb6d3bed2a13a449dfd3b9"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/state.mjs",
+      "sha256": "addf86bed7a561d9dbad71f0ea57065300f582205f5ec64120094cf784abfd3c"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/streaming-process.mjs",
+      "sha256": "33356f5264fb88905a350b74f5ed5c4c2743a80b929cd99355e2f9f69777a0f7"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/toml-safe.mjs",
+      "sha256": "134639f36dff052742bfde939aaa3eec6ade16f26c384b632878333efd19e01a"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/transaction-journal.mjs",
+      "sha256": "2cdd206ecdedabd235257f63635c4b9d7af9a678b6cd8f382ec1beddfc8a5193"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/usage-parser.mjs",
+      "sha256": "d34eec5a3a2a300f83ed53c04eec5cd7487fe2e6c4da8d5612e3dc43fe563b15"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/lib/workspace.mjs",
+      "sha256": "0dc93b65f80db1c2badbcdbb5df90d7dc44a92382805d6ea829e4f3ccf389d76"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/verify-wsu1-f26-actual-run.mjs",
+      "sha256": "d528d135d90bc55acc069dbba0a4c56d8ca1a68ce00936cd1fab9400b5da9bb5"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/scripts/workers/streaming-child.mjs",
+      "sha256": "241912735e440c1a1446344ccdb765c1927453feeb7aeae0db1a04c0a808cf65"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/tests/fixtures/activation-pending-classification-evidence.json",
+      "sha256": "0cc08f760971b25284b570039b6ec521d711d7309ef8003e201b4e7f80a2e757"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/tests/fixtures/activation-pending-classification.md",
+      "sha256": "2cded4c18d29b456dc200e54f1a9b75a6570489918d60a418b8d553f05c0392e"
+    },
+    {
+      "path": ".claude/worktrees/wsu1-acquire-contract/tests/fixtures/activation-pending-classification.seed.md",
+      "sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13"
+    }
+  ]
+}
+
