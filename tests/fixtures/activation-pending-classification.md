@@ -15,7 +15,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
   "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
-  "expected_counts": { "L": 32, "B": 7, "X": 34, "E2": 149, "E3": 14, "E4": 21, "E5": 1, "E7": 86, "E8": 40 },
+  "expected_counts": { "L": 33, "B": 7, "X": 34, "E2": 149, "E3": 14, "E4": 21, "E5": 1, "E7": 86, "E8": 40 },
   "base_x_reasons": {
     "safety-downgrade": ["attended-launch.mjs#revokeAttendedLaunch", "spawn-optin.mjs#resetDesktop"],
     "boot-observation": ["detect-terminal.mjs#detectAndPersist"],
@@ -36,6 +36,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
     { "id": "lease.mjs#activateLease", "classification": "X", "reason": "enforcement-origin" },
     { "id": "lease.mjs#reapLease", "classification": "X", "reason": "enforcement-origin" },
     { "id": "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed", "classification": "E4", "reason": "non-run-state-durable-write" },
+    { "id": "review.mjs#configureReviewFlags", "classification": "L", "reason": "leasecheck-dominated" },
     { "id": "review-import.mjs#locateCapturedImportedReviewArtifact", "classification": "E2", "reason": "no-run-state-write" },
     { "id": "review-import.mjs#verifyCapturedImportedReviewProof", "classification": "E2", "reason": "no-run-state-write" },
     { "id": "schema.mjs#CHECKER_PROCESS_PHASES", "classification": "E8", "reason": "non-callable-value" },

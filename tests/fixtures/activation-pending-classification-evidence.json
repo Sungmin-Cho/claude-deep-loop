@@ -2,8 +2,8 @@
   "schema_version": 1,
   "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
-  "live_classification_sha256": "6664ebb1ca6d64f5f4858a42be6262c59b141137e0c34b5a65968986655ba2af",
-  "candidate_ids_sha256": "372832cfe7e7a0a2bda0b69ec0c56418d7f663e32ca98fac745c20b907261681",
+  "live_classification_sha256": "51971afad73d20d1ac99d441765b408939d927523ff9e652c0e11761f42e1402",
+  "candidate_ids_sha256": "d58a0fa9e4863fcff7e98bd9f5f6c0e8b23943d09ae0082f5926835f7d715212",
   "candidate_ids": [
     "activation-secret.mjs#activateStoredLease",
     "adapters.mjs#checkerDescriptor",
@@ -276,6 +276,7 @@
     "review-import.mjs#verifyImportedEnvelope",
     "review.mjs#blockIndependentReview",
     "review.mjs#claimIndependentReview",
+    "review.mjs#configureReviewFlags",
     "review.mjs#dispatchReview",
     "review.mjs#epOrder",
     "review.mjs#findPendingIndependentChecker",
@@ -2495,7 +2496,7 @@
             "scripts/lib/headless-host.mjs:2128",
             "scripts/lib/headless-host.mjs:2080",
             "scripts/lib/headless-host.mjs:1476",
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         },
         {
@@ -2513,7 +2514,7 @@
             "scripts/lib/headless-host.mjs:2128",
             "scripts/lib/headless-host.mjs:2080",
             "scripts/lib/headless-host.mjs:1476",
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         }
       ]
@@ -2622,7 +2623,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:176"
+            "scripts/lib/episode.mjs:184"
           ]
         },
         {
@@ -2632,7 +2633,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:176"
+            "scripts/lib/episode.mjs:184"
           ]
         }
       ]
@@ -2652,8 +2653,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:161",
-            "scripts/lib/episode.mjs:88"
+            "scripts/lib/episode.mjs:169",
+            "scripts/lib/episode.mjs:92"
           ]
         },
         {
@@ -2664,8 +2665,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:161",
-            "scripts/lib/episode.mjs:88"
+            "scripts/lib/episode.mjs:169",
+            "scripts/lib/episode.mjs:92"
           ]
         }
       ]
@@ -2685,8 +2686,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:155",
-            "scripts/lib/episode.mjs:88"
+            "scripts/lib/episode.mjs:163",
+            "scripts/lib/episode.mjs:92"
           ]
         },
         {
@@ -2697,8 +2698,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:155",
-            "scripts/lib/episode.mjs:88"
+            "scripts/lib/episode.mjs:163",
+            "scripts/lib/episode.mjs:92"
           ]
         }
       ]
@@ -2717,7 +2718,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:224"
+            "scripts/lib/episode.mjs:232"
           ]
         },
         {
@@ -2727,7 +2728,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/episode.mjs:224"
+            "scripts/lib/episode.mjs:232"
           ]
         }
       ]
@@ -3132,7 +3133,7 @@
             "scripts/lib/headless-host.mjs:2128",
             "scripts/lib/headless-host.mjs:2080",
             "scripts/lib/headless-host.mjs:1476",
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         },
         {
@@ -3148,7 +3149,7 @@
             "scripts/lib/headless-host.mjs:2128",
             "scripts/lib/headless-host.mjs:2080",
             "scripts/lib/headless-host.mjs:1476",
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         }
       ]
@@ -3171,7 +3172,7 @@
           "coordinates": [
             "scripts/lib/headless-host.mjs:2080",
             "scripts/lib/headless-host.mjs:1476",
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         },
         {
@@ -3185,7 +3186,7 @@
           "coordinates": [
             "scripts/lib/headless-host.mjs:2080",
             "scripts/lib/headless-host.mjs:1476",
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         }
       ]
@@ -5032,7 +5033,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:1127"
+            "scripts/lib/project-root-recovery.mjs:1144"
           ]
         },
         {
@@ -5042,7 +5043,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:1127"
+            "scripts/lib/project-root-recovery.mjs:1144"
           ]
         }
       ]
@@ -5060,7 +5061,7 @@
             "project-root-recovery.mjs#diagnoseProjectRoot"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:555"
+            "scripts/lib/project-root-recovery.mjs:572"
           ]
         }
       ]
@@ -5078,7 +5079,7 @@
             "project-root-recovery.mjs#diagnoseVerifiedProjectRoot"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:517"
+            "scripts/lib/project-root-recovery.mjs:531"
           ]
         }
       ]
@@ -5098,8 +5099,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:988",
-            "scripts/lib/project-root-recovery.mjs:916"
+            "scripts/lib/project-root-recovery.mjs:1005",
+            "scripts/lib/project-root-recovery.mjs:933"
           ]
         },
         {
@@ -5110,8 +5111,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:988",
-            "scripts/lib/project-root-recovery.mjs:916"
+            "scripts/lib/project-root-recovery.mjs:1005",
+            "scripts/lib/project-root-recovery.mjs:933"
           ]
         }
       ]
@@ -5131,8 +5132,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:992",
-            "scripts/lib/project-root-recovery.mjs:916"
+            "scripts/lib/project-root-recovery.mjs:1009",
+            "scripts/lib/project-root-recovery.mjs:933"
           ]
         },
         {
@@ -5143,8 +5144,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/project-root-recovery.mjs:992",
-            "scripts/lib/project-root-recovery.mjs:916"
+            "scripts/lib/project-root-recovery.mjs:1009",
+            "scripts/lib/project-root-recovery.mjs:933"
           ]
         }
       ]
@@ -5945,7 +5946,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         },
         {
@@ -5955,7 +5956,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:167"
+            "scripts/lib/review.mjs:242"
           ]
         }
       ]
@@ -5974,7 +5975,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:117"
+            "scripts/lib/review.mjs:192"
           ]
         },
         {
@@ -5984,7 +5985,36 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:117"
+            "scripts/lib/review.mjs:192"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review.mjs#configureReviewFlags",
+      "classification": "L",
+      "write_reachability": "reaches",
+      "leasecheck_dominance": "dominates",
+      "reason": "leasecheck-dominated",
+      "evidence": [
+        {
+          "kind": "direct",
+          "path": [
+            "review.mjs#configureReviewFlags",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:62"
+          ]
+        },
+        {
+          "kind": "dominance",
+          "path": [
+            "review.mjs#configureReviewFlags",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/review.mjs:62"
           ]
         }
       ]
@@ -6005,9 +6035,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:471",
-            "scripts/lib/episode.mjs:161",
-            "scripts/lib/episode.mjs:88"
+            "scripts/lib/review.mjs:554",
+            "scripts/lib/episode.mjs:169",
+            "scripts/lib/episode.mjs:92"
           ]
         },
         {
@@ -6019,9 +6049,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:471",
-            "scripts/lib/episode.mjs:161",
-            "scripts/lib/episode.mjs:88"
+            "scripts/lib/review.mjs:554",
+            "scripts/lib/episode.mjs:169",
+            "scripts/lib/episode.mjs:92"
           ]
         }
       ]
@@ -6039,7 +6069,7 @@
             "review.mjs#epOrder"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:232"
+            "scripts/lib/review.mjs:307"
           ]
         }
       ]
@@ -6057,7 +6087,7 @@
             "review.mjs#findPendingIndependentChecker"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:34"
+            "scripts/lib/review.mjs:109"
           ]
         }
       ]
@@ -6077,8 +6107,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:745",
-            "scripts/lib/review.mjs:583"
+            "scripts/lib/review.mjs:828",
+            "scripts/lib/review.mjs:666"
           ]
         },
         {
@@ -6089,8 +6119,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:745",
-            "scripts/lib/review.mjs:583"
+            "scripts/lib/review.mjs:828",
+            "scripts/lib/review.mjs:666"
           ]
         }
       ]
@@ -6108,7 +6138,7 @@
             "review.mjs#makerReviewed"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:333"
+            "scripts/lib/review.mjs:408"
           ]
         }
       ]
@@ -6126,7 +6156,7 @@
             "review.mjs#parseVerdict"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:321"
+            "scripts/lib/review.mjs:396"
           ]
         }
       ]
@@ -6146,8 +6176,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:709",
-            "scripts/lib/review.mjs:583"
+            "scripts/lib/review.mjs:792",
+            "scripts/lib/review.mjs:666"
           ]
         },
         {
@@ -6158,8 +6188,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:709",
-            "scripts/lib/review.mjs:583"
+            "scripts/lib/review.mjs:792",
+            "scripts/lib/review.mjs:666"
           ]
         }
       ]
@@ -6177,7 +6207,7 @@
             "review.mjs#rejectionResolved"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:253"
+            "scripts/lib/review.mjs:328"
           ]
         }
       ]
@@ -6195,7 +6225,7 @@
             "review.mjs#resolveReviewer"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:283"
+            "scripts/lib/review.mjs:358"
           ]
         }
       ]
@@ -6213,7 +6243,7 @@
             "review.mjs#revalidateIndependentReviewClaim"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:198"
+            "scripts/lib/review.mjs:273"
           ]
         }
       ]
@@ -6231,7 +6261,7 @@
             "review.mjs#unsatisfiedReviewPoints"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:761"
+            "scripts/lib/review.mjs:844"
           ]
         }
       ]
