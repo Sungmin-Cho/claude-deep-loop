@@ -8,7 +8,7 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import {
-  resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
+  configureReviewFlags, resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
   recordReviewOutcome, unsatisfiedReviewPoints,
 } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
@@ -125,6 +125,38 @@ test('dispatchReview creates checker episode + returns descriptor (no call)', ()
   assert.equal(ep.role, 'checker');
   assert.equal(ep.kind, 'implementation-review');
   assert.equal(ep.target_maker, makerId);   // always bound going forward
+});
+
+test('dispatchReview rejects a checker born from a stale review-config snapshot', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, {
+    title: 'race', branch: 'race', worktree: '.claude/worktrees/race', fence: f,
+  }).id;
+  doneMaker(root, runId, ws, 'plan', f);
+  const first = dispatchReview(root, runId, {
+    point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
+  });
+  abandonEpisode(root, runId, first.checkerEpisodeId, {
+    reason: 'operational-review-failure: parser-contract-mismatch', confirm: true, fence: f,
+  });
+
+  assert.throws(() => dispatchReview(root, runId, {
+    point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
+    __testBeforeCheckerCreate: () => configureReviewFlags(root, runId, {
+      profile: 'codex-only-static', sourceCheckerId: first.checkerEpisodeId, confirm: true, fence: f,
+    }),
+  }), /REVIEW_CONFIG_CHANGED/);
+
+  const afterRace = readState(root, runId).data;
+  assert.deepEqual(afterRace.review.flags, ['--contract', '--codex-only', '--reviewer-strategy', 'static']);
+  assert.equal(afterRace.episodes.filter(e => e.role === 'checker' && e.status === 'pending').length, 0);
+
+  const retried = dispatchReview(root, runId, {
+    point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
+  });
+  assert.match(retried.descriptor.args, /--codex-only/);
+  assert.match(retried.descriptor.args, /--reviewer-strategy static/);
 });
 
 test('dispatchReview rejects a mismatched Workstream scope before reviewer dependency discovery', () => {

@@ -184,12 +184,7 @@ Run the offline fixture bank separately from preflight:
 
 ## Release — post-merge deep-suite sync
 
-Only after this repo's PR merges **and a separate post-merge sync approval is granted**:
-set the `deep-loop` entry `sha` to the merged `main` commit in the deep-suite registry
-(`.claude-plugin/marketplace.json` + `.agents/plugins/marketplace.json`), then run
-deep-suite `npm run preflight`, which regenerates the README tables — never edit inside
-the auto-generated markers.
-
-The patch is pre-written at `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`. It is a proposal, not
-evidence that distribution has already been synchronized or released. Registration adds
-discoverability only; deep-loop runs standalone with no sibling installed.
+Needed only at release time, so the procedure is not kept resident here: read
+`DEEP_LOOP_ROOT/integration/release.md` when a release is actually being cut.
+The approval gate is invariant 5 above and binds whether or not that file has been read.
+Registration adds discoverability only; deep-loop runs standalone with no sibling installed.

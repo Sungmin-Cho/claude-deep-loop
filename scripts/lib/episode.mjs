@@ -66,7 +66,7 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation, now = Date.now() } = {}) {
+function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, initialStatus = 'pending', blockReason, fence, operation, now = Date.now() } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
@@ -79,6 +79,10 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   if (initialStatus === 'blocked' && (!blockReason || typeof blockReason !== 'string')) throw new Error('EPISODE_INPUT_INVALID: blockReason');
   if (reviewerResolution !== undefined && (role !== 'checker' || reviewerResolution === null || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
     throw new Error('EPISODE_INPUT_INVALID: reviewerResolution');
+  }
+  if (expectedReviewConfig !== undefined && (role !== 'checker' || expectedReviewConfig === null
+    || typeof expectedReviewConfig !== 'object' || Array.isArray(expectedReviewConfig))) {
+    throw new Error('EPISODE_INPUT_INVALID: expectedReviewConfig');
   }
   // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
   // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
@@ -120,6 +124,10 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     }
   }, (loop) => {
     const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    if (role === 'checker' && expectedReviewConfig !== undefined
+      && JSON.stringify(loop.review) !== JSON.stringify(expectedReviewConfig)) {
+      throw new Error('REVIEW_CONFIG_CHANGED: retry review dispatch');
+    }
     // Codex impl r15 🟡: reject a non-null workstream that does not exist — otherwise a maker bound to a phantom
     // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
     const scopeTarget = role === 'checker' && targetMaker
@@ -151,16 +159,16 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   return { id, requestPath, requestRel };
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence, now = Date.now() } = {}) {
-  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence, operation: 'newEpisode', now });
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, fence, now = Date.now() } = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, fence, operation: 'newEpisode', now });
 }
 
 // Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
 // Keeping this separate from newEpisode prevents makers (or arbitrary callers) from selecting an initial blocked state.
-export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
+export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, expectedReviewConfig, fence } = {}) {
   return createEpisode(root, runId, {
     plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
-    initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
+    expectedReviewConfig, initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
   });
 }
 

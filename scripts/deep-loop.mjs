@@ -24,7 +24,12 @@ import { resolveRunContext } from './lib/run-context.mjs';
 import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
-import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
+import {
+  configureReviewFlags,
+  dispatchReview,
+  importReviewOutcome,
+  recordReviewOutcome,
+} from './lib/review.mjs';
 import { readBoundedText } from './lib/bounded-input.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
@@ -331,7 +336,7 @@ export const MUTATING_ROUTE_INVENTORY = Object.freeze([
   'checkpoint emit', 'checkpoint observe', 'checkpoint restore', 'lease acquire', 'lease release',
   'workstream new', 'workstream set', 'workstream terminal',
   'episode new', 'episode record', 'episode abandon',
-  'review dispatch', 'review record', 'review import',
+  'review configure', 'review dispatch', 'review record', 'review import',
   'handoff emit', 'respawn', 'state patch', 'pause', 'recover', 'recovery acquire',
   'budget record', 'budget extend', 'comprehension ack', 'breaker reset',
   'insights emit', 'spawn-style offer-desktop', 'spawn-style confirm-desktop',
@@ -1331,9 +1336,41 @@ const handlers = {
     error(`unknown episode verb: ${verb}`); return 2;
   },
   review: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    const [verb, ...rest] = a;
+    if (verb === 'configure') {
+      const allowed = new Set(['profile', 'source-checker', 'confirm', 'owner', 'generation', 'project-root', 'run-id']);
+      if (!exactFlagGrammar(rest, allowed)) { error('USAGE: review configure has invalid grammar'); return 2; }
+      const locatorFlags = parseFlags(rest);
+      if ((Object.hasOwn(locatorFlags, 'project-root') && reqStr(locatorFlags, 'project-root') === null)
+        || (Object.hasOwn(locatorFlags, 'run-id') && reqStr(locatorFlags, 'run-id') === null)) {
+        error('USAGE: explicit --project-root and --run-id require a non-empty value');
+        return 2;
+      }
+    }
+    const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+    if (verb === 'configure') {
+      const confirmCount = flagOccurrences(rest, 'confirm');
+      if (confirmCount !== 1 || (f.confirm !== true && f.confirm !== 'true')) {
+        error('CONFIRM_REQUIRED: review configure requires exactly one affirmative --confirm (human-only)'); return 2;
+      }
+      const profile = reqStr(f, 'profile');
+      if (profile === null) { error('MISSING_PROFILE'); return 2; }
+      const sourceCheckerId = reqStr(f, 'source-checker');
+      if (sourceCheckerId === null) { error('MISSING_SOURCE_CHECKER'); return 2; }
+      try {
+        json(configureReviewFlags(root, runId, { profile, sourceCheckerId, confirm: true, fence }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('CONFIRM_REQUIRED')) { error(message); return 2; }
+        // review record/import 와 같은 분류기 — PROJECT_ROOT_FENCED/FENCE_REQUIRED 도 fence(3)로 나간다.
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(message); return 1;
+      }
+    }
     if (verb === 'dispatch') {
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
       const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
