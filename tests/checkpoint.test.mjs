@@ -2536,7 +2536,7 @@ test('restore rechecks prune ineligibility after a competing writer held the tra
     const env = { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli' };
     delete env.DEEP_LOOP_UNATTENDED;
     delete env.DEEP_LOOP_HEADLESS;
-    const result = spawnSync(process.execPath, ${JSON.stringify([
+    const argv = ${JSON.stringify([
       cli,
       'checkpoint', 'restore',
       '--checkpoint', emitted.checkpoint_rel,
@@ -2550,11 +2550,22 @@ test('restore rechecks prune ineligibility after a competing writer held the tra
       '--now', String(NOW_MS + 2000),
       '--project-root', fixture.root,
       '--run-id', fixture.runId,
-    ])}, { encoding: 'utf8', env });
+    ])};
+    const retryDeadline = Date.now() + 10_000;
+    let lockBusyRetries = 0;
+    let result;
+    do {
+      result = spawnSync(process.execPath, argv, { encoding: 'utf8', env });
+      if (!/Error: LOCK_BUSY:/.test(result.stderr || '')) break;
+      lockBusyRetries += 1;
+    } while (Date.now() < retryDeadline);
+    process.stdout.write('TEST_LOCK_BUSY_RETRIES:' + lockBusyRetries + '\\n');
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     process.exit(result.status ?? 1);
   `;
+  assert.match(childSource, /if \(!\/Error: LOCK_BUSY:\/\.test\(result\.stderr \|\| ''\)\) break;/);
+  assert.doesNotMatch(childSource, /if \(!\/.\*\/\.test\(result\.stderr/);
   let child;
   let stdout = '';
   let stderr = '';
@@ -2562,12 +2573,12 @@ test('restore rechecks prune ineligibility after a competing writer held the tra
     child = spawn(process.execPath, ['--input-type=module', '-e', childSource]);
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 30_000;
     while (!existsSync(marker) && Date.now() < deadline) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
     assert.equal(existsSync(marker), true);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
     writeFileSync(tombstone, '{}');
   });
   const code = await new Promise((resolveCode, reject) => {
@@ -2576,6 +2587,7 @@ test('restore rechecks prune ineligibility after a competing writer held the tra
   });
 
   assert.equal(code, 1, `${stdout}\n${stderr}`);
+  assert.match(stdout, /TEST_LOCK_BUSY_RETRIES:[1-9]\d*/);
   assert.match(stderr, /COMPACT_PRUNE_INVALID/);
   assert.equal(existsSync(tombstone), true);
   assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, emitted)), true);
