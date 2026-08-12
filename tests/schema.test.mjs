@@ -160,7 +160,11 @@ test('checker identity diagnostic is optional, exact, closed, and mutually exclu
     ['raw path', value => { value.path = '/tmp/secret'; }],
     ['open reason', value => { value.reason_code = 'attacker-reason'; }],
     ['open phase', value => { value.identity_phase = 'attacker-phase'; }],
-    ['impossible pair', value => { value.identity_phase = 'capture'; }],
+    ['impossible pair', value => {
+      value.reason_code = 'capture-publication-failed';
+      value.identity_phase = 'post-process';
+      value.identity_axis = 'capture-store';
+    }],
     ['open axis', value => { value.identity_axis = 'attacker-axis'; }],
   ]) {
     const candidate = structuredClone(present);
@@ -174,6 +178,19 @@ test('checker identity diagnostic is optional, exact, closed, and mutually exclu
     stdout: { sha256: 'b'.repeat(64), byte_count: 0, truncated: false },
   };
   assert.equal(validate(both).ok, false, 'identity and process diagnostics are mutually exclusive');
+});
+
+test('checker identity diagnostic accepts every initial-capture integrity axis and rejects phase drift', () => {
+  for (const identity_axis of [
+    'capture-directory', 'capture-record', 'capture-manifest', 'capture-skill',
+  ]) {
+    assert.equal(validCheckerIdentityDiagnostic({
+      reason_code: 'capture-integrity-drift', identity_phase: 'capture', identity_axis,
+    }), true, identity_axis);
+  }
+  assert.equal(validCheckerIdentityDiagnostic({
+    reason_code: 'capture-publication-failed', identity_phase: 'post-process', identity_axis: 'capture-store',
+  }), false);
 });
 
 test('activation deadline config accepts inclusive bounds and rejects out-of-range values', () => {

@@ -224,6 +224,34 @@ test('capture publication failure blocks before checker cost or import with a cl
   });
 });
 
+test('initial capture integrity drift blocks durably before checker cost or import for every closed axis', () => {
+  for (const axis of ['directory', 'record', 'manifest', 'skill']) {
+    const f = seed();
+    const deps = hostDeps(f);
+    let checkerCalls = 0;
+    let importCalls = 0;
+    const beforeCosts = events(f.root, f.runId).filter(event => event.type === 'cost').length;
+    const result = driveHeadlessRun({
+      root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+      captureCheckerSkillFn: () => { throw new Error(`checker-capture-integrity-drift:${axis}`); },
+      checkerRunFn: () => { checkerCalls += 1; throw new Error('capture drift must not spawn'); },
+      checkerImportFn: () => { importCalls += 1; throw new Error('capture drift must not import'); },
+    });
+    assert.equal(result.action, 'checker-blocked', axis);
+    assert.equal(result.reason, 'checker-identity-drift', axis);
+    assert.equal(checkerCalls, 0, axis);
+    assert.equal(importCalls, 0, axis);
+    assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost').length, beforeCosts, axis);
+    const reconciled = captureReconciledRunSnapshot(f.root, f.runId);
+    const checker = reconciled.data.episodes.find(episode => episode.id === f.checkerId);
+    const blocked = reconciled.logLines.findLast(event => event.type === 'independent-review-blocked');
+    assert.deepEqual(checker.checker_identity_diagnostic, {
+      reason_code: 'capture-integrity-drift', identity_phase: 'capture', identity_axis: `capture-${axis}`,
+    }, axis);
+    assert.deepEqual(blocked.data.checker_identity_diagnostic, checker.checker_identity_diagnostic, axis);
+  }
+});
+
 test('source path, version, and content drift block before capture child cost or import', () => {
   const cases = [
     ['path', source => ({ ...source, skill: { ...source.skill, canonical_path: '/other/SKILL.md' } }), 'source-path'],

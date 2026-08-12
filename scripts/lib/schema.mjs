@@ -103,6 +103,9 @@ const CHECKER_IDENTITY_REASON_PHASE_AXES = Object.freeze({
   }),
   'capture-publication-failed': Object.freeze({ capture: Object.freeze(['capture-store']) }),
   'capture-integrity-drift': Object.freeze({
+    capture: Object.freeze([
+      'capture-directory', 'capture-record', 'capture-manifest', 'capture-skill',
+    ]),
     'pre-spawn': Object.freeze([
       'capture-directory', 'capture-record', 'capture-manifest', 'capture-skill',
     ]),

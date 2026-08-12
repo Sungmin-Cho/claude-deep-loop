@@ -6761,7 +6761,7 @@
             "schema.mjs#validCheckerIdentityDiagnostic"
           ],
           "coordinates": [
-            "scripts/lib/schema.mjs:125"
+            "scripts/lib/schema.mjs:128"
           ]
         }
       ]
@@ -6815,7 +6815,7 @@
             "schema.mjs#validate"
           ],
           "coordinates": [
-            "scripts/lib/schema.mjs:683"
+            "scripts/lib/schema.mjs:686"
           ]
         }
       ]
