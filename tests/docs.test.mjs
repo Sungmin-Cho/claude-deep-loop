@@ -14,6 +14,7 @@ const USER_DOCS = ['README.md', 'README.ko.md'];
 // `the Claude guide is a thin wrapper over the single source` pins that structure, so
 // dropping CLAUDE.md here cannot quietly become "nothing checks it".
 const LIVE_SURFACE_DOCS = ['README.md', 'AGENTS.md', 'hooks/hooks.json'];
+const STALE_RECOVERY_NO_REPLAY = /(?:neither|only the three)[\s\S]{0,160}(?:no replay|replay branch)|replay\s*분기가\s*없|사람\s*개입으로만/iu;
 
 test('README lists all commands + architecture + safety', () => {
   const s = readFileSync(join(R, 'README.md'), 'utf8');
@@ -114,7 +115,7 @@ test('READMEs require durable attempts for every acquire route and document expi
     const source = readFileSync(join(R, path), 'utf8');
     assert.doesNotMatch(source, /attempt nonce[^\n]*\(optional|attempt nonce[^\n]*\(선택/iu,
       `${path}: attempt-id must not be documented as optional`);
-    assert.doesNotMatch(source, /recovery[^\n]{0,120}(?:no replay|replay[^\n]{0,30}(?:없|불가)|human intervention|사람 개입)/iu,
+    assert.doesNotMatch(source, STALE_RECOVERY_NO_REPLAY,
       `${path}: recovery acquire routes support same-attempt replay`);
     for (const route of ['lease acquire', 'recovery acquire', 'root recovery acquire']) {
       const escaped = route.replaceAll(' ', '\\s+');
@@ -130,6 +131,18 @@ test('READMEs require durable attempts for every acquire route and document expi
       `${path}: reap must prohibit public --now`);
     assert.match(source, /activation-deadline-expired[\s\S]{0,220}(?:no state, event, or\s+deadline mutation|state, event, deadline[\s\S]{0,40}변경하지|mutation 0)/iu,
       `${path}: expired activation rejection must be non-mutating`);
+  }
+});
+
+test('recovery replay drift detector catches bounded multiline English, Korean, and hybrid reversions', () => {
+  for (const stale of [
+    'Only the three lease acquire paths accept --attempt-id and therefore have\n'
+      + 'replay; neither recovery verb has a replay branch.',
+    'recovery\n두 verb에는 replay 분기가 없으므로 그 경로에서 응답이 유실되면\n'
+      + '사람 개입으로만 회복된다.',
+    'The attempt is required, but neither recovery verb has a\nreplay branch.',
+  ]) {
+    assert.match(stale, STALE_RECOVERY_NO_REPLAY);
   }
 });
 
