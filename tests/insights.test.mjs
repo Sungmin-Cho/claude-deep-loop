@@ -36,7 +36,15 @@ const computeInsights = (root, options = {}) => computeInsightsFromSet(captureRe
   retryDelayMs: options.retryDelayMs,
   sleepFn: options.sleepFn,
 }), options);
-const latestInsights = root => latestInsightsFromSet(captureLatestInsightsSet(root));
+// Freeze the clock. The capture runs under a 500 ms budget measured against `nowFn`,
+// so a bare call makes every selection test a race against the machine: on a loaded
+// runner the budget expires mid-enumeration and the helper returns a bound descriptor,
+// which surfaces as `got.path === undefined` and reads as a selection bug. With a fixed
+// clock the elapsed time is always zero, so these tests measure selection and nothing
+// else. Tests that exercise the budget itself inject their own clock and deadline.
+const latestInsights = root => latestInsightsFromSet(
+  captureLatestInsightsSet(root, { nowFn: () => FIXED.getTime() }),
+);
 
 test('insights exposes immutable run/artifact capture adapters and pure snapshot consumers', () => {
   assert.equal(typeof captureReconciledRunSet, 'function');
@@ -222,11 +230,26 @@ test('no-verb insights preserves project-wide history', () => {
   const a = initRun(root, { runtime: 'claude', goal: 'a', now: FIXED }).runId;
   const b = initRun(root, { runtime: 'claude', goal: 'b', now: new Date(T0 + 1) }).runId;
   const result = cli(root, ['insights', '--run-id', a, '--json']);
-  assert.equal(result.code, 0, result.err);
+  // A non-zero read-only insights exit puts its discard descriptor on stdout and leaves
+  // stderr empty, so `result.err` is the one thing that cannot explain the failure.
+  assert.equal(result.code, 0, cliFailure(result));
   const output = JSON.parse(result.out);
   assert.ok(output.excluded_active.includes(b));
   assert.ok(output.per_run[a].self_snapshot);
 });
+
+// Read-only insights verbs report a refusal as a descriptor on stdout with exit 1 and
+// nothing on stderr, so an assertion that quotes stderr alone reports an empty string.
+function cliFailure(result) {
+  let descriptor;
+  try { descriptor = JSON.parse(String(result.out || '')); } catch { descriptor = null; }
+  return `exit=${result.code} stderr=${JSON.stringify(String(result.err || ''))} `
+    + `descriptor=${JSON.stringify(descriptor && {
+      ok: descriptor.ok, kind: descriptor.kind, phase: descriptor.phase,
+      deadline_ms: descriptor.deadline_ms, observed_artifacts: descriptor.observed_artifacts,
+      observed_count: descriptor.observed_count,
+    })}`;
+}
 
 function loopFixture() {
   return {
