@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -17,11 +18,14 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { dispatchReview } from '../scripts/lib/review.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const MUTATING = new Set([
   'state patch', 'budget record', 'budget extend', 'episode new', 'episode record', 'episode abandon',
-  'review dispatch', 'review record', 'review import', 'workstream new', 'workstream set',
+  'review configure', 'review dispatch', 'review record', 'review import', 'workstream new', 'workstream set',
   'workstream terminal', 'checkpoint emit', 'checkpoint observe', 'checkpoint restore',
   'lease acquire', 'lease release', 'comprehension ack',
   'breaker reset', 'finish',
@@ -48,10 +52,32 @@ function runResult(root, args) {
     return { status: e.status, stdout: e.stdout?.toString() || '', stderr: e.stderr?.toString() || '' };
   }
 }
-function seed() {
+function seed(detected = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-sf-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', detected, now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
+}
+function operationallyAbandonedChecker(root, runId, reason = 'operational-review-failure: parser-contract-mismatch') {
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const worktree = '.claude/worktrees/review-config';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const ws = newWorkstream(root, runId, {
+    title: 'review config', branch: 'review-config', worktree, fence,
+  });
+  const artifact = `${worktree}/plan.md`;
+  writeFileSync(join(root, artifact), '# plan');
+  const maker = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan',
+    workstream: ws.id, expectedArtifacts: [artifact], fence,
+  });
+  recordEpisode(root, runId, maker.id, { status: 'in_progress', fence });
+  recordEpisode(root, runId, maker.id, { status: 'done', artifacts: [artifact], proof: {}, fence });
+  const created = dispatchReview(root, runId, {
+    point: 'plan', workstreamId: ws.id, detected: { 'deep-review': true },
+    independentSubagent: true, fence,
+  });
+  abandonEpisode(root, runId, created.checkerEpisodeId, { reason, confirm: true, fence });
+  return created.checkerEpisodeId;
 }
 function seedMigratedLegacy() {
   const seeded = seed();
@@ -81,7 +107,7 @@ test('all mutating routes reject missing, value-less, empty, and duplicate run-i
     ['lease', 'acquire'], ['lease', 'activate'], ['lease', 'reap'], ['lease', 'release'],
     ['workstream', 'new'], ['workstream', 'set'], ['workstream', 'terminal'],
     ['episode', 'new'], ['episode', 'record'], ['episode', 'abandon'],
-    ['review', 'dispatch'], ['review', 'record'], ['review', 'import'],
+    ['review', 'configure'], ['review', 'dispatch'], ['review', 'record'], ['review', 'import'],
     ['handoff', 'emit'], ['respawn'], ['state', 'patch'], ['pause'], ['recover'],
     ['recovery', 'acquire'], ['budget', 'record'], ['budget', 'extend'],
     ['comprehension', 'ack'], ['breaker', 'reset'], ['insights', 'emit'],
@@ -253,7 +279,7 @@ test('state get drains large JSON output before the CLI exits', () => {
 });
 
 test('state patch writes whitelisted field with valid fence', () => {
-  const { root, runId } = seed();
+  const { root, runId } = seed({ 'deep-review': true });
   run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '["a","b"]', '--owner', runId, '--generation', '1']);
   const got = JSON.parse(run(root, ['state', 'get', '--field', 'discovered_items']));
   assert.deepEqual(got, ['a', 'b']);
@@ -273,6 +299,171 @@ test('state patch forbids terminal episode status (exit 1)', () => {
   const { root, runId } = seed();
   // episodes.0.status=done 은 터미널 → classifyPatch forbid (episode 가 없어도 분류 단계에서 거부)
   assert.equal(runFail(root, ['state', 'patch', '--field', 'episodes.0.status', '--value', '"done"', '--owner', runId, '--generation', '1']), 1);
+});
+
+test('review configure replaces flags through a confirmed fenced transaction', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  const flags = ['--contract', '--codex-only', '--reviewer-strategy', 'static'];
+  const out = JSON.parse(run(root, [
+    'review', 'configure', '--profile', 'codex-only-static',
+    '--source-checker', sourceChecker, '--confirm',
+    '--owner', runId, '--generation', '1',
+  ]));
+
+  assert.deepEqual(out, { ok: true, profile: 'codex-only-static', source_checker: sourceChecker, flags });
+  assert.deepEqual(JSON.parse(run(root, ['state', 'get', '--field', 'review.flags'])), flags);
+  assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.1.review_reconfiguration_consumed'])), true);
+
+  const events = readFileSync(join(root, '.deep-loop', 'runs', runId, 'event-log.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(events.findLast(event => event.type === 'review-configured')?.data, {
+    profile: 'codex-only-static', source_checker: sourceChecker, flags,
+  });
+});
+
+test('review configure exposes one closed GPT-5.6 plus Agy diversity profile', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  const flags = [
+    '--contract', '--no-fallback', '--no-opus', '--agy', '--codex', '--reviewer-strategy', 'static',
+    '--reviewer-model', 'codex-review=gpt-5.6-sol',
+    '--reviewer-model', 'codex-adversarial=gpt-5.6-sol',
+    '--reviewer-model', 'agy=gemini-3.6-flash-high',
+    '--reviewer-effort', 'codex-review=high',
+    '--reviewer-effort', 'codex-adversarial=high',
+  ];
+  const out = JSON.parse(run(root, [
+    'review', 'configure', '--profile', 'gpt56-agy-static',
+    '--source-checker', sourceChecker, '--confirm',
+    '--owner', runId, '--generation', '1',
+  ]));
+
+  assert.deepEqual(out, { ok: true, profile: 'gpt56-agy-static', source_checker: sourceChecker, flags });
+  assert.deepEqual(JSON.parse(run(root, ['state', 'get', '--field', 'review.flags'])), flags);
+});
+
+test('review configure requires human confirmation and preserves existing flags', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  const before = JSON.parse(run(root, ['state', 'get', '--field', 'review.flags']));
+  let code = 0, stderr = '';
+  try {
+    run(root, [
+      'review', 'configure', '--profile', 'codex-only-static', '--source-checker', sourceChecker,
+      '--owner', runId, '--generation', '1',
+    ]);
+  } catch (error) {
+    code = error.status;
+    stderr = String(error.stderr || '');
+  }
+
+  assert.equal(code, 2);
+  assert.match(stderr, /CONFIRM_REQUIRED/);
+  assert.deepEqual(JSON.parse(run(root, ['state', 'get', '--field', 'review.flags'])), before);
+});
+
+test('review configure rejects unsupported profiles without changing flags', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  const before = JSON.parse(run(root, ['state', 'get', '--field', 'review.flags']));
+  const code = runFail(root, [
+    'review', 'configure', '--profile', 'arbitrary-flags', '--source-checker', sourceChecker, '--confirm',
+    '--owner', runId, '--generation', '1',
+  ]);
+
+  assert.equal(code, 1);
+  assert.deepEqual(JSON.parse(run(root, ['state', 'get', '--field', 'review.flags'])), before);
+});
+
+test('review configure rejects changes while a checker is non-terminal', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  run(root, [
+    'episode', 'new', '--plugin', 'deep-review', '--role', 'checker',
+    '--kind', 'plan-review', '--point', 'plan',
+    '--owner', runId, '--generation', '1',
+  ]);
+
+  const code = runFail(root, [
+    'review', 'configure', '--profile', 'codex-only-static', '--source-checker', sourceChecker, '--confirm',
+    '--owner', runId, '--generation', '1',
+  ]);
+  assert.equal(code, 1);
+});
+
+test('review configure requires a latest abandoned operational checker and consumes it once', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  const args = [
+    'review', 'configure', '--profile', 'codex-only-static', '--source-checker', sourceChecker, '--confirm',
+    '--owner', runId, '--generation', '1',
+  ];
+  run(root, args);
+  assert.equal(runFail(root, args), 1);
+
+  const fresh = seed();
+  assert.equal(runFail(fresh.root, [
+    'review', 'configure', '--profile', 'codex-only-static', '--source-checker', '999-deep-review', '--confirm',
+    '--owner', fresh.runId, '--generation', '1',
+  ]), 1);
+});
+
+test('review configure has a closed, duplicate-free CLI grammar', () => {
+  for (const extra of [
+    ['--unknown', 'x'],
+    ['positional'],
+    ['--profile', 'codex-only-static'],
+  ]) {
+    const { root, runId } = seed({ 'deep-review': true });
+    const sourceChecker = operationallyAbandonedChecker(root, runId);
+    const before = JSON.parse(run(root, ['state', 'get', '--field', 'review.flags']));
+    const code = runFail(root, [
+      'review', 'configure', '--profile', 'codex-only-static', '--source-checker', sourceChecker, '--confirm',
+      '--owner', runId, '--generation', '1', ...extra,
+    ]);
+    assert.equal(code, 2);
+    assert.deepEqual(JSON.parse(run(root, ['state', 'get', '--field', 'review.flags'])), before);
+  }
+});
+
+test('review configure rejects fabricated, non-operational, and non-deep-review sources', () => {
+  const fabricated = seed({ 'deep-review': true });
+  const fake = JSON.parse(run(fabricated.root, [
+    'episode', 'new', '--plugin', 'deep-review', '--role', 'checker', '--kind', 'plan-review', '--point', 'plan',
+    '--owner', fabricated.runId, '--generation', '1',
+  ])).id;
+  run(fabricated.root, [
+    'episode', 'abandon', '--id', fake, '--reason', 'operational-review-failure: forged', '--confirm',
+    '--owner', fabricated.runId, '--generation', '1',
+  ]);
+  assert.equal(runFail(fabricated.root, [
+    'review', 'configure', '--profile', 'codex-only-static', '--source-checker', fake, '--confirm',
+    '--owner', fabricated.runId, '--generation', '1',
+  ]), 1);
+
+  const ordinary = seed({ 'deep-review': true });
+  const ordinarySource = operationallyAbandonedChecker(ordinary.root, ordinary.runId, 'operator cleanup');
+  assert.equal(runFail(ordinary.root, [
+    'review', 'configure', '--profile', 'codex-only-static', '--source-checker', ordinarySource, '--confirm',
+    '--owner', ordinary.runId, '--generation', '1',
+  ]), 1);
+
+  const subagent = seed();
+  const subagentSource = operationallyAbandonedChecker(subagent.root, subagent.runId);
+  assert.equal(runFail(subagent.root, [
+    'review', 'configure', '--profile', 'codex-only-static', '--source-checker', subagentSource, '--confirm',
+    '--owner', subagent.runId, '--generation', '1',
+  ]), 1);
+});
+
+test('review configure validates malformed locators and grammar before lease resolution', () => {
+  const { root, runId } = seed({ 'deep-review': true });
+  const sourceChecker = operationallyAbandonedChecker(root, runId);
+  const base = ['review', 'configure', '--profile', 'codex-only-static', '--source-checker', sourceChecker, '--confirm'];
+  assert.equal(runFail(root, [...base, '--owner', runId, '--generation', '1', '--run-id']), 2);
+  assert.equal(runFail(root, [...base, '--owner', runId, '--generation', '1', '--project-root']), 2);
+  assert.equal(runFail(root, [...base, '--owner', runId, '--generation', '9', '--unknown', 'x']), 2);
 });
 
 test('budget record accrues turns/tokens via event log with fence', () => {
@@ -900,7 +1091,6 @@ test('review dispatch missing --point exits 2', () => {
 });
 
 // ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
-import { rmSync } from 'node:fs';
 function runBoth(root, args, { env = process.env, input } = {}) {
   const first = args[1] && !args[1].startsWith('--') ? args[1] : null;
   const key = args[0] === 'finish' ? 'finish' : first ? `${args[0]} ${first}` : args[0];

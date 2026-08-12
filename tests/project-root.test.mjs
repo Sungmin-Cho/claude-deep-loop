@@ -23,6 +23,7 @@ import {
   readState,
   readStateForRootRecovery,
   runDir,
+  withLock,
   writeState,
 } from '../scripts/lib/state.mjs';
 import {
@@ -509,9 +510,19 @@ function runCliAsync(args, cwd = REPO_ROOT) {
   });
 }
 
+// Contention reaches a caller in two shapes, and a predicate that knows only one of
+// them silently stops retrying: verbs that throw print the exact `LOCK_BUSY` line on
+// stderr, while `root diagnose` returns a bounded descriptor on stdout with an empty
+// stderr. Recognising only the stderr form is what let a busy lock read as a hard
+// failure here.
 function lockBusyResult(result) {
+  if (result?.status !== 1) return false;
   const stderr = String(result?.stderr || '').replace(/\u001b\[[0-9;]*m/g, '').trim();
-  return result?.status === 1 && /^\[deep-loop:error\] LOCK_BUSY(?::[^\r\n]*)?$/.test(stderr);
+  if (/^\[deep-loop:error\] LOCK_BUSY(?::[^\r\n]*)?$/.test(stderr)) return true;
+  if (stderr.length > 0) return false;
+  let descriptor;
+  try { descriptor = JSON.parse(String(result?.stdout || '')); } catch { return false; }
+  return descriptor?.ok === false && descriptor.kind === 'lock-busy' && descriptor.retryable === true;
 }
 
 test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => {
@@ -539,6 +550,67 @@ test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => 
     status: 1,
     stderr: '[deep-loop:error] LOCK_BUSY: run-a\n[deep-loop:error] STATE_TAMPERED\n',
   }), false);
+});
+
+test('lockBusyResult recognizes the stdout contention descriptor and nothing adjacent to it', () => {
+  const descriptor = {
+    ok: false, kind: 'lock-busy', retryable: true, phase: 'run-snapshot', partial_discarded: true,
+  };
+  assert.equal(lockBusyResult({ status: 1, stderr: '', stdout: JSON.stringify(descriptor) }), true);
+  assert.equal(lockBusyResult({ status: 1, stderr: '  \n', stdout: JSON.stringify(descriptor) }), true);
+
+  // An integrity discard is the signal this predicate must never swallow: retrying it
+  // would loop on a genuinely damaged run instead of surfacing it.
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '',
+    stdout: JSON.stringify({ ok: false, kind: 'integrity-invalid', phase: 'run-snapshot' }),
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '',
+    stdout: JSON.stringify({ ...descriptor, retryable: false }),
+  }), false);
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '',
+    stdout: JSON.stringify({ ...descriptor, ok: true }),
+  }), false);
+  assert.equal(lockBusyResult({ status: 1, stderr: '', stdout: 'not json' }), false);
+  assert.equal(lockBusyResult({ status: 0, stderr: '', stdout: JSON.stringify(descriptor) }), false);
+  // A descriptor carried alongside a real diagnostic is not a clean transient.
+  assert.equal(lockBusyResult({
+    status: 1,
+    stderr: '[deep-loop:error] STATE_TAMPERED\n',
+    stdout: JSON.stringify(descriptor),
+  }), false);
+});
+
+// A contended `root diagnose` must be distinguishable from a corrupt one. The kernel
+// reaches the state through a read lock, so a busy lock is an ordinary transient — it
+// says nothing about whether the durable bytes verify. Reporting it as
+// `integrity-invalid` tells an operator their state may be damaged when it is merely
+// in use, and leaves an automated caller with no signal that retrying is the answer.
+test('a contended root diagnose reports retryable contention, not an integrity failure', () => {
+  const root = freshRoot('dl-root-lock-busy-');
+  const { runId } = init(root, 'claude');
+  const args = ['root', 'diagnose', '--candidate-project-root', root, '--run-id', runId];
+  // Hold the run lock from this process for the whole child lifetime: the holder is
+  // alive, so the child cannot reclaim it and exhausts its retries into LOCK_BUSY.
+  const contended = withLock(root, runId, () => spawnSync(
+    process.execPath,
+    [CLI, ...args],
+    { cwd: root, encoding: 'utf8' },
+  ));
+
+  assert.equal(contended.status, 1);
+  assert.deepEqual(JSON.parse(contended.stdout), {
+    ok: false,
+    kind: 'lock-busy',
+    retryable: true,
+    phase: 'run-snapshot',
+    partial_discarded: true,
+  });
 });
 
 async function retryLockBusyDiagnose(result, args, cwd) {
@@ -1686,8 +1758,24 @@ test('Round1 acceptance RED: retention removes commit-oldest only and concurrent
   const concurrent = await Promise.all(concurrentInitial.map(({ result, cwd }) => (
     retryLockBusyDiagnose(result, diagnoseArgs, cwd)
   )));
+  // A non-zero status here is a discard descriptor on stdout with an empty stderr, and
+  // status+stderr alone cannot say which discard it was. `lock-busy` means the retry
+  // budget was too small; an `integrity-invalid` phase means a different transient is
+  // being classified as damage. Report the descriptor so the failure names its own
+  // cause instead of requiring a reproduction to find out.
   assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0],
-    JSON.stringify(concurrent.map(result => ({ status: result.status, stderr: result.stderr }))));
+    JSON.stringify(concurrent.map(result => {
+      if (result.status === 0) return { status: 0 };
+      let descriptor;
+      try { descriptor = JSON.parse(String(result.stdout || '')); } catch { descriptor = null; }
+      return {
+        status: result.status,
+        stderr: result.stderr,
+        kind: descriptor?.kind ?? null,
+        phase: descriptor?.phase ?? null,
+        retryable: descriptor?.retryable ?? null,
+      };
+    })));
   assert.deepEqual(
     concurrent.map(result => JSON.parse(result.stdout).operation_id),
     Array(4).fill(operationIds.at(-1)),

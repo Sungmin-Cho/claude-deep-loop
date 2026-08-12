@@ -31,6 +31,81 @@ import {
 
 export { isProofCapableChecker };
 
+const REVIEW_CONFIG_TERMINAL = new Set(['done', 'approved', 'rejected', 'abandoned']);
+const REVIEW_RECOVERY_PROFILES = Object.freeze({
+  'codex-only-static': Object.freeze(['--contract', '--codex-only', '--reviewer-strategy', 'static']),
+  'gpt56-agy-static': Object.freeze([
+    '--contract', '--no-fallback', '--no-opus', '--agy', '--codex', '--reviewer-strategy', 'static',
+    '--reviewer-model', 'codex-review=gpt-5.6-sol',
+    '--reviewer-model', 'codex-adversarial=gpt-5.6-sol',
+    '--reviewer-model', 'agy=gemini-3.6-flash-high',
+    '--reviewer-effort', 'codex-review=high',
+    '--reviewer-effort', 'codex-adversarial=high',
+  ]),
+});
+
+export function configureReviewFlags(root, runId, options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('REVIEW_CONFIG_INPUT_INVALID');
+  }
+  const { profile, sourceCheckerId, confirm, fence } = options;
+  if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
+  validFence(fence, 'configureReviewFlags');
+  if (!Object.hasOwn(REVIEW_RECOVERY_PROFILES, profile)) {
+    throw new Error(`REVIEW_CONFIG_PROFILE_INVALID: ${String(profile)}`);
+  }
+  if (!sourceCheckerId || typeof sourceCheckerId !== 'string') {
+    throw new Error('REVIEW_CONFIG_SOURCE_INVALID: source checker is required');
+  }
+  const nextFlags = [...REVIEW_RECOVERY_PROFILES[profile]];
+
+  appendAnchored(root, runId, {
+    type: 'review-configured',
+    data: { profile, source_checker: sourceCheckerId, flags: nextFlags },
+  }, (loop) => {
+    const source = loop.episodes.find(episode => episode.id === sourceCheckerId);
+    source.review_reconfiguration_consumed = true;
+    loop.review.flags = nextFlags;
+  }, (loop) => {
+    const checked = leaseCheck(loop, fence);
+    if (!checked.ok) throw new Error('LEASE_FENCED: ' + checked.reason);
+    if (!loop.review || typeof loop.review !== 'object' || Array.isArray(loop.review)) {
+      throw new Error('STATE_INVALID: review config');
+    }
+    if (loop.review.reviewer !== 'deep-review-loop') {
+      throw new Error(`REVIEW_CONFIG_REVIEWER_INVALID: ${String(loop.review.reviewer)}`);
+    }
+    const checkers = (loop.episodes || []).filter(episode => episode?.role === 'checker');
+    const source = checkers.find(episode => episode.id === sourceCheckerId);
+    const sourceMaker = source?.target_maker
+      ? loop.episodes.find(episode => episode.id === source.target_maker)
+      : null;
+    if (!source || source.plugin !== 'deep-review' || source.status !== 'abandoned'
+      || typeof source.abandon_reason !== 'string'
+      || !/^operational-review-failure:\s*\S/.test(source.abandon_reason)
+      || !sourceMaker || sourceMaker.role !== 'maker' || sourceMaker.status !== 'done'
+      || sourceMaker.workstream_id !== source.workstream_id || sourceMaker.point !== source.point) {
+      throw new Error(`REVIEW_CONFIG_SOURCE_INVALID: ${sourceCheckerId}`);
+    }
+    const latest = checkers.reduce((current, episode) => (
+      !current || epOrder(episode.id, current.id) > 0 ? episode : current
+    ), null);
+    if (latest?.id !== sourceCheckerId) {
+      throw new Error(`REVIEW_CONFIG_SOURCE_STALE: ${sourceCheckerId}`);
+    }
+    if (source.review_reconfiguration_consumed === true) {
+      throw new Error(`REVIEW_CONFIG_SOURCE_CONSUMED: ${sourceCheckerId}`);
+    }
+    const activeChecker = (loop.episodes || []).find(episode => episode?.role === 'checker'
+      && !REVIEW_CONFIG_TERMINAL.has(episode.status));
+    if (activeChecker) {
+      throw new Error(`REVIEW_CONFIG_ACTIVE_CHECKER: ${activeChecker.id}`);
+    }
+  }, { floor: MUTATION_TURN_FLOOR });
+
+  return { ok: true, profile, source_checker: sourceCheckerId, flags: nextFlags };
+}
+
 export function findPendingIndependentChecker(loop) {
   const eligible = episode => episode?.role === 'checker'
     && episode.status === 'pending'
@@ -338,11 +413,15 @@ export function makerReviewed(loop, maker) {
 }
 
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
-export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
+export function dispatchReview(root, runId, {
+  point, workstreamId, detected = {}, independentSubagent = false, fence,
+  __testBeforeCheckerCreate,
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   // Fix 3: validate point before any state read/write
   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
   const { data } = captureReconciledRunSnapshot(root, runId);
+  const expectedReviewConfig = structuredClone(data.review);
   // Codex impl r14 🟡: validate the workstream EXISTS at dispatch time — otherwise the checker is bound to a phantom
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
@@ -465,8 +544,12 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   const episodeInput = {
     plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
     kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
-    reviewerResolution, evidence, contract, fence,
+    reviewerResolution, evidence, contract, expectedReviewConfig, fence,
   };
+  if (__testBeforeCheckerCreate !== undefined && typeof __testBeforeCheckerCreate !== 'function') {
+    throw new Error('REVIEW_TEST_SEAM_INVALID');
+  }
+  __testBeforeCheckerCreate?.();
   const { id } = blockedReason
     ? newBlockedCheckerEpisode(root, runId, { ...episodeInput, reason: blockedReason })
     : newEpisode(root, runId, { ...episodeInput, role: 'checker' });

@@ -330,17 +330,41 @@ test('PostCompact child failures are fixed, bounded, and never expose child or h
   const fixture = seed('claude');
   const rawIdentity = 'sensitive-host-session';
   const { runPostCompactObserve } = await loadAdapter();
+  const hostInput = {
+    cwd: fixture.root,
+    hook_event_name: 'PostCompact',
+    trigger: 'manual',
+    session_id: rawIdentity,
+  };
+  // Positive control. Everything below asserts how a FAILING observe child is handled,
+  // but each mode collapses to `observation-unavailable` when the fixture never reaches
+  // the child at all — the assertions then prove nothing about child handling while
+  // still looking like an ordinary red. Establish reachability first, and name what
+  // refused when it is not reachable, so the failure is diagnosable where it happens
+  // rather than only where it can be reproduced.
+  let resolution = null;
+  let reachedChild = false;
+  const control = runPostCompactObserve(hostInput, {
+    spawnSyncImpl: () => { reachedChild = true; return { status: 0, stdout: '{}', stderr: '' }; },
+    resolveContextFn: (request) => { resolution = resolveRunContext(request); return resolution; },
+  });
+  assert.equal(reachedChild, true, 'the observe child was never reached — '
+    + `result=${JSON.stringify(control)} `
+    + `resolver=${JSON.stringify({
+      ok: resolution?.ok,
+      kind: resolution?.kind,
+      reason: resolution?.reason,
+      source: resolution?.source,
+      matchedWorktree: resolution?.matchedWorktree,
+      runId: resolution?.runId,
+    })}`);
+
   for (const spawnSyncImpl of [
     () => ({ status: 1, stdout: rawIdentity, stderr: rawIdentity }),
     () => ({ status: null, signal: 'SIGTERM', stdout: rawIdentity, stderr: rawIdentity }),
     () => { throw new Error(rawIdentity); },
   ]) {
-    const result = runPostCompactObserve({
-      cwd: fixture.root,
-      hook_event_name: 'PostCompact',
-      trigger: 'manual',
-      session_id: rawIdentity,
-    }, { spawnSyncImpl });
+    const result = runPostCompactObserve(hostInput, { spawnSyncImpl });
     assert.deepEqual(result, { ok: false, action: 'failed', reason: 'observe-child-failed' });
     assert.equal(JSON.stringify(result).includes(rawIdentity), false);
   }
