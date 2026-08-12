@@ -10,7 +10,7 @@ import { describeOutcomeReplay } from './fixture.mjs';
 export const STEP_VOCAB = Object.freeze([
   'validate','next-action','state get','checkpoint inspect','init-run',
   'root recovery acquire','root rebind','root recover','runtime-executable approve','launcher-executable approve',
-  'checkpoint emit','checkpoint observe','checkpoint restore','lease acquire','lease release',
+  'checkpoint emit','checkpoint observe','checkpoint restore','lease acquire','lease activate','lease reap','lease release',
   'workstream new','workstream set','workstream terminal','episode new','episode record','episode abandon',
   'review dispatch','review record','review import','handoff emit','respawn','state patch','pause','recover','recovery acquire',
   'budget record','budget extend','comprehension ack','breaker reset','insights emit',
