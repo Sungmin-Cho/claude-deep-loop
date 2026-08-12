@@ -1755,8 +1755,24 @@ test('Round1 acceptance RED: retention removes commit-oldest only and concurrent
   const concurrent = await Promise.all(concurrentInitial.map(({ result, cwd }) => (
     retryLockBusyDiagnose(result, diagnoseArgs, cwd)
   )));
+  // A non-zero status here is a discard descriptor on stdout with an empty stderr, and
+  // status+stderr alone cannot say which discard it was. `lock-busy` means the retry
+  // budget was too small; an `integrity-invalid` phase means a different transient is
+  // being classified as damage. Report the descriptor so the failure names its own
+  // cause instead of requiring a reproduction to find out.
   assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0],
-    JSON.stringify(concurrent.map(result => ({ status: result.status, stderr: result.stderr }))));
+    JSON.stringify(concurrent.map(result => {
+      if (result.status === 0) return { status: 0 };
+      let descriptor;
+      try { descriptor = JSON.parse(String(result.stdout || '')); } catch { descriptor = null; }
+      return {
+        status: result.status,
+        stderr: result.stderr,
+        kind: descriptor?.kind ?? null,
+        phase: descriptor?.phase ?? null,
+        retryable: descriptor?.retryable ?? null,
+      };
+    })));
   assert.deepEqual(
     concurrent.map(result => JSON.parse(result.stdout).operation_id),
     Array(4).fill(operationIds.at(-1)),
