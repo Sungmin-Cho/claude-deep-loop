@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   cpSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -1379,7 +1380,19 @@ test('forced unlink replacement persists intent and replays predecessor, absent,
   for (const barrier of ['artifact:0:replace-intent', 'artifact:0:unlink', 'artifact:0:target-done']) {
     const { root, runId, dir } = anchoredSeed();
     mkdirSync(join(dir, 'artifacts'), { recursive: true });
-    writeFileSync(join(dir, 'artifacts', 'boundary.txt'), 'predecessor');
+    const target = join(dir, 'artifacts', 'boundary.txt');
+    const predecessorPin = join(dir, 'artifacts', 'boundary.predecessor-pin');
+    writeFileSync(target, 'predecessor');
+    const predecessorIdentity = captureStableFileIdentity(target);
+    // Keep the predecessor inode allocated after the forced unlink. Without this
+    // same-filesystem pin, ext4 may recycle it for the candidate before recovery
+    // observes the crash, making a valid replacement look identity-equal.
+    linkSync(target, predecessorPin);
+    assert.equal(
+      matchingStableFileIdentity(captureStableFileIdentity(predecessorPin), predecessorIdentity),
+      true,
+      barrier,
+    );
     assert.throws(() => appendAnchored(
       root,
       runId,
@@ -1397,7 +1410,13 @@ test('forced unlink replacement persists intent and replays predecessor, absent,
     ), /TRANSACTION_PENDING/, barrier);
     const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
     assert.deepEqual(snapshot.data.discovered_items, [barrier]);
-    assert.equal(readFileSync(join(dir, 'artifacts', 'boundary.txt'), 'utf8'), 'candidate');
+    assert.equal(readFileSync(target, 'utf8'), 'candidate');
+    assert.equal(readFileSync(predecessorPin, 'utf8'), 'predecessor');
+    assert.equal(
+      matchingStableFileIdentity(captureStableFileIdentity(target), predecessorIdentity),
+      false,
+      barrier,
+    );
   }
 });
 
