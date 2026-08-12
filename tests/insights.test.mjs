@@ -230,11 +230,26 @@ test('no-verb insights preserves project-wide history', () => {
   const a = initRun(root, { runtime: 'claude', goal: 'a', now: FIXED }).runId;
   const b = initRun(root, { runtime: 'claude', goal: 'b', now: new Date(T0 + 1) }).runId;
   const result = cli(root, ['insights', '--run-id', a, '--json']);
-  assert.equal(result.code, 0, result.err);
+  // A non-zero read-only insights exit puts its discard descriptor on stdout and leaves
+  // stderr empty, so `result.err` is the one thing that cannot explain the failure.
+  assert.equal(result.code, 0, cliFailure(result));
   const output = JSON.parse(result.out);
   assert.ok(output.excluded_active.includes(b));
   assert.ok(output.per_run[a].self_snapshot);
 });
+
+// Read-only insights verbs report a refusal as a descriptor on stdout with exit 1 and
+// nothing on stderr, so an assertion that quotes stderr alone reports an empty string.
+function cliFailure(result) {
+  let descriptor;
+  try { descriptor = JSON.parse(String(result.out || '')); } catch { descriptor = null; }
+  return `exit=${result.code} stderr=${JSON.stringify(String(result.err || ''))} `
+    + `descriptor=${JSON.stringify(descriptor && {
+      ok: descriptor.ok, kind: descriptor.kind, phase: descriptor.phase,
+      deadline_ms: descriptor.deadline_ms, observed_artifacts: descriptor.observed_artifacts,
+      observed_count: descriptor.observed_count,
+    })}`;
+}
 
 function loopFixture() {
   return {
