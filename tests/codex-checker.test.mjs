@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync,
+  lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -282,17 +282,37 @@ test('trusted checker capture publishes exact run-owned bytes and tolerates sour
     manifest_rel: 'plugin.json', manifest_sha256: source.manifest.sha256,
     skill_rel: 'SKILL.md', skill_sha256: source.skill.sha256,
   });
+  const capturedBytes = {
+    manifest: readFileSync(captured.manifest.canonical_path),
+    skill: readFileSync(captured.skill.canonical_path),
+    record: readFileSync(captured.record.canonical_path),
+  };
 
-  unlinkSync(manifestPath);
-  unlinkSync(skillPath);
-  writeFileSync(manifestPath, manifestBytes);
-  writeFileSync(skillPath, skillBytes);
+  const replacementManifest = `${manifestPath}.replacement`;
+  const replacementSkill = `${skillPath}.replacement`;
+  writeFileSync(replacementManifest, manifestBytes);
+  writeFileSync(replacementSkill, skillBytes);
+  renameSync(replacementManifest, manifestPath);
+  renameSync(replacementSkill, skillPath);
   const replaced = resolveTrustedCheckerSkill({ codexHome: home });
-  assert.notEqual(replaced.skill.inode, source.skill.inode);
+  assert.equal(replaced.plugin_directory.canonical_path, source.plugin_directory.canonical_path);
+  assert.equal(replaced.manifest.sha256, source.manifest.sha256);
+  assert.equal(replaced.skill.sha256, source.skill.sha256);
   assert.deepEqual(captureTrustedCheckerSkill({
     root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
     source: replaced, expected: captured,
   }), captured);
+  assert.equal(readFileSync(captured.manifest.canonical_path).equals(capturedBytes.manifest), true);
+  assert.equal(readFileSync(captured.skill.canonical_path).equals(capturedBytes.skill), true);
+  assert.equal(readFileSync(captured.record.canonical_path).equals(capturedBytes.record), true);
+
+  writeFileSync(replacementSkill, Buffer.from('---\nname: deep-review-loop\n---\n# changed\n'));
+  renameSync(replacementSkill, skillPath);
+  const changed = resolveTrustedCheckerSkill({ codexHome: home });
+  assert.throws(() => captureTrustedCheckerSkill({
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
+    source: changed, expected: captured,
+  }), /checker-source-skill-content-drift/);
 });
 
 test('trusted checker capture rejects byte-identical capture replacement', async () => {
