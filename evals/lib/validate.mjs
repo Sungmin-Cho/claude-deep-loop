@@ -12,7 +12,7 @@ export const STEP_VOCAB = Object.freeze([
   'root recovery acquire','root rebind','root recover','runtime-executable approve','launcher-executable approve',
   'checkpoint emit','checkpoint observe','checkpoint restore','lease acquire','lease release',
   'workstream new','workstream set','workstream terminal','episode new','episode record','episode abandon',
-  'review dispatch','review record','review import','handoff emit','respawn','state patch','pause','recover','recovery acquire',
+  'review configure','review dispatch','review record','review import','handoff emit','respawn','state patch','pause','recover','recovery acquire',
   'budget record','budget extend','comprehension ack','breaker reset','insights emit',
   'spawn-style offer-desktop','spawn-style confirm-desktop','spawn-style decline-desktop','spawn-style reset-desktop',
   'attended-launch approve','attended-launch revoke','session-profile set','detect-terminal','finish',

@@ -98,6 +98,32 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode abandon --id <id> --reason "
 
 (`--confirm` + lease fence(`--owner`/`--generation`)는 사람 전용 경로 — autonomous tick은 자동으로 주지 않는다. abandon 후 episode는 `abandoned`(settled)가 되어 finish 게이트가 풀린다.)
 
+### 7.5 Review flags 재구성
+
+운영 실패로 checker를 사람 승인하에 abandon한 뒤, 다음 checker를 만들기 전에
+reviewer route를 Codex-only static으로 바꿔야 하는 경우에만 current lease를
+다시 읽고 아래 전용 mutation을 제안한다. source는 최신 checker이며
+durable reviewer가 `deep-review-loop`, source plugin이 `deep-review`, source가 done
+maker에 바인딩되어 있고 `operational-review-failure:` reason으로 abandoned
+상태여야 한다. 커널은 source를 한 번만 소비하고, non-terminal checker가 하나라도
+있으면 변경을 거부한다.
+generic `state patch review.flags`나 raw `loop.json` 수정으로 우회하지 않는다.
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review configure --profile codex-only-static --source-checker <abandoned_checker_id> --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+`codex-only-static`은 exact flags
+`["--contract","--codex-only","--reviewer-strategy","static"]`로만 확장된다.
+critical document의 provider-family floor를 유지하면서 사람이 Agy 전송과 모델
+예외를 명시 승인한 경우에는 `--profile gpt56-agy-static`을 대신 사용한다. 이
+profile은 Codex 두 역할을 `gpt-5.6-sol/high`, Agy 역할을
+`gemini-3.6-flash-high`로 고정하고 Opus와 fallback은 비활성화한다. 임의 모델이나
+provider argv는 받을 수 없다.
+`--confirm`은 사람이 source checker와 fresh fence를 확인한 경우에만 전달한다.
+성공하면 커널은 source 소비, `review-configured` 이벤트, `review.flags` 변경을
+하나의 anchored transaction으로 기록한다.
+
 ## 다음 명령 제안
 
 상태에 따라 적절한 다음 명령을 제안한다:
