@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const runtime = process.argv[2];
@@ -35,6 +35,17 @@ function invoke(args, { input = null, label = args.join(' ') } = {}) {
   return text === '' ? null : JSON.parse(text);
 }
 
+function removeOwnedUserState(path) {
+  const canonical = (realpathSync.native || realpathSync)(path);
+  const canonicalTmp = (realpathSync.native || realpathSync)(tmpdir());
+  if (dirname(canonical) !== canonicalTmp
+    || !basename(canonical).startsWith(`deep-loop-standalone-home-${runtime}-`)) {
+    throw new Error('STANDALONE_USER_STATE_CLEANUP_UNSAFE');
+  }
+  rmSync(canonical, { recursive: true });
+}
+
+function runLifecycle() {
 const detected = invoke(['detect-plugins']);
 const detectedPlugins = Object.entries(detected)
   .filter(([, value]) => value === true || value?.present === true)
@@ -108,14 +119,15 @@ const resume = spawnSync(process.execPath, [
   CLI, 'resume-command', '--run-id', runId, '--project-root', project,
 ], { cwd: project, encoding: 'utf8', env: childEnv, maxBuffer: 2_097_152 });
 if (resume.status !== 0 || resume.stdout.trim() === '') throw new Error(`resume-command: ${resume.stderr}`);
+const boundaryAttemptId = 'STANDALONEATTEMPT01';
 const acquired = invoke([
   'lease', 'acquire', '--owner', handoff.childRunId, '--generation', '1',
-  '--runtime', runtime, '--attempt-id', 'STANDALONEATTEMPT01', '--now', now, '--run-id', runId,
+  '--runtime', runtime, '--attempt-id', boundaryAttemptId, '--now', now, '--run-id', runId,
 ]);
 if (acquired.proceed !== true || acquired.generation !== 2) throw new Error('boundary recovery did not proceed');
 const activated = invoke([
   'lease', 'activate', '--stored-token', '--owner', handoff.childRunId, '--generation', '2',
-  '--runtime', runtime, '--attempt-id', 'STANDALONEATTEMPT01', '--now', now, '--run-id', runId,
+  '--runtime', runtime, '--attempt-id', boundaryAttemptId, '--now', now, '--run-id', runId,
 ]);
 if (activated.ok !== true || !['activated', 'already-activated'].includes(activated.reason)) {
   throw new Error('boundary recovery did not activate');
@@ -126,7 +138,7 @@ invoke([
 ]);
 const terminal = invoke(['state', 'get', '--run-id', runId]);
 
-process.stdout.write(`${JSON.stringify({
+return {
   runtime,
   protocol: terminal.routing.protocol,
   orca_present: false,
@@ -143,4 +155,14 @@ process.stdout.write(`${JSON.stringify({
     fence: { owner: runId, generation: 1 },
     boundary_identity: boundaryIdentity,
   },
-})}\n`);
+};
+}
+
+let output;
+try {
+  output = runLifecycle();
+} finally {
+  removeOwnedUserState(isolatedHome);
+}
+output.user_state_cleaned = !existsSync(isolatedHome);
+process.stdout.write(`${JSON.stringify(output)}\n`);

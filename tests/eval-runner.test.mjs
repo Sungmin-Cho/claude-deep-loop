@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runStep, substitutePlaceholders } from '../evals/lib/drive.mjs';
@@ -693,4 +693,36 @@ test('checkpoint observation and both lease acquisitions are observed through pr
     lease.evidence.executions[1].argv[activatedAttempt + 1],
   );
   assert.equal(lease.evidence.executions[1].argv.includes('--stored-token'), true);
+});
+
+test('row 109 uses and removes owned user state without writing the ambient state root', (t) => {
+  const task = JSON.parse(readFileSync(join(process.cwd(), 'evals', 'tasks', 'allow-lease-chain-109.json'), 'utf8'));
+  const ambient = mkdtempSync(join(tmpdir(), 'eval-ambient-state-'));
+  t.after(() => rmSync(ambient, { recursive: true }));
+  const prior = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+  };
+  let ownedState = null;
+  try {
+    process.env.HOME = ambient;
+    process.env.USERPROFILE = ambient;
+    process.env.XDG_STATE_HOME = ambient;
+    process.env.LOCALAPPDATA = ambient;
+    const result = executeKernelTask(task, {
+      __testOnUserStateCreated: path => { ownedState = path; },
+    });
+    assert.equal(result.verdict, 'pass');
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  assert.equal(typeof ownedState, 'string');
+  assert.equal(statSync(ambient).isDirectory(), true);
+  assert.deepEqual(readdirSync(ambient), []);
+  assert.equal(existsSync(ownedState), false);
 });

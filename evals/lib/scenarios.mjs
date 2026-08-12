@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { seedFixture, materializeSetupFiles, applyFixtureActions } from './fixture.mjs';
 import { runStep } from './drive.mjs';
 import { classify } from './observe.mjs';
@@ -103,24 +105,27 @@ function rejectedRound(context, workstream, round) {
   return maker;
 }
 
-function setupContext(task, now) {
+function setupContext(task, now, childEnv = {}) {
   // Kernel fixtures must be host-neutral: review dispatch is exercised as a
   // subagent-checker path, so a clean CI checkout does not need deep-review's
   // project marker or plugin cache merely to run the deterministic scenario.
   const seeded = seedFixture({ now, goal: `eval:${task.id}`, reviewer: 'subagent-checker' });
-  const userState = mkdtempSync(join(tmpdir(), 'deep-loop-eval-user-state-'));
   return {
     ...seeded,
     owner: seeded.runId,
     generation: 1,
     priorOwner: seeded.runId,
-    childEnv: {
-      HOME: join(userState, 'home'),
-      USERPROFILE: join(userState, 'profile'),
-      XDG_STATE_HOME: join(userState, 'xdg'),
-      LOCALAPPDATA: join(userState, 'localappdata'),
-    },
+    childEnv,
   };
+}
+
+function removeOwnedUserState(path, prefix) {
+  const canonical = (realpathSync.native || realpathSync)(path);
+  const canonicalTmp = (realpathSync.native || realpathSync)(tmpdir());
+  if (dirname(canonical) !== canonicalTmp || !basename(canonical).startsWith(prefix)) {
+    throw new Error('EVAL_USER_STATE_CLEANUP_UNSAFE');
+  }
+  rmSync(canonical, { recursive: true });
 }
 
 function expectedFor(task) {
@@ -301,8 +306,8 @@ function finalCommand(task, context) {
   }
 }
 
-export function prepareKernelTopology(task, { now = NOW } = {}) {
-  const context = setupContext(task, now);
+export function prepareKernelTopology(task, { now = NOW, childEnv = {} } = {}) {
+  const context = setupContext(task, now, childEnv);
   switch (task.id) {
     case 'gate-lease-stale-owner-001': {
       const ws = newWorkstream(context);
@@ -432,8 +437,8 @@ function resultFromObservation(task, context, item, extra = {}) {
   };
 }
 
-export function executeKernelTask(task, { now = NOW } = {}) {
-  const context = prepareKernelTopology(task, { now });
+function executeKernelTaskWithUserState(task, { now, childEnv }) {
+  const context = prepareKernelTopology(task, { now, childEnv });
   if (task.fixture_actions.length > 0) applyFixtureActions(context.root, task, context.runId);
 
   if (task.id === 'allow-checkpoint-observe-108') {
@@ -513,6 +518,23 @@ export function executeKernelTask(task, { now = NOW } = {}) {
   const step = executableManifestStep(task, context);
   const item = observed(context, task, step.cmd, { stdin: step.stdin, expect: step.expect, setupFiles: step.setup_files });
   return resultFromObservation(task, context, item, task.fixture_actions.length > 0 ? { fixture_action_applied: true } : {});
+}
+
+export function executeKernelTask(task, { now = NOW, __testOnUserStateCreated } = {}) {
+  const prefix = 'deep-loop-eval-user-state-';
+  const userState = mkdtempSync(join(tmpdir(), prefix));
+  if (typeof __testOnUserStateCreated === 'function') __testOnUserStateCreated(userState);
+  const childEnv = {
+    HOME: join(userState, 'home'),
+    USERPROFILE: join(userState, 'profile'),
+    XDG_STATE_HOME: join(userState, 'xdg'),
+    LOCALAPPDATA: join(userState, 'localappdata'),
+  };
+  try {
+    return executeKernelTaskWithUserState(task, { now, childEnv });
+  } finally {
+    removeOwnedUserState(userState, prefix);
+  }
 }
 
 export function seedHostTopology(task, { now = NOW } = {}) {

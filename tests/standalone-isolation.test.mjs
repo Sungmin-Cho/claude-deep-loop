@@ -47,6 +47,9 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     assert.equal(value.orca_present, false);
     assert.deepEqual(value.detected_plugins, []);
     assert.equal(value.terminal_escape, 'human-confirmed-abandon-without-independent-checker');
+    assert.equal(value.user_state_cleaned, true);
+    assert.equal(JSON.stringify(value).includes('activation-secrets'), false);
+    assert.equal(JSON.stringify(value).includes('STANDALONEATTEMPT01'), false);
     assert.deepEqual(value.stages, [
       'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
       'terminal-boundary', 'handoff', 'resume', 'recovery', 'activation', 'finish',
@@ -56,6 +59,13 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     assert.equal(value.descriptor.action.reason, 'workstream-terminal');
     assert.match(value.descriptor.boundary_identity, /^[1-9]\d*:[0-9a-f]{64}$/);
   }
+});
+
+test('standalone boundary acquire and stored activation reuse one attempt binding', () => {
+  const source = readFileSync(DRIVER, 'utf8');
+  assert.match(source, /const boundaryAttemptId\s*=\s*'STANDALONEATTEMPT01'/);
+  assert.equal((source.match(/'--attempt-id',\s*boundaryAttemptId/g) || []).length, 2);
+  assert.match(source, /finally\s*{[\s\S]*removeOwnedUserState\(isolatedHome\)/);
 });
 
 test('positive Orca consumer preserves descriptor bytes and semantic fields', () => {
