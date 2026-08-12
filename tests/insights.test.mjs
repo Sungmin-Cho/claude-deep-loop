@@ -36,7 +36,15 @@ const computeInsights = (root, options = {}) => computeInsightsFromSet(captureRe
   retryDelayMs: options.retryDelayMs,
   sleepFn: options.sleepFn,
 }), options);
-const latestInsights = root => latestInsightsFromSet(captureLatestInsightsSet(root));
+// Freeze the clock. The capture runs under a 500 ms budget measured against `nowFn`,
+// so a bare call makes every selection test a race against the machine: on a loaded
+// runner the budget expires mid-enumeration and the helper returns a bound descriptor,
+// which surfaces as `got.path === undefined` and reads as a selection bug. With a fixed
+// clock the elapsed time is always zero, so these tests measure selection and nothing
+// else. Tests that exercise the budget itself inject their own clock and deadline.
+const latestInsights = root => latestInsightsFromSet(
+  captureLatestInsightsSet(root, { nowFn: () => FIXED.getTime() }),
+);
 
 test('insights exposes immutable run/artifact capture adapters and pure snapshot consumers', () => {
   assert.equal(typeof captureReconciledRunSet, 'function');
