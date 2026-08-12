@@ -1233,7 +1233,18 @@ const handlers = {
     json(renderNextAction({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) })); return 0;
   },
   lease: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f);
+    const [verb, ...rest] = a; const f = parseFlags(rest);
+    if (verb === 'acquire') {
+      const acquireFlags = new Set([
+        'owner', 'generation', 'expect-generation', 'runtime', 'attempt-id', 'now',
+        'project-root', 'run-id',
+      ]);
+      if (!knownFlagVocabulary(rest, acquireFlags) || !exactFlagGrammar(rest, acquireFlags)) {
+        error('USAGE: lease acquire accepts each known flag at most once');
+        return 2;
+      }
+    }
+    const root = rootOf(f);
     if (verb === 'check') {
       const exactRunId = exactReadRunId(f); if (!exactRunId) return exactReadFailureCode(f);
       const captured = verifiedExactSnapshot(root, exactRunId);

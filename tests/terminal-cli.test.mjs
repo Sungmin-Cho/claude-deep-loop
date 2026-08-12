@@ -537,6 +537,60 @@ test('CLI lease acquire keeps missing/invalid owner and generation on the establ
   }
 });
 
+test('CLI lease acquire rejects unknown and positional arguments before project-root access', () => {
+  for (const extra of [['--unknown', 'value'], ['positional']]) {
+    const outsider = mkdtempSync(join(tmpdir(), 'dl-acquire-grammar-cwd-'));
+    try {
+      const result = spawnSync(process.execPath, [
+        CLI, 'lease', 'acquire', '--owner', 'ACQUIREGRAMMAROWNER', '--generation', '1',
+        '--runtime', 'claude', '--attempt-id', 'ACQUIREGRAMMARATTEMPT',
+        '--run-id', 'ACQUIREGRAMMARRUN', ...extra,
+      ], { encoding: 'utf8', cwd: outsider });
+      assert.equal(result.status, 2, `${extra.join(' ')}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /USAGE:/);
+      assert.doesNotMatch(result.stderr, /not inside a deep-loop project|RUN_NOT_FOUND/);
+      assert.deepEqual(readdirSync(outsider), []);
+    } finally {
+      rmSync(outsider, { recursive: true, force: true });
+    }
+  }
+});
+
+test('CLI lease acquire grammar gate is structurally before root and run resolution', () => {
+  const source = readFileSync(CLI, 'utf8');
+  const leaseRoute = source.slice(source.indexOf('lease: async (a) => {'), source.indexOf("if (verb === 'check')"));
+  const grammar = leaseRoute.indexOf("if (verb === 'acquire')");
+  assert.notEqual(grammar, -1);
+  assert.ok(grammar < leaseRoute.indexOf('const root = rootOf(f);'));
+  assert.doesNotMatch(leaseRoute.slice(0, grammar), /rootOf\(|runIdOf\(/);
+});
+
+test('CLI lease acquire rejects duplicate identity flags in either ordering without mutation', () => {
+  const cases = [
+    ['owner', 'ACQUIREGRAMMAROWNER', 'OTHERACQUIREOWNER'],
+    ['generation', '1', '2'],
+    ['expect-generation', '1', '2'],
+    ['runtime', 'claude', 'bad-runtime'],
+    ['attempt-id', 'ACQUIREGRAMMARATTEMPT', 'bad!'],
+    ['now', '2026-08-06T00:00:00.000Z', 'bad-now'],
+  ];
+  for (const [name, valid, alternate] of cases) {
+    for (const values of [[valid, alternate], [alternate, valid]]) {
+      const { root, runId, owner, gen } = seedTerminal('running');
+      const before = terminalDurableBytes(root, runId);
+      const result = run(root, [
+        'lease', 'acquire', '--owner', owner, '--generation', String(gen),
+        '--runtime', 'claude', '--attempt-id', 'ACQUIREGRAMMARATTEMPT',
+        `--${name}`, values[0], `--${name}`, values[1],
+      ]);
+      assert.equal(result.status, 2,
+        `${name}=${values.join(',')}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /USAGE:/);
+      assert.deepEqual(terminalDurableBytes(root, runId), before, `${name}=${values.join(',')}`);
+    }
+  }
+});
+
 // §2.3 의도 고정 (impl r1 adversarial 기각 근거의 테스트화): lease release는 terminal에서 **의도적으로 허용**
 // (사람 확정 2026-07-09) — released는 terminal run의 자연 최종 상태(rollbackHandoff terminal 모드와 동일 안착점)이고,
 // 이후 재획득은 acquireLease run-terminal이, 모든 write는 leaseCheck가 차단하므로 무해. 누락이 아니라 설계다.
