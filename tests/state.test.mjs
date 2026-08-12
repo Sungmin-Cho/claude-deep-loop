@@ -449,6 +449,106 @@ test('release quarantine cannot remove a successor created at the lock path', ()
   assert.ok(flushes.filter(path => path === runDir(root, runId)).length >= 2);
 });
 
+test('a successor waits for a live release quarantine and resumes an exact dead one before callback', () => {
+  const { root, runId } = seed();
+  const dir = runDir(root, runId);
+  const releasePrefix = '.lock.release-';
+  withLock(root, runId, () => {}, {
+    tokenFactory: () => 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    faultAt(label) {
+      if (label === 'release:quarantined') throw new Error('simulated release crash');
+    },
+  });
+  let successorEntered = false;
+  assert.throws(() => withLock(root, runId, () => { successorEntered = true; }, {
+    tokenFactory: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    probePid: () => 'alive',
+    retries: 1,
+  }), /LOCK_BUSY/);
+  assert.equal(successorEntered, false);
+  assert.equal(readdirSync(dir).some(name => name.startsWith(releasePrefix)), true);
+
+  withLock(root, runId, () => {
+    successorEntered = true;
+    assert.deepEqual(
+      readdirSync(dir).filter(name => name.startsWith(releasePrefix)),
+      [],
+      'verified readers must never capture a predecessor release quarantine',
+    );
+  }, {
+    tokenFactory: () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    probePid: () => 'dead',
+  });
+  assert.equal(successorEntered, true);
+  assert.deepEqual(readdirSync(dir).filter(name => name.startsWith(releasePrefix)), []);
+});
+
+test('release quarantine recovery rejects malformed residue and identity replacement', () => {
+  const malformed = seed();
+  const malformedRelease = join(
+    runDir(malformed.root, malformed.runId),
+    '.lock.release-dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+  );
+  mkdirSync(malformedRelease);
+  writeFileSync(join(malformedRelease, 'owner.json'), '{}');
+  assert.throws(
+    () => withLock(malformed.root, malformed.runId, () => {}, { retries: 1 }),
+    /LOCK_BUSY/,
+  );
+
+  const replaced = seed();
+  const dir = runDir(replaced.root, replaced.runId);
+  const token = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const release = join(dir, `.lock.release-${token}`);
+  withLock(replaced.root, replaced.runId, () => {}, {
+    tokenFactory: () => token,
+    faultAt(label) {
+      if (label === 'release:quarantined') throw new Error('simulated release crash');
+    },
+  });
+  assert.equal(existsSync(release), true);
+  assert.throws(() => withLock(replaced.root, replaced.runId, () => {}, {
+    tokenFactory: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    probePid: () => 'dead',
+    faultAt(label) {
+      if (label !== 'release:resumed-quarantine-parent-flushed') return;
+      renameSync(release, `${release}.displaced`);
+      mkdirSync(release);
+      writeFileSync(join(release, 'owner.json'), '{}');
+    },
+  }), /LOCK_RELEASE_CONFLICT/);
+});
+
+test('post-mkdir release recheck closes the scan-to-acquire race', () => {
+  const { root, runId } = seed();
+  const dir = runDir(root, runId);
+  const token = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  withLock(root, runId, () => {}, {
+    tokenFactory: () => token,
+    faultAt(label) {
+      if (label === 'release:quarantined') throw new Error('simulated release crash');
+    },
+  });
+  let parentReads = 0;
+  let entered = false;
+  assert.throws(() => withLock(root, runId, () => { entered = true; }, {
+    tokenFactory: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    probePid: () => 'alive',
+    retries: 1,
+    readdirFn(path) {
+      const names = readdirSync(path);
+      if (path !== dir) return names;
+      parentReads += 1;
+      return parentReads <= 2
+        ? names.filter(name => name !== `.lock.release-${token}`)
+        : names;
+    },
+  }), /LOCK_BUSY/);
+  assert.equal(parentReads, 3, 'the release set must be recaptured after mkdir succeeds');
+  assert.equal(entered, false);
+  assert.equal(existsSync(join(dir, '.lock')), false);
+});
+
 test('a competing command cannot age-reap an active owner during blocked synchronous work', () => {
   const { root, runId } = seed();
   let now = 1_000;

@@ -7,6 +7,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  rmdirSync,
   statSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -425,6 +426,7 @@ export function withLock(root, runId, fn, {
   mkdirFn = mkdirSync,
   renameFn = renameSync,
   removeFn = rmSync,
+  rmdirFn = rmdirSync,
   lstatFn = lstatSync,
   readFileFn = readFileSync,
   readdirFn = readdirSync,
@@ -553,11 +555,97 @@ export function withLock(root, runId, fn, {
     faultAt('reclaim:resumed-delete-parent-flushed');
   };
 
+  // A normal unlock first renames `.lock` away so it can never delete a
+  // successor created at the public lock path. That safety step briefly leaves
+  // a release quarantine beside the new lock path. While its owner is alive,
+  // keep acquisition contended until the owner completes deletion; otherwise a
+  // verified reader can capture the predecessor residue and then observe its
+  // deletion as durable-vector drift. A definitely-dead local owner permits the
+  // same exact, identity-bound cleanup used by stale-lock recovery.
+  const resumeRelease = () => {
+    const parent = path.dirname(lock);
+    const prefix = `${path.basename(lock)}.release-`;
+    let names;
+    try {
+      names = readdirFn(parent).filter(name => name.startsWith(prefix));
+    } catch {
+      return false;
+    }
+    if (names.length > 1) throw new Error('LOCK_RELEASE_CONFLICT');
+    if (names.length === 0) return false;
+    const release = join(parent, names[0]);
+    let observedOwner;
+    let observedIdentity;
+    try {
+      observedOwner = readLockOwner(join(release, 'owner.json'), readFileFn);
+      observedIdentity = captureStableFileIdentity(release, { lstatFn });
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw new Error('LOCK_RELEASE_CONFLICT');
+    }
+    if (!observedOwner) {
+      try { lstatFn(release); } catch (error) { if (error?.code === 'ENOENT') return false; }
+      return true;
+    }
+    if (names[0] !== `${prefix}${observedOwner.token}`
+      || !matchingStableFileIdentity(observedOwner.lock_identity, observedIdentity)) {
+      try { lstatFn(release); } catch (error) { if (error?.code === 'ENOENT') return false; }
+      throw new Error('LOCK_RELEASE_CONFLICT');
+    }
+    if (!inspectOwned(release, observedOwner, observedIdentity)) {
+      try { lstatFn(release); } catch (error) { if (error?.code === 'ENOENT') return false; }
+      return true;
+    }
+    let liveness = 'unknown';
+    try { liveness = probePid(observedOwner.pid); } catch { liveness = 'unknown'; }
+    if (observedOwner.hostname !== localHostname || liveness !== 'dead') return true;
+    flushDirectoryFn(parent, { platform });
+    faultAt('release:resumed-quarantine-parent-flushed');
+    if (!inspectOwned(release, observedOwner, observedIdentity)) {
+      try { lstatFn(release); } catch (error) { if (error?.code === 'ENOENT') return false; }
+      throw new Error('LOCK_RELEASE_CONFLICT');
+    }
+    try {
+      removeFn(release, { recursive: true, force: false });
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      return false;
+    }
+    faultAt('release:resumed-deleted');
+    flushDirectoryFn(parent, { platform });
+    faultAt('release:resumed-delete-parent-flushed');
+    return false;
+  };
+
   for (let i = 0; i < retries && !acquired; i++) {
     requireDeadline();
     resumeReclaim();
+    if (resumeRelease()) {
+      if (i + 1 >= retries) break;
+      const remaining = requireDeadline();
+      sleepFn(remaining === null ? backoffMs : Math.min(backoffMs, remaining));
+      continue;
+    }
     try {
       mkdirFn(lock, { mode: 0o700 });
+      // The predecessor can publish its release quarantine after the scan but
+      // before this mkdir wins. Recheck while our new lock directory is still
+      // empty; if release is in progress, rmdir only that exclusively-created
+      // empty directory and retry without exposing a callback.
+      let releaseBlocked;
+      try {
+        releaseBlocked = resumeRelease();
+      } catch (error) {
+        rmdirFn(lock);
+        throw error;
+      }
+      if (releaseBlocked) {
+        rmdirFn(lock);
+        if (i + 1 >= retries) break;
+        const remaining = requireDeadline();
+        sleepFn(remaining === null ? backoffMs : Math.min(backoffMs, remaining));
+        continue;
+      }
       acquired = true;
       break;
     } catch (error) {
