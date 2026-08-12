@@ -12,12 +12,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { makeCodexPreflightReceipt, makeCodexProcessReceipt } from './budget.mjs';
 import { contentHash } from './envelope.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { runDir } from './state.mjs';
 import { validCheckerImportDiagnostic } from './schema.mjs';
+import { flushDirectory } from './atomic-write.mjs';
 
 const RECEIPT_MAX_BYTES = 16 * 1024;
 const RECEIPT_MAX_FILES = 256;
@@ -376,7 +377,13 @@ function readProcessUsageReceiptAt(descriptor, journalPath) {
   return receipt;
 }
 
-export function markCheckerImportUnconfirmed({ receipt, descriptor, importDiagnostic } = {}) {
+export function markCheckerImportUnconfirmed({
+  receipt,
+  descriptor,
+  importDiagnostic,
+  flushDirectoryFn = flushDirectory,
+  beforeSourceUnlink = () => {},
+} = {}) {
   try {
     const exactDescriptor = validateProcessUsageReceiptDescriptor(descriptor);
     const recoveryPath = expectedCheckerRecoveryJournalPath(exactDescriptor);
@@ -388,7 +395,11 @@ export function markCheckerImportUnconfirmed({ receipt, descriptor, importDiagno
         || (stored != null && JSON.stringify(stored) !== JSON.stringify(receipt))) {
         throw new Error('recovery receipt conflict');
       }
-      if (stored != null) unlinkSync(exactDescriptor.journalPath);
+      if (stored != null) {
+        beforeSourceUnlink();
+        unlinkSync(exactDescriptor.journalPath);
+        flushDirectoryFn(dirname(recoveryPath));
+      }
       return {
         receipt: recovered.receipt,
         importDiagnostic: recovered.checker_import_diagnostic,
@@ -417,7 +428,10 @@ export function markCheckerImportUnconfirmed({ receipt, descriptor, importDiagno
     if (linked == null || JSON.stringify(linked) !== JSON.stringify(expected)) {
       throw new Error('recovery receipt validation failed');
     }
+    flushDirectoryFn(dirname(recoveryPath));
+    beforeSourceUnlink();
     unlinkSync(exactDescriptor.journalPath);
+    flushDirectoryFn(dirname(recoveryPath));
     return {
       receipt: linked.receipt,
       importDiagnostic: linked.checker_import_diagnostic,

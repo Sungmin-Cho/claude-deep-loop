@@ -34,7 +34,7 @@ import { readLines } from '../scripts/lib/integrity.mjs';
 import { dispatchReview } from '../scripts/lib/review.mjs';
 import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
+import { markCheckerImportUnconfirmed, removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
@@ -1627,6 +1627,7 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
   let heldLock = null;
   let first;
   const diagnostic = importDiagnostic('RAW_IMPORT_SECRET_7f19');
+  const recoveryBarriers = [];
   try {
     first = driveHeadlessRun({
       ...h.baseOptions,
@@ -1635,6 +1636,11 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
       timeoutMs: 20_000,
       attemptIdFactory: () => attemptId,
       checkerRunFn: options => runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker }),
+      markCheckerRecoveryFn: options => markCheckerImportUnconfirmed({
+        ...options,
+        flushDirectoryFn() { recoveryBarriers.push('parent-flush'); },
+        beforeSourceUnlink() { recoveryBarriers.push('source-unlink'); },
+      }),
       checkerImportFn: () => {
         heldLock = holdKernelLockUntilReleased(h.root, h.runId);
         return { ok: false, reason: 'checker-import-failed', import_diagnostic: diagnostic };
@@ -1646,6 +1652,7 @@ function assertUnconfirmedImportWithoutProofBlocksOnNextTick() {
   assert.equal(first.action, 'checker-import-unconfirmed', JSON.stringify(first));
   assert.equal(first.recorded, false);
   assert.deepEqual(first.import_diagnostic, diagnostic);
+  assert.deepEqual(recoveryBarriers, ['parent-flush', 'source-unlink', 'parent-flush']);
   const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
   assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker-unconfirmed.json')).length, 1);
   const recoveryName = readdirSync(receiptDir).find(name => name.endsWith('-checker-unconfirmed.json'));

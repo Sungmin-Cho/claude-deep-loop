@@ -401,3 +401,13 @@ test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atom
   assert.equal(receipt.external_observation.observer_session_id, fx.observation.observer_session_id);
   assert.deepEqual(receipt.envelope, fx.envelope);
 });
+
+test('STEP0-3 verifier receipt publication flushes its parent before and after temp unlink', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  const body = source.slice(source.indexOf('function atomicallyCreate('), source.indexOf('\nfunction main()', source.indexOf('function atomicallyCreate(')));
+  const link = body.indexOf('linkSync(temporary, path)');
+  const firstFlush = body.indexOf('flushDirectory(dirname(path))', link);
+  const unlink = body.indexOf('unlinkSync(temporary)', firstFlush);
+  const secondFlush = body.indexOf('flushDirectory(dirname(path))', unlink);
+  assert.equal(link >= 0 && link < firstFlush && firstFlush < unlink && unlink < secondFlush, true);
+});

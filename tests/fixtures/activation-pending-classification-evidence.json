@@ -4835,7 +4835,7 @@
             "preflight-receipt-journal.mjs#listPreflightUsageReceipts"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:476"
+            "scripts/lib/preflight-receipt-journal.mjs:490"
           ]
         }
       ]
@@ -4853,7 +4853,7 @@
             "preflight-receipt-journal.mjs#listProcessUsageReceipts"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:532"
+            "scripts/lib/preflight-receipt-journal.mjs:546"
           ]
         }
       ]
@@ -4871,7 +4871,7 @@
             "preflight-receipt-journal.mjs#makeProcessUsageReceiptDescriptor"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:156"
+            "scripts/lib/preflight-receipt-journal.mjs:157"
           ]
         }
       ]
@@ -4889,7 +4889,7 @@
             "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:379"
+            "scripts/lib/preflight-receipt-journal.mjs:380"
           ]
         }
       ]
@@ -4907,7 +4907,7 @@
             "preflight-receipt-journal.mjs#readPreflightUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:270"
+            "scripts/lib/preflight-receipt-journal.mjs:271"
           ]
         }
       ]
@@ -4925,7 +4925,7 @@
             "preflight-receipt-journal.mjs#readProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:337"
+            "scripts/lib/preflight-receipt-journal.mjs:338"
           ]
         }
       ]
@@ -4943,7 +4943,7 @@
             "preflight-receipt-journal.mjs#removeProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:609"
+            "scripts/lib/preflight-receipt-journal.mjs:623"
           ]
         }
       ]
@@ -4961,7 +4961,7 @@
             "preflight-receipt-journal.mjs#validatePreflightUsageReceiptDescriptor"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:72"
+            "scripts/lib/preflight-receipt-journal.mjs:73"
           ]
         }
       ]
@@ -4979,7 +4979,7 @@
             "preflight-receipt-journal.mjs#validateProcessUsageReceiptDescriptor"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:112"
+            "scripts/lib/preflight-receipt-journal.mjs:113"
           ]
         }
       ]
@@ -4997,7 +4997,7 @@
             "preflight-receipt-journal.mjs#writePreflightUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:295"
+            "scripts/lib/preflight-receipt-journal.mjs:296"
           ]
         }
       ]
@@ -5015,7 +5015,7 @@
             "preflight-receipt-journal.mjs#writeProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:433"
+            "scripts/lib/preflight-receipt-journal.mjs:447"
           ]
         }
       ]

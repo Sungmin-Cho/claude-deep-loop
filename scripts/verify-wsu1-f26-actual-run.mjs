@@ -6,6 +6,7 @@ import {
   readdirSync, realpathSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { flushDirectory } from './lib/atomic-write.mjs';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -257,7 +258,9 @@ function atomicallyCreate(path, bytes) {
   const fd = openSync(temporary, 'wx', 0o600);
   try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
   try { linkSync(temporary, path); } catch { unlinkSync(temporary); fail('WSU1_F26_RECEIPT_EXISTS'); }
+  flushDirectory(dirname(path));
   unlinkSync(temporary);
+  flushDirectory(dirname(path));
 }
 
 function main() {
