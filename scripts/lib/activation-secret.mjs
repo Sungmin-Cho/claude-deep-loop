@@ -41,8 +41,8 @@ function stateRoot({ platform, env, homedirFn, testStateRoot }) {
 
 const ACL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-$target = $args[0]
-$kind = $args[1]
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json; $keys = @($payload.PSObject.Properties.Name); if ($keys.Count -ne 2 -or $keys -notcontains 'path' -or $keys -notcontains 'kind') { exit 40 }
+$target = $payload.path; $kind = $payload.kind; if ($target -isnot [string] -or $target.Length -eq 0 -or $kind -notin @('directory', 'file')) { exit 40 }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = Get-Acl -LiteralPath $target
 $acl.SetAccessRuleProtection($true, $false)
@@ -57,7 +57,7 @@ if ((New-Object System.Security.Principal.NTAccount($check.Owner)).Translate([Sy
 $allow = @($check.Access | Where-Object { $_.AccessControlType -eq 'Allow' })
 if ($allow.Count -ne 1 -or $allow[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or (($allow[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq 0)) { exit 42 }
 exit 0
-`;
+`; const ACL_ENCODED_COMMAND = Buffer.from(ACL_SCRIPT, 'utf16le').toString('base64');
 
 function trustedWindowsPowerShell({ env, lstatFn, realpathFn }) {
   const systemRoot = env.SystemRoot;
@@ -87,8 +87,8 @@ function trustedWindowsPowerShell({ env, lstatFn, realpathFn }) {
 
 function defaultWindowsAcl({ path, kind }, execute, executable) {
   const result = execute(executable, [
-    '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', ACL_SCRIPT, path, kind,
-  ], { shell: false, stdio: 'ignore', windowsHide: true });
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', ACL_ENCODED_COMMAND,
+  ], { shell: false, input: JSON.stringify({ path, kind }), stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
   return result.status === 0 && !result.error;
 }
 

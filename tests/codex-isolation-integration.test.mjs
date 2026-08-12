@@ -1497,10 +1497,13 @@ test('checker child uses the run-owned capture when trusted cache bytes are atom
   const checkerEntry = h.entries.at(-1);
   const prompt = checkerEntry.stdin;
   const captureRoot = join(runDir(h.root, h.runId), 'checker-captures');
-  assert.match(prompt, new RegExp(`${captureRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[/\\\\][a-f0-9]{64}[/\\\\]SKILL\\.md`));
-  assert.equal(prompt.includes(sourceSkill), false, 'checker child must not reopen the mutable source cache');
   const captures = readdirSync(captureRoot);
   assert.equal(captures.length, 1);
+  const capturedSkill = join(captureRoot, captures[0], 'SKILL.md');
+  assert.equal(prompt.includes(JSON.stringify(capturedSkill)), true,
+    'checker prompt must quote the exact run-owned capture path');
+  assert.equal(prompt.includes(JSON.stringify(sourceSkill)), false,
+    'checker child must not reopen the mutable source cache');
   assert.deepEqual(readdirSync(join(captureRoot, captures[0])).sort(), ['SKILL.md', 'capture.json', 'plugin.json']);
 });
 

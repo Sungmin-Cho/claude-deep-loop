@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { baselineNode20RegularFiles } from './helpers/baseline-node20-walk.mjs';
 import { createFileSymlink } from './helpers/fs-fixtures.mjs';
 
@@ -13,6 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const LINK_ONLY_EXTRACTOR = join(HERE, 'helpers', 'wsu1-f26-link-only-extractor.mjs');
 const STATIC_ANALYZER = join(HERE, 'helpers', 'wsu1-f26-static-analyzer.mjs');
+const STATIC_ANALYZER_URL = pathToFileURL(STATIC_ANALYZER).href;
 const FIXTURES = join(HERE, 'fixtures');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const byteSort = (left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right));
@@ -23,6 +24,11 @@ test('STEP0-3 symlink polarity uses the centralized portable fixture helper', ()
   const source = readFileSync(fileURLToPath(import.meta.url), 'utf8');
   assert.doesNotMatch(source, new RegExp(`\\b${'symlink'}${'Sync'}\\b`));
   assert.match(source, /createFileSymlink\(join\(evals, 'dep\.mjs'\), join\(evals, 'linked\.mjs'\)\)/);
+  assert.doesNotMatch(source, /await import\(STATIC_ANALYZER\)/,
+    'Windows drive paths must be converted to file URLs before dynamic import');
+  assert.doesNotMatch(source, /lastIndexOf\('\/'\)/,
+    'temporary fixture names must use the native path implementation');
+  assert.equal(readFileSync(join(ROOT, '.gitattributes'), 'utf8'), '* text=auto eol=lf\n');
 });
 
 function exactKeys(value, keys) {
@@ -60,7 +66,7 @@ test('STEP0-3 guard 4 link-only extractor reports every scripts namespace withou
   assert.equal(output.failures.length, 0);
   const linkedIds = output.files.flatMap((file) =>
     file.export_names.map((name) => `${file.module}#${name}`)).sort(byteSort);
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const parsed = analyzer.extractExportSurface({ files: recursiveFiles(join(ROOT, 'scripts')) });
   assert.deepEqual(linkedIds, parsed.raw_ids);
 });
@@ -88,9 +94,9 @@ test('STEP0-3 link-only extractor links repo-contained mjs dependencies but reje
   assert.equal(linked.status, 0, linked.stderr);
   assert.equal(JSON.parse(linked.stdout).raw_export_name_count, 1);
 
-  const outside = join(dirname(scratch), `${scratch.slice(scratch.lastIndexOf('/') + 1)}-outside.mjs`);
+  const outside = join(dirname(scratch), `${basename(scratch)}-outside.mjs`);
   writeFileSync(outside, 'export const escaped = true;\n');
-  writeFileSync(join(scripts, 'main.mjs'), `export { escaped } from '../../${outside.slice(outside.lastIndexOf('/') + 1)}';\n`);
+  writeFileSync(join(scripts, 'main.mjs'), `export { escaped } from '../../${basename(outside)}';\n`);
   const escaped = run(scripts);
   assert.notEqual(escaped.status, 0);
   assert.match(escaped.stderr, /IMPORT_OUTSIDE_REPOSITORY/);
@@ -116,7 +122,7 @@ test('STEP0-3 local design auxiliary check matches all four pinned seed spans', 
 });
 
 test('STEP0-3 rule B and export parser preserve all nine live reversal polarities', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const files = ['mut01.mjs', 'mut12.mjs', 'mut13.mjs', 'mut14.mjs', 'mut15.mjs',
     'mut18.mjs', 'mut19.mjs', 'mut20.mjs'].map((name) => join(FIXTURES, name));
   const result = analyzer.extractExportSurface({ files });
@@ -136,7 +142,7 @@ test('STEP0-3 rule B and export parser preserve all nine live reversal polaritie
 });
 
 test('STEP0-3 guard 1 rejects the approved non-mjs reversal instead of silently shrinking C', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const result = analyzer.extractExportSurface({ files: [join(FIXTURES, 'mut16.js')] });
   assert.deepEqual(result.failures, [{
     guard: 1,
@@ -146,7 +152,7 @@ test('STEP0-3 guard 1 rejects the approved non-mjs reversal instead of silently 
 });
 
 test('STEP0-3 static export parser matches the measured 394 raw and 386 canonical surface', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const result = analyzer.extractExportSurface({ files: recursiveFiles(join(ROOT, 'scripts')) });
   assert.deepEqual(result.failures, []);
   assert.equal(result.raw_ids.length, 394);
@@ -154,7 +160,7 @@ test('STEP0-3 static export parser matches the measured 394 raw and 386 canonica
 });
 
 test('STEP0-3 live overlay closes the measured current delta with a disjoint 386-row partition', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
@@ -256,7 +262,7 @@ test('STEP0-3 live overlay closes the measured current delta with a disjoint 386
 });
 
 test('STEP0-3 every current-delta row is required and rejects a wrong category', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const begin = '<!-- F26-LIVE-JSON-BEGIN -->';
@@ -288,7 +294,7 @@ test('STEP0-3 every current-delta row is required and rejects a wrong category',
 });
 
 test('STEP0-3 structural exceptions require their closed source preconditions', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const cases = [
     {
       id: 'budget.mjs#settleTerminalCodexMakerCost',
@@ -390,7 +396,7 @@ test('STEP0-3 structural exceptions require their closed source preconditions', 
 });
 
 test('STEP0-3 call graph recomputes reachability and same-lock dominance for every live row', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
@@ -485,7 +491,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
 });
 
 test('STEP0-3 higher-order authorize gates dominate writes and gate-removal mutants fail closed', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const analyze = (name, source) => {
     const scratch = mkdtempSync(join(tmpdir(), 'wsu1-authorize-boundary-'));
     const file = join(scratch, name);
@@ -522,7 +528,7 @@ test('STEP0-3 higher-order authorize gates dominate writes and gate-removal muta
 });
 
 test('STEP0-3 dual pending-block proof rejects missing, misplaced, conditional, and partial guards', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const liveRow = (id) => ({ rows: new Map([[id, {
     classification: 'L', reason: 'leasecheck-dominated',
   }]]) });
@@ -579,7 +585,7 @@ test('STEP0-3 dual pending-block proof rejects missing, misplaced, conditional, 
 });
 
 test('STEP0-3 analyzer generically follows nullish default dependency aliases', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const scratch = mkdtempSync(join(tmpdir(), 'wsu1-f26-default-alias-'));
   const wrapper = join(scratch, 'default-alias.mjs');
   writeFileSync(wrapper, `import { appendAnchored } from '${join(ROOT, 'scripts', 'lib', 'integrity.mjs')}';\n`
@@ -602,7 +608,7 @@ test('STEP0-3 analyzer generically follows nullish default dependency aliases', 
 });
 
 test('STEP0-3 repair gateway recursion rejects stale damage-repair no-path evidence', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const scratch = mkdtempSync(join(tmpdir(), 'wsu1-f26-repair-gateway-'));
   const integrity = join(scratch, 'integrity.mjs');
   const state = join(scratch, 'state.mjs');
@@ -641,7 +647,7 @@ test('STEP0-3 repair gateway recursion rejects stale damage-repair no-path evide
 });
 
 test('STEP0-3 W1 and W2 inspect direct calls or references for every E2-E5/E7/E8 row', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const result = analyzer.analyzeClassification({
     files: [join(FIXTURES, 'mut22.mjs')],
     live: {
@@ -687,7 +693,7 @@ test('STEP0-3 W1 and W2 inspect direct calls or references for every E2-E5/E7/E8
 });
 
 test('STEP0-3 reversal mutants expose non-dominance and false structural exception', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const nondominating = analyzer.analyzeClassification({
     files: [join(FIXTURES, 'mut21.mjs')],
     live: { rows: new Map([['mut21.mjs#nondominatingSurface', {
@@ -723,7 +729,7 @@ test('STEP0-3 reversal mutants expose non-dominance and false structural excepti
 });
 
 test('STEP0-3 unsupported dynamic call syntax fails closed instead of being skipped', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const scratch = mkdtempSync(join(tmpdir(), 'wsu1-f26-unsupported-'));
   const file = join(scratch, 'unsupported.mjs');
   writeFileSync(file, 'export function uncertain(o) { return o["append" + "Anchored"](); }\n');
@@ -738,7 +744,7 @@ test('STEP0-3 unsupported dynamic call syntax fails closed instead of being skip
 });
 
 test('STEP0-3 tracked evidence matrix is canonical and exactly matches source recalculation', async () => {
-  const analyzer = await import(STATIC_ANALYZER);
+  const analyzer = await import(STATIC_ANALYZER_URL);
   const seedBytes = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'));
   const liveBytes = readFileSync(join(FIXTURES, 'activation-pending-classification.md'));
   const evidence = JSON.parse(readFileSync(

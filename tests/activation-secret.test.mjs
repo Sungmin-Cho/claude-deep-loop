@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,8 +22,25 @@ function sha256(value) {
 }
 
 function linuxDeps(stateRoot, overrides = {}) {
+  const portableWindows = process.platform === 'win32';
+  const systemRoot = 'C:\\Windows';
+  const executable = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
   return {
-    platform: 'linux', env: { XDG_STATE_HOME: stateRoot }, homedirFn: () => '/unused',
+    platform: portableWindows ? 'win32' : 'linux',
+    env: portableWindows
+      ? { SystemRoot: systemRoot, LOCALAPPDATA: stateRoot }
+      : { XDG_STATE_HOME: stateRoot },
+    homedirFn: () => '/unused',
+    testStateRoot: portableWindows ? stateRoot : undefined,
+    windowsExecutableLstatFn(path) {
+      return {
+        isDirectory: () => path === systemRoot,
+        isFile: () => path === executable,
+        isSymbolicLink: () => false,
+      };
+    },
+    windowsExecutableRealpathFn: path => path,
+    windowsAclFn: portableWindows ? () => true : undefined,
     canonicalProjectRootFn: value => value,
     randomBytesFn: () => Buffer.alloc(32, 0x5a),
     activateLeaseFn: (_root, _runId, options) => {
@@ -49,9 +67,34 @@ function windowsDeps(stateRoot, overrides = {}) {
       };
     },
     windowsExecutableRealpathFn: path => path,
+    windowsAclFn: undefined,
     ...overrides,
   });
 }
+
+test('Windows ACL execution uses one fixed encoded program and keeps the target out of argv', () => {
+  const source = readFileSync(new URL('../scripts/lib/activation-secret.mjs', import.meta.url), 'utf8');
+  assert.match(source, /'-EncodedCommand', ACL_ENCODED_COMMAND/);
+  assert.doesNotMatch(source, /'-Command', ACL_SCRIPT, path, kind/);
+
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-win-encoded-'));
+  const calls = [];
+  const deps = windowsDeps(stateRoot, {
+    windowsExecutor(command, args, options) {
+      calls.push({ command, args, options });
+      return { status: 1 };
+    },
+  });
+  assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
+    error => error?.message === 'ACTIVATION_SECRET_UNSAFE');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.includes('-EncodedCommand'), true);
+  assert.equal(calls[0].args.some(arg => arg === stateRoot || arg.includes(stateRoot)), false);
+  assert.deepEqual(JSON.parse(calls[0].options.input), {
+    path: join(realpathSync(stateRoot), 'deep-loop'), kind: 'directory',
+  });
+  assert.deepEqual(calls[0].options.stdio, ['pipe', 'ignore', 'ignore']);
+});
 
 test('stored activation publishes one opaque private exact-schema secret and reuses it', () => {
   const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-state-'));
@@ -78,8 +121,10 @@ test('stored activation publishes one opaque private exact-schema secret and reu
   for (const raw of [ROOT, RUN, BINDING.owner, BINDING.attemptId, seen[0]]) {
     assert.equal(names[0].includes(raw), false);
   }
-  assert.equal(lstatSync(directory).mode & 0o777, 0o700);
-  assert.equal(lstatSync(join(directory, names[0])).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    assert.equal(lstatSync(directory).mode & 0o777, 0o700);
+    assert.equal(lstatSync(join(directory, names[0])).mode & 0o777, 0o600);
+  }
   assert.deepEqual(JSON.parse(readFileSync(join(directory, names[0]), 'utf8')), {
     schema_version: '1.0',
     binding: {
@@ -110,12 +155,16 @@ test('stored activation defers every private-store write until the kernel commit
 });
 
 test('stored activation rejects malformed, mismatched, unsafe and symlink entries without replacement', () => {
-  for (const [label, prepare, code] of [
+  const cases = [
     ['malformed', path => writeFileSync(path, '{', { mode: 0o600 }), 'ACTIVATION_SECRET_MALFORMED'],
     ['extra key', path => writeFileSync(path, JSON.stringify({ schema_version: '1.0', binding: {}, token: 'x', extra: true }), { mode: 0o600 }), 'ACTIVATION_SECRET_MALFORMED'],
-    ['unsafe mode', path => { writeFileSync(path, '{}', { mode: 0o644 }); chmodSync(path, 0o644); }, 'ACTIVATION_SECRET_UNSAFE'],
     ['symlink', path => { const target = `${path}.outside`; writeFileSync(target, '{}'); createFileSymlink(target, path); }, 'ACTIVATION_SECRET_UNSAFE'],
-  ]) {
+  ];
+  if (process.platform !== 'win32') {
+    cases.splice(2, 0,
+      ['unsafe mode', path => { writeFileSync(path, '{}', { mode: 0o644 }); chmodSync(path, 0o644); }, 'ACTIVATION_SECRET_UNSAFE']);
+  }
+  for (const [label, prepare, code] of cases) {
     const stateRoot = mkdtempSync(join(tmpdir(), `dl-secret-${label.replace(' ', '-')}-`));
     const directory = join(stateRoot, 'deep-loop', 'activation-secrets');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -170,7 +219,7 @@ test('Windows ACL command absence, failure, and overbroad verification fail clos
     assert.equal(calls[0].command,
       'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     assert.equal(calls[0].options.shell, false);
-    assert.equal(calls[0].options.stdio, 'ignore');
+    assert.deepEqual(calls[0].options.stdio, ['pipe', 'ignore', 'ignore']);
     assert.equal(calls[0].args.some(arg => typeof arg === 'string' && arg.includes('WlpaWlpa')), false,
       `${label}: token must not enter process arguments`);
   }
