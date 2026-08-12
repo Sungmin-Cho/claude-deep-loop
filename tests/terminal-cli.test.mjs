@@ -556,13 +556,16 @@ test('CLI lease acquire rejects unknown and positional arguments before project-
   }
 });
 
-test('CLI lease acquire grammar gate is structurally before root and run resolution', () => {
+test('CLI lease acquire and reap grammar gates are structurally before root and run resolution', () => {
   const source = readFileSync(CLI, 'utf8');
   const leaseRoute = source.slice(source.indexOf('lease: async (a) => {'), source.indexOf("if (verb === 'check')"));
-  const grammar = leaseRoute.indexOf("if (verb === 'acquire')");
-  assert.notEqual(grammar, -1);
-  assert.ok(grammar < leaseRoute.indexOf('const root = rootOf(f);'));
-  assert.doesNotMatch(leaseRoute.slice(0, grammar), /rootOf\(|runIdOf\(/);
+  const root = leaseRoute.indexOf('const root = rootOf(f);');
+  for (const verb of ['acquire', 'reap']) {
+    const grammar = leaseRoute.indexOf(`if (verb === '${verb}')`);
+    assert.notEqual(grammar, -1);
+    assert.ok(grammar < root, `${verb} grammar must precede root selection`);
+    assert.doesNotMatch(leaseRoute.slice(0, grammar), /rootOf\(|runIdOf\(/);
+  }
 });
 
 test('CLI lease acquire rejects duplicate identity flags in either ordering without mutation', () => {
@@ -588,6 +591,24 @@ test('CLI lease acquire rejects duplicate identity flags in either ordering with
       assert.match(result.stderr, /USAGE:/);
       assert.deepEqual(terminalDurableBytes(root, runId), before, `${name}=${values.join(',')}`);
     }
+  }
+});
+
+test('CLI lease acquire rejects duplicate project-root in either ordering without mutation', () => {
+  for (const reverse of [false, true]) {
+    const { root, runId, owner, gen } = seedTerminal('running');
+    const alternate = join(root, 'nonexistent-project-root');
+    const roots = reverse ? [alternate, root] : [root, alternate];
+    const before = terminalDurableBytes(root, runId);
+    const result = spawnSync(process.execPath, [
+      CLI, 'lease', 'acquire', '--owner', owner, '--generation', String(gen),
+      '--runtime', 'claude', '--attempt-id', 'ACQUIREPROJECTROOTATTEMPT',
+      '--project-root', roots[0], '--project-root', roots[1], '--run-id', runId,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /USAGE:/);
+    assert.deepEqual(terminalDurableBytes(root, runId), before);
+    assert.equal(existsSync(alternate), false);
   }
 });
 
@@ -1304,6 +1325,26 @@ test('SLICE-007 CLI lease reap rejects the --now argument itself without mutatio
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(result.stderr, /USAGE: lease reap does not accept --now/);
   assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+});
+
+test('CLI lease reap rejects duplicate project-root before malformed generation in either ordering', () => {
+  for (const duplicateFirst of [false, true]) {
+    const f = seedActivationCli();
+    const alternate = join(f.root, 'nonexistent-project-root');
+    const duplicateRoot = ['--project-root', f.root, '--project-root', alternate];
+    const malformedGeneration = ['--generation', 'bad!'];
+    const ordered = duplicateFirst
+      ? [...duplicateRoot, ...malformedGeneration]
+      : [...malformedGeneration, ...duplicateRoot];
+    const before = terminalDurableBytes(f.root, f.runId);
+    const result = spawnSync(process.execPath, [
+      CLI, 'lease', 'reap', '--owner', f.owner, ...ordered, '--run-id', f.runId,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /USAGE:/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+    assert.equal(existsSync(alternate), false);
+  }
 });
 
 test('SLICE-007 CLI lease reap maps stale owner fences to exit 3 without mutation', () => {

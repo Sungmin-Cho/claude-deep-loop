@@ -1244,6 +1244,17 @@ const handlers = {
         return 2;
       }
     }
+    if (verb === 'reap') {
+      if (Object.hasOwn(f, 'now')) {
+        error('USAGE: lease reap does not accept --now');
+        return 2;
+      }
+      const reapFlags = new Set(['owner', 'generation', 'project-root', 'run-id']);
+      if (!knownFlagVocabulary(rest, reapFlags) || !exactFlagGrammar(rest, reapFlags)) {
+        error('USAGE: --owner/--generation and every lease reap flag must appear exactly once');
+        return 2;
+      }
+    }
     const root = rootOf(f);
     if (verb === 'check') {
       const exactRunId = exactReadRunId(f); if (!exactRunId) return exactReadFailureCode(f);
@@ -1378,21 +1389,8 @@ const handlers = {
       }
     }
     if (verb === 'reap') {
-      if (Object.hasOwn(f, 'now')) {
-        error('USAGE: lease reap does not accept --now');
-        return 2;
-      }
-      const reapFlags = new Set(['owner', 'generation', 'project-root', 'run-id']);
-      if (!knownFlagVocabulary(rest, reapFlags)) {
-        error('USAGE: lease reap accepts known flags only');
-        return 2;
-      }
       const fence = parseNewLeaseFenceArgs(f, rest);
       if (!fence.ok) { error(fence.message); return fence.code; }
-      if (!exactFlagGrammar(rest, reapFlags)) {
-        error('USAGE: lease reap accepts each known flag exactly once');
-        return 2;
-      }
       const runId = runIdOf(root, f);
       const { owner, generation } = fence;
       try {
