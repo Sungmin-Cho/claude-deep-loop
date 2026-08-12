@@ -5,6 +5,29 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.16.0] — 2026-08-12
+
+### Added
+
+- **reviewer route가 운영상 실패한 run에 사람 전용 복구 경로를 열었다.** `review.flags`는 설계상
+  `state patch`로 바꿀 수 없어, checker를 abandon해도 후속 checker가 같은 고장난 route 위에서
+  태어나 run이 벽돌이 되었다. lease-fenced `review configure --profile <p> --source-checker <id>
+  --confirm`은 폐쇄형 프로필로 flags를 정확히 한 번 교체한다. 커널은 durable reviewer가
+  `deep-review-loop`이고 최신 checker가 done maker에 바인딩된 `deep-review` 에피소드로
+  `operational-review-failure:` 사유로 abandoned인지 확인하며, 그 권한을 한 번만 소비하고,
+  non-terminal checker가 하나라도 있으면 거부한다. 프로필은 고정 argv로만 확장되어 임의
+  provider/model 입력을 받지 않는다.
+- **agency-preserving fixture 평가 기반을 추가했다.** preflight와 분리해 실행하는 오프라인
+  fixture bank로, `npm run eval:fixture -- --out ./evals/results/local --now <ISO>`로 돌린다.
+
+### Fixed
+
+- **`dispatchReview`가 stale routing으로 checker를 만들지 않는다.** 스냅샷 이후 checker 생성
+  사이에 review 설정이 바뀌면 같은 락 트랜잭션 안에서 `REVIEW_CONFIG_CHANGED`로 dispatch를
+  거부한다.
+- **릴리즈 절차를 상주 guide에서 분리했다.** `AGENTS.md`는 릴리즈 문서를 앵커된 플러그인 경로로
+  가리키기만 하고, 승인 게이트는 불변식 5로 남는다.
+
 ## [1.15.0] — 2026-08-10
 
 ### Added
