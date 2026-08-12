@@ -1302,6 +1302,10 @@ const handlers = {
         error('USAGE: lease activate accepts known flags only; stored-token accepts binding flags only');
         return 2;
       }
+      if (!exactFlagGrammar(rest, activationFlags)) {
+        error('USAGE: --owner/--generation and every lease activate flag must appear exactly once; stored-token accepts binding flags only');
+        return 2;
+      }
       const fence = parseNewLeaseFenceArgs(f, rest);
       if (!fence.ok) { error(fence.message); return fence.code; }
       const { owner, generation } = fence;
@@ -1323,10 +1327,6 @@ const handlers = {
           error('USAGE: --stored-token must be bare, appear exactly once, and exclude --activation-token');
           return 2;
         }
-      }
-      if (!exactFlagGrammar(rest, activationFlags)) {
-        error('USAGE: lease activate accepts each known flag exactly once; stored-token accepts binding flags only');
-        return 2;
       }
       const runId = runIdOf(root, f);
       if (storedOccurrences > 0) {

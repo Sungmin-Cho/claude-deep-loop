@@ -789,12 +789,12 @@ function activateCli(f, extra = [], owner = f.owner, generation = f.gen, runtime
 
 function storedActivateCli(f, {
   root = f.root, owner = f.owner, generation = f.gen, runtime = 'claude',
-  attemptId = f.attemptId, privateHome, extra = [],
+  attemptId = f.attemptId, attemptArgs = ['--attempt-id', attemptId], privateHome, extra = [],
 } = {}) {
   const home = privateHome || mkdtempSync(join(tmpdir(), 'dl-stored-fence-home-'));
   const result = spawnSync(process.execPath, [
     CLI, 'lease', 'activate', '--stored-token', '--owner', owner,
-    '--generation', String(generation), '--runtime', runtime, '--attempt-id', attemptId,
+    '--generation', String(generation), '--runtime', runtime, ...attemptArgs,
     '--run-id', f.runId, '--project-root', root, ...extra,
   ], {
     encoding: 'utf8',
@@ -1045,6 +1045,27 @@ test('stored-token activation rejects duplicate binding flags before private pub
   assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
   assert.equal(existsSync(privateActivationRoot(result.privateHome)), false);
 });
+
+for (const mode of ['raw-token', 'stored-token']) {
+  for (const [ordering, attemptArgs] of [
+    ['valid then invalid', ['--attempt-id', 'CLIACTIVATIONATTEMPT', '--attempt-id', 'bad!']],
+    ['invalid then valid', ['--attempt-id', 'bad!', '--attempt-id', 'CLIACTIVATIONATTEMPT']],
+  ]) {
+    test(`${mode} activation classifies duplicate attempt-id ${ordering} as usage before value validation`, () => {
+      const f = seedActivationCli();
+      const before = terminalDurableBytes(f.root, f.runId);
+      const result = mode === 'raw-token'
+        ? activateCli(f, [...attemptArgs, '--activation-token', 'CliDuplicateAttemptToken_01'])
+        : storedActivateCli(f, { attemptArgs });
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(result.stderr, /USAGE:/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+      if (mode === 'stored-token') {
+        assert.equal(existsSync(privateActivationRoot(result.privateHome)), false);
+      }
+    });
+  }
+}
 
 test('stored-token activation preserves owner, generation, and runtime fences as exit 3 without mutation', () => {
   for (const [label, overrides, expected] of [
