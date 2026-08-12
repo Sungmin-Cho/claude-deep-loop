@@ -487,6 +487,20 @@ function diagnosis(candidateRoot, runId, snapshot, sampledEvidence = null) {
 // immutable capture, then the complete run vector is recaptured before the
 // bounded result is returned. A receipt/lock/tree drift therefore discards the
 // diagnosis instead of classifying a stale snapshot.
+// A held lock is an ordinary transient, not evidence about the durable bytes: the
+// caller never got far enough to verify anything. Classifying it as `integrity-invalid`
+// tells an operator their state may be damaged when it is merely in use, and gives an
+// automated caller no signal that retrying is the answer. Mirrors the `lease acquire`
+// contention envelope (`retryable: true`) rather than inventing a second spelling.
+const contentionDiscard = phase => ({
+  ok: false,
+  kind: 'lock-busy',
+  retryable: true,
+  phase,
+  partial_discarded: true,
+});
+const isContention = error => /^LOCK_BUSY(?::|$)/.test(String(error?.message || error));
+
 export function diagnoseVerifiedProjectRoot(candidateRoot, runId, options = {}) {
   const candidateCanonical = canonicalCandidate(candidateRoot);
   const captureOptions = options.captureOptions || {};
@@ -497,6 +511,7 @@ export function diagnoseVerifiedProjectRoot(candidateRoot, runId, options = {}) 
     if (/^(?:PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(String(error?.message || error))) {
       throw error;
     }
+    if (isContention(error)) return contentionDiscard('run-snapshot');
     return { ok: false, kind: 'integrity-invalid', phase: 'run-snapshot', partial_discarded: true };
   }
   if (!first?.ok) return first;
@@ -510,12 +525,14 @@ export function diagnoseVerifiedProjectRoot(candidateRoot, runId, options = {}) 
     if (/^(?:PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(String(error?.message || error))) {
       throw error;
     }
+    if (isContention(error)) return contentionDiscard('diagnosis');
     return { ok: false, kind: 'integrity-invalid', phase: 'diagnosis', partial_discarded: true };
   }
   let second;
   try {
     second = captureVerifiedRootRecoverySnapshot(candidateCanonical, runId, captureOptions);
-  } catch {
+  } catch (error) {
+    if (isContention(error)) return contentionDiscard('diagnosis-recapture');
     return { ok: false, kind: 'integrity-invalid', phase: 'diagnosis-recapture', partial_discarded: true };
   }
   if (!second?.ok) return second;
