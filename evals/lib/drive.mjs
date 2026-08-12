@@ -39,7 +39,7 @@ function fixtureInput(root, fixturePath) {
   return readFileSync(candidate, 'utf8');
 }
 
-export function runStep(root, runId, step, bindings = {}) {
+export function runStep(root, runId, step, bindings = {}, { childEnv = {} } = {}) {
   if (!step || !Array.isArray(step.cmd) || step.cmd.length === 0) throw new Error('STEP_INVALID');
   const bound = { ...bindings, RUN_ID: runId, ROOT: root };
   const command = flatten(substitutePlaceholders(step.cmd, bound));
@@ -59,7 +59,7 @@ export function runStep(root, runId, step, bindings = {}) {
     if (command[0] !== 'init-run' && !command.includes('--run-id')) argv.push('--run-id', runId);
   }
   const result = spawnSync(process.execPath, argv, {
-    cwd: root, input, env: evalChildEnv(),
+    cwd: root, input, env: evalChildEnv({ ...process.env, ...childEnv }),
     encoding: 'utf8', timeout: 30_000, maxBuffer: EVAL_IO_MAX_BYTES,
   });
   const stdout = String(result.stdout || '');

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { seedFixture, materializeSetupFiles, applyFixtureActions } from './fixture.mjs';
 import { runStep } from './drive.mjs';
@@ -32,7 +33,7 @@ function invoke(context, cmd, { stdin, allowFailure = false } = {}) {
   const result = runStep(context.root, context.runId, step, {
     generation: context.generation,
     priorOwner: context.priorOwner,
-  });
+  }, { childEnv: context.childEnv });
   if (!allowFailure && result.exit !== 0) {
     throw new Error(`SCENARIO_SETUP_FAILED: ${cmd.slice(0, 2).join(' ')} exit=${result.exit} ${result.stderr.trim()}`);
   }
@@ -107,7 +108,19 @@ function setupContext(task, now) {
   // subagent-checker path, so a clean CI checkout does not need deep-review's
   // project marker or plugin cache merely to run the deterministic scenario.
   const seeded = seedFixture({ now, goal: `eval:${task.id}`, reviewer: 'subagent-checker' });
-  return { ...seeded, owner: seeded.runId, generation: 1, priorOwner: seeded.runId };
+  const userState = mkdtempSync(join(tmpdir(), 'deep-loop-eval-user-state-'));
+  return {
+    ...seeded,
+    owner: seeded.runId,
+    generation: 1,
+    priorOwner: seeded.runId,
+    childEnv: {
+      HOME: join(userState, 'home'),
+      USERPROFILE: join(userState, 'profile'),
+      XDG_STATE_HOME: join(userState, 'xdg'),
+      LOCALAPPDATA: join(userState, 'localappdata'),
+    },
+  };
 }
 
 function expectedFor(task) {
@@ -279,7 +292,7 @@ function finalCommand(task, context) {
     case 'allow-lease-chain-109':
       return [
         'lease', 'acquire', '--owner', '01KZMFG500000000000000001C', '--generation', '2',
-        '--runtime', 'codex', '--now', NOW, ...scope,
+        '--runtime', 'codex', '--attempt-id', 'EVALLEASEATTEMPT02', '--now', NOW, ...scope,
       ];
     case 'allow-anchored-txn-112':
       return ['validate', ...scope];
@@ -297,7 +310,10 @@ export function prepareKernelTopology(task, { now = NOW } = {}) {
       mutate(context, ['lease', 'release']);
       context.priorOwner = context.owner;
       const child = '01KZMFG500000000000000001A';
-      invoke(context, ['lease', 'acquire', '--owner', child, '--generation', '1', '--runtime', 'codex', '--now', NOW]);
+      invoke(context, [
+        'lease', 'acquire', '--owner', child, '--generation', '1', '--runtime', 'codex',
+        '--attempt-id', 'EVALSTALEATTEMPT01', '--now', NOW,
+      ]);
       context.owner = child; context.generation = 2;
       break;
     }
@@ -436,9 +452,17 @@ export function executeKernelTask(task, { now = NOW } = {}) {
   if (task.id === 'allow-lease-chain-109') {
     mutate(context, ['lease', 'release']);
     const child1 = '01KZMFG500000000000000001B';
+    const attempt1 = 'EVALLEASEATTEMPT01';
     const firstBefore = vector(context);
-    const firstAcquire = invoke(context, ['lease', 'acquire', '--owner', child1, '--generation', '1', '--runtime', 'codex', '--now', NOW]);
+    const firstAcquire = invoke(context, [
+      'lease', 'acquire', '--owner', child1, '--generation', '1', '--runtime', 'codex',
+      '--attempt-id', attempt1, '--now', NOW,
+    ]);
     const firstAfter = vector(context);
+    const firstActivation = invoke(context, [
+      'lease', 'activate', '--stored-token', '--owner', child1, '--generation', '2',
+      '--runtime', 'codex', '--attempt-id', attempt1, '--now', NOW,
+    ]);
     const release = invoke(context, ['lease', 'release', '--owner', child1, '--generation', '2', '--now', NOW]);
     context.leaseAcquisitions = [{
       index: 1, owner: child1, generation: JSON.parse(firstAcquire.stdout).generation,
@@ -461,7 +485,7 @@ export function executeKernelTask(task, { now = NOW } = {}) {
     });
     const result = resultFromObservation(task, context, final);
     result.evidence.executions = [
-      ...[firstAcquire, release].map(item => ({ exit: item.exit, argv: normalizedArgv(item.argv.slice(1), context) })),
+      ...[firstAcquire, firstActivation, release].map(item => ({ exit: item.exit, argv: normalizedArgv(item.argv.slice(1), context) })),
       ...items.map(item => ({ exit: item.result.exit, argv: normalizedArgv(item.result.argv.slice(1), context) })),
     ];
     result.evidence.lease_acquisitions = context.leaseAcquisitions;

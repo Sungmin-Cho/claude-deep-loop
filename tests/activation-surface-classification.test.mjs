@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { baselineNode20RegularFiles } from './helpers/baseline-node20-walk.mjs';
+import { createFileSymlink } from './helpers/fs-fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -17,6 +18,12 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const byteSort = (left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right));
 
 const recursiveFiles = baselineNode20RegularFiles;
+
+test('STEP0-3 symlink polarity uses the centralized portable fixture helper', () => {
+  const source = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  assert.doesNotMatch(source, new RegExp(`\\b${'symlink'}${'Sync'}\\b`));
+  assert.match(source, /createFileSymlink\(join\(evals, 'dep\.mjs'\), join\(evals, 'linked\.mjs'\)\)/);
+});
 
 function exactKeys(value, keys) {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -89,7 +96,7 @@ test('STEP0-3 link-only extractor links repo-contained mjs dependencies but reje
   assert.match(escaped.stderr, /IMPORT_OUTSIDE_REPOSITORY/);
 
   writeFileSync(join(scripts, 'main.mjs'), "export { value } from '../evals/linked.mjs';\n");
-  symlinkSync(join(evals, 'dep.mjs'), join(evals, 'linked.mjs'));
+  createFileSymlink(join(evals, 'dep.mjs'), join(evals, 'linked.mjs'));
   const symlink = run(scripts);
   assert.notEqual(symlink.status, 0);
   assert.match(symlink.stderr, /UNSAFE_REPOSITORY_IMPORT/);

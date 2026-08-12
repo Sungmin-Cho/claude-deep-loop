@@ -10,16 +10,18 @@ if (!['claude', 'codex'].includes(runtime)) throw new Error('runtime must be cla
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
 const project = mkdtempSync(join(tmpdir(), `deep-loop-standalone-${runtime}-`));
-const isolatedHome = join(project, 'home');
-mkdirSync(isolatedHome);
+const isolatedHome = mkdtempSync(join(tmpdir(), `deep-loop-standalone-home-${runtime}-`));
 mkdirSync(join(project, '.claude', 'worktrees', 'standalone'), { recursive: true });
 const now = '2026-08-06T00:00:00.000Z';
 const childEnv = {
   HOME: isolatedHome,
+  LOCALAPPDATA: join(isolatedHome, '.localappdata'),
   PATH: '',
+  SystemRoot: process.env.SystemRoot ?? '',
   TMPDIR: process.env.TMPDIR ?? '',
   USERPROFILE: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, '.config'),
+  XDG_STATE_HOME: join(isolatedHome, '.state'),
 };
 
 function invoke(args, { input = null, label = args.join(' ') } = {}) {
@@ -108,9 +110,16 @@ const resume = spawnSync(process.execPath, [
 if (resume.status !== 0 || resume.stdout.trim() === '') throw new Error(`resume-command: ${resume.stderr}`);
 const acquired = invoke([
   'lease', 'acquire', '--owner', handoff.childRunId, '--generation', '1',
-  '--runtime', runtime, '--now', now, '--run-id', runId,
+  '--runtime', runtime, '--attempt-id', 'STANDALONEATTEMPT01', '--now', now, '--run-id', runId,
 ]);
 if (acquired.proceed !== true || acquired.generation !== 2) throw new Error('boundary recovery did not proceed');
+const activated = invoke([
+  'lease', 'activate', '--stored-token', '--owner', handoff.childRunId, '--generation', '2',
+  '--runtime', runtime, '--attempt-id', 'STANDALONEATTEMPT01', '--now', now, '--run-id', runId,
+]);
+if (activated.ok !== true || !['activated', 'already-activated'].includes(activated.reason)) {
+  throw new Error('boundary recovery did not activate');
+}
 invoke([
   'finish', '--status', 'stopped', '--proof', '{"human_reason":"standalone fixture complete"}',
   '--confirm', '--now', now, '--owner', handoff.childRunId, '--generation', '2', '--run-id', runId,
@@ -125,7 +134,7 @@ process.stdout.write(`${JSON.stringify({
   terminal_escape: 'human-confirmed-abandon-without-independent-checker',
   stages: [
     'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
-    'terminal-boundary', 'handoff', 'resume', 'recovery', 'finish',
+    'terminal-boundary', 'handoff', 'resume', 'recovery', 'activation', 'finish',
   ],
   terminal_status: terminal.status,
   descriptor: {

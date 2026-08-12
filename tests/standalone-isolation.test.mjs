@@ -28,6 +28,14 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     'every public CLI call must execute from the isolated project cwd');
   assert.match(source, /HOME:\s*isolatedHome/,
     'plugin discovery must use an isolated home rather than the real user home');
+  assert.match(source, /isolatedHome\s*=\s*mkdtempSync\(join\(tmpdir\(\)/,
+    'the isolated user state must remain outside the project and kernel tree');
+  assert.match(source, /LOCALAPPDATA:\s*join\(isolatedHome,\s*['"]\.localappdata['"]\)/,
+    'Windows stored activation state must use the same isolated user root');
+  assert.match(source, /XDG_STATE_HOME:\s*join\(isolatedHome,\s*['"]\.state['"]\)/,
+    'stored activation secrets must use the isolated fixture user state');
+  assert.match(source, /'lease',\s*'acquire'[\s\S]*?'--attempt-id'[\s\S]*?'lease',\s*'activate',\s*'--stored-token'/,
+    'boundary recovery must acquire and then activate with one durable attempt');
   assert.match(source, /Object\.entries\(detected\)[\s\S]{0,300}\.present/,
     'the fixture must report the detector result instead of replacing keyed output with an empty list');
   assert.doesNotMatch(source, /ORCA_PANE_KEY|orca-loop|mcp__|claude\s+-p|codex\s+exec|deep-(?:work|review|wiki|memory)/i,
@@ -41,7 +49,7 @@ test('standalone isolation completes for claude and codex without Orca or siblin
     assert.equal(value.terminal_escape, 'human-confirmed-abandon-without-independent-checker');
     assert.deepEqual(value.stages, [
       'init', 'dispatch-inline', 'prepare', 'observe', 'restore', 'continue', 'status', 'ack',
-      'terminal-boundary', 'handoff', 'resume', 'recovery', 'finish',
+      'terminal-boundary', 'handoff', 'resume', 'recovery', 'activation', 'finish',
     ]);
     assert.equal(value.terminal_status, 'stopped');
     assert.equal(value.descriptor.action.type, 'handoff');

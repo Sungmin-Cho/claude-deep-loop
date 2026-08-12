@@ -48,6 +48,15 @@ test('runStep sends bounded inline JSON to the child and substitutes closed plac
   assert.throws(() => substitutePlaceholders('<UNREGISTERED>', {}), /UNREGISTERED/);
 });
 
+test('runStep scopes activation user state to the supplied fixture environment', () => {
+  const root = mkdtempSync(join(tmpdir(), 'eval-step-state-'));
+  const stateRoot = join(root, '..', 'isolated-user-state');
+  const step = { cmd: ['-e', 'process.stdout.write(process.env.XDG_STATE_HOME || "")'] };
+  const result = runStep(root, 'RUN', step, {}, { childEnv: { XDG_STATE_HOME: stateRoot } });
+  assert.equal(result.exit, 0);
+  assert.equal(result.stdout, stateRoot);
+});
+
 test('host acceptance result is validated before accounting and reports do not include output roots', () => {
   const binding = { run_id: 'RUN', checker_episode_id: '002-deep-review', target_maker: '001-deep-work', workstream_id: 'ws-01', point: 'implementation', reviewer_id: 'deep-review', review_source: 'imported-stdin', imported_verdict: 'APPROVE' };
   const result = { task_id: 'allow-review-import-111', assertion_id: 'tests/review-import.test.mjs#allow-review-import-111', executor: 'evals/lib/host-acceptance.mjs', status: 'pass', attempt_id: 'attempt-eval-111', binding, import_exit: 0 };
@@ -672,4 +681,16 @@ test('checkpoint observation and both lease acquisitions are observed through pr
   assert.deepEqual(lease.evidence.lease_acquisitions.map(item => item.index), [1, 2]);
   assert.ok(lease.evidence.lease_acquisitions.every(item => item.exit === 0 && item.event_added === true));
   assert.notEqual(lease.evidence.lease_acquisitions[0].owner, lease.evidence.lease_acquisitions[1].owner);
+  assert.deepEqual(lease.evidence.executions.map(item => item.argv.slice(1, 3)), [
+    ['lease', 'acquire'], ['lease', 'activate'], ['lease', 'release'], ['lease', 'acquire'],
+  ]);
+  const acquiredAttempt = lease.evidence.executions[0].argv.indexOf('--attempt-id');
+  const activatedAttempt = lease.evidence.executions[1].argv.indexOf('--attempt-id');
+  assert.notEqual(acquiredAttempt, -1);
+  assert.notEqual(activatedAttempt, -1);
+  assert.equal(
+    lease.evidence.executions[0].argv[acquiredAttempt + 1],
+    lease.evidence.executions[1].argv[activatedAttempt + 1],
+  );
+  assert.equal(lease.evidence.executions[1].argv.includes('--stored-token'), true);
 });

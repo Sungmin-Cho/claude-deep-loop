@@ -115,4 +115,6 @@ test('row 108 declares the observed checkpoint command and row 109 binds two acq
   assert.deepEqual(checkpoint.acceptance[0].steps[0].cmd.slice(0, 2), ['checkpoint', 'observe']);
   const lease = JSON.parse(readFileSync(join(taskDir, 'allow-lease-chain-109.json'), 'utf8'));
   assert.equal(lease.acceptance[0].steps[0].expect.postconditions.some(item => item.type === 'lease-chain' && item.acquisitions === 2), true);
+  const leaseArgv = lease.acceptance[0].steps[0].cmd;
+  assert.equal(leaseArgv[leaseArgv.indexOf('--attempt-id') + 1], 'EVALLEASEATTEMPT02');
 });
