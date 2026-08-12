@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DRIVER = fileURLToPath(new URL('./fixtures/standalone-isolation-driver.mjs', import.meta.url));
@@ -65,7 +67,28 @@ test('standalone boundary acquire and stored activation reuse one attempt bindin
   const source = readFileSync(DRIVER, 'utf8');
   assert.match(source, /const boundaryAttemptId\s*=\s*'STANDALONEATTEMPT01'/);
   assert.equal((source.match(/'--attempt-id',\s*boundaryAttemptId/g) || []).length, 2);
-  assert.match(source, /finally\s*{[\s\S]*removeOwnedUserState\(isolatedHome\)/);
+});
+
+test('standalone removes owned user state when lifecycle fails after home creation', (t) => {
+  const parentTmp = mkdtempSync(join(tmpdir(), 'standalone-cleanup-parent-'));
+  t.after(() => rmSync(parentTmp, { recursive: true, force: true }));
+  const result = spawnSync(process.execPath, [DRIVER, 'codex'], {
+    encoding: 'utf8',
+    env: {
+      PATH: '',
+      TMPDIR: parentTmp,
+      DEEP_LOOP_STANDALONE_TEST_FAIL_AFTER_HOME: '1',
+    },
+    maxBuffer: 2_097_152,
+  });
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /STANDALONE_TEST_FAILURE_AFTER_HOME/);
+  assert.doesNotMatch(result.stderr, /activation-secrets|STANDALONEATTEMPT01/);
+  assert.deepEqual(
+    readdirSync(parentTmp).filter(name => name.startsWith('deep-loop-standalone-home-')),
+    [],
+  );
 });
 
 test('positive Orca consumer preserves descriptor bytes and semantic fields', () => {

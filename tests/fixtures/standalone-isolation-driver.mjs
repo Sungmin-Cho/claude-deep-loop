@@ -42,10 +42,13 @@ function removeOwnedUserState(path) {
     || !basename(canonical).startsWith(`deep-loop-standalone-home-${runtime}-`)) {
     throw new Error('STANDALONE_USER_STATE_CLEANUP_UNSAFE');
   }
-  rmSync(canonical, { recursive: true });
+  rmSync(canonical, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
 }
 
 function runLifecycle() {
+if (process.env.DEEP_LOOP_STANDALONE_TEST_FAIL_AFTER_HOME === '1') {
+  throw new Error('STANDALONE_TEST_FAILURE_AFTER_HOME');
+}
 const detected = invoke(['detect-plugins']);
 const detectedPlugins = Object.entries(detected)
   .filter(([, value]) => value === true || value?.present === true)
