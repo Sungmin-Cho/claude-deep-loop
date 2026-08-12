@@ -129,14 +129,27 @@ Lost responses reuse the same attempt and stored token. The raw-token CLI remain
 production skills use stored mode. Automatic cleanup and TTL are forbidden: retain the secret until
 future GC has durable generation-superseded or terminal proof.
 
-**Attempt nonce — `lease acquire --attempt-id <token>`** (optional,
-`^[A-Za-z0-9_-]{8,128}$`; a malformed value is exit 1, an omitted one is not a violation).
+If first activation takes the lock at or after its parsed deadline, it returns
+`{ok:false,reason:"activation-deadline-expired"}` with exit 0 and **no state, event, or
+deadline mutation**; activation itself never pauses the run. Only a later
+`lease reap --owner <owner_run_id> --generation <generation>` by the fresh fence may
+commit `{ok:true,reason:"activation-expired",transition:"preserve-pause"}`. `lease reap`
+does not accept `--now`: expiry uses the in-lock safety clock. A stale owner/generation is
+a genuine fence (exit 3, mutation 0), while a terminal run is invalid state (exit 1,
+mutation 0).
+
+**Attempt nonce — required on every acquire route.** Each public acquisition command
+requires a durable `--attempt-id <token>` matching `^[A-Za-z0-9_-]{8,128}$`:
+`lease acquire ... --attempt-id <token>`, `recovery acquire ... --attempt-id <token>`,
+and `root recovery acquire ... --attempt-id <token>`. Omission is usage exit 2 and a
+malformed value is exit 1.
 A caller whose response was lost but which is still alive re-sends the **same** value and
 the kernel re-issues `{proceed:true, replayed:true}`, recovering the right to proceed with
 no human step. The protocol is **generate → persist durably on the caller's side → acquire**;
 persisting after the call leaves a window where the call succeeded but the identifier is
-lost, so it is forbidden, and a caller that skips it gets no such guarantee. Retries reuse
-the value — a fresh one is a different attempt. Replay writes nothing of its own. A
+lost, so it is forbidden. Lost responses from all three routes retry that exact route with
+the same durable attempt; a fresh value is a different attempt, and a caller that lost its
+durable value must stop for human recovery. Replay writes nothing of its own. A
 human-initiated `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" pause --mode preserve --reason "host-session-lost" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>` revokes an already-granted attempt: replay requires
 the run to be `running`.
 
@@ -149,10 +162,11 @@ never surface as consumed.
 **Path × scenario.** Five acquisition paths across three CLI surfaces: `normal`,
 `boundary-handoff` and `boundary-recovery` share `lease acquire`; `affinity recovery` and
 `root recovery` have their own verbs. All five report `proceed`/`consumed` and write a
-receipt. Only the three `lease acquire` paths accept `--attempt-id` and therefore have
-replay; neither recovery verb has a replay branch, so **a lost response there is recoverable
-only by human intervention** — `resume-command`'s `Recovery: consumed` is an observation, not
-a re-issued right to proceed. Their duplicate answers differ and are not interchangeable:
+receipt. All three CLI surfaces require a durable attempt and can re-issue the same
+`proceed:true, replayed:true` result after a lost response when the exact route and attempt
+are retried. Without the original durable attempt, the caller stops for human recovery;
+`resume-command`'s `Recovery: consumed` is observation, not proof that this caller owns it.
+Non-replay duplicate answers still differ and are not interchangeable:
 `recovery acquire` throws `LEASE_FENCED: generation-mismatch` (**exit 3**), while
 `root recovery acquire` fails its receipt proof first and throws
 `ROOT_OPERATION_PROOF_INVALID` (**exit 1**) — that identity is not a fence, so it does not

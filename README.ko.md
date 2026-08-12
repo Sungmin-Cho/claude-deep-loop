@@ -117,12 +117,25 @@ Windows ACL helper는 trusted ambient `SystemRoot` 아래 exact
 raw-token CLI는 호환 전용이고 production skill은 stored mode만 쓴다. 자동 cleanup과 TTL은 금지하며
 future GC가 generation 교체 또는 terminal 증거를 확인할 때까지 보존한다.
 
-**attempt nonce — `lease acquire --attempt-id <token>`** (optional,
-`^[A-Za-z0-9_-]{8,128}$`; 비정형은 exit 1, 미지정은 위반이 아니다). 응답을 잃었으나 살아 있는
+첫 activation이 parsed deadline과 같거나 그 뒤에 lock을 잡으면 exit 0의
+`{ok:false,reason:"activation-deadline-expired"}`를 반환하고 **state, event, deadline을
+변경하지 않는다**. activation 자체는 run을 pause하지 않는다. 이후 fresh fence의
+`lease reap --owner <owner_run_id> --generation <generation>`만
+`{ok:true,reason:"activation-expired",transition:"preserve-pause"}`를 commit한다.
+`lease reap`은 `--now`를 받지 않으며 expiry 판단은 in-lock safety clock을 쓴다. stale
+owner/generation은 genuine fence(exit 3, mutation 0), terminal run은 invalid state(exit 1,
+mutation 0)다.
+
+**attempt nonce — 모든 acquire route에서 필수.** 세 public acquisition command는 모두
+`^[A-Za-z0-9_-]{8,128}$`인 durable `--attempt-id <token>`을 요구한다:
+`lease acquire ... --attempt-id <token>`, `recovery acquire ... --attempt-id <token>`,
+`root recovery acquire ... --attempt-id <token>`. 미지정은 usage exit 2, 비정형은 exit 1이다.
+응답을 잃었으나 살아 있는
 호출자가 **같은** 값을 재전송하면 커널이 `{proceed:true, replayed:true}`를 재발급해 사람 개입
 없이 진행 권한을 회복한다. 규약은 **생성 → 호출자 쪽 durable 영속화 → acquire** 순서이며,
-호출 후 기록은 "호출은 성공했는데 기록 전에 죽는" 창을 남기므로 **금지**한다 — 지키지 않은
-호출자에게는 이 보증이 적용되지 않는다. 재시도는 같은 값을 재사용한다(새 값은 다른 시도다).
+호출 후 기록은 "호출은 성공했는데 기록 전에 죽는" 창을 남기므로 **금지**한다. 세 route 모두
+응답 유실 시 exact route와 같은 durable attempt로 재시도한다. 새 값은 다른 시도이며 durable
+값 자체를 잃은 호출자는 사람 복구를 위해 멈춘다.
 replay 자신은 아무것도 쓰지 않는다. 사람이 개시한 `node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" pause --mode preserve --reason "host-session-lost" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>`는 이미 부여된 시도의
 진행 권한을 **취소**한다 — replay는 run이 `running`일 때만 성립한다.
 
@@ -133,11 +146,11 @@ replay 자신은 아무것도 쓰지 않는다. 사람이 개시한 `node "<abso
 
 **경로 × 시나리오.** 획득 경로는 5개, CLI 표면은 3개다 — `normal`·`boundary-handoff`·
 `boundary-recovery`가 `lease acquire`를 공유하고, `affinity recovery`와 `root recovery`는 각자
-verb를 갖는다. 다섯 경로 모두 `proceed`/`consumed`를 보고하고 영수증을 남긴다. 다만
-`--attempt-id`를 받는 것은 `lease acquire` 계열 3경로뿐이라 replay도 그 셋에만 있다. recovery
-두 verb에는 replay 분기가 없으므로 **그 경로에서 응답이 유실되면 사람 개입으로만 회복된다** —
-`resume-command`의 `Recovery: consumed`는 관측이지 진행 권한의 재발급이 아니다. 다만 두 verb의
-duplicate 응답은 서로 다르고 호환되지 않는다: `recovery acquire`는
+verb를 갖는다. 다섯 경로 모두 `proceed`/`consumed`를 보고하고 영수증을 남긴다.
+세 CLI surface 모두 durable attempt가 필수이고, exact route와 같은 attempt로 재시도하면 유실된
+응답의 `proceed:true, replayed:true`를 재발급할 수 있다. 원래 durable attempt가 없으면 사람
+복구를 위해 멈춘다. `resume-command`의 `Recovery: consumed`는 관측일 뿐 이 호출자의 소유 증명은
+아니다. non-replay duplicate 응답은 서로 다르고 호환되지 않는다: `recovery acquire`는
 `LEASE_FENCED: generation-mismatch`(**exit 3**)를 throw하지만, `root recovery acquire`는 영수증
 증명이 먼저 실패해 `ROOT_OPERATION_PROOF_INVALID`(**exit 1**)를 throw한다 — 그 신원은 fence가
 아니어서 exit-3 경로를 타지 않는다.

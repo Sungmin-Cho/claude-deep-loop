@@ -109,6 +109,30 @@ test('READMEs document stored activation custody, compatibility boundary, and de
   }
 });
 
+test('READMEs require durable attempts for every acquire route and document expired-activation reap', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.doesNotMatch(source, /attempt nonce[^\n]*\(optional|attempt nonce[^\n]*\(선택/iu,
+      `${path}: attempt-id must not be documented as optional`);
+    assert.doesNotMatch(source, /recovery[^\n]{0,120}(?:no replay|replay[^\n]{0,30}(?:없|불가)|human intervention|사람 개입)/iu,
+      `${path}: recovery acquire routes support same-attempt replay`);
+    for (const route of ['lease acquire', 'recovery acquire', 'root recovery acquire']) {
+      const escaped = route.replaceAll(' ', '\\s+');
+      assert.match(source, new RegExp(`${escaped}[\\s\\S]{0,500}--attempt-id`, 'iu'),
+        `${path}: ${route} must require --attempt-id`);
+    }
+    assert.match(source,
+      /activation-deadline-expired[\s\S]{0,500}lease reap[\s\S]{0,500}activation-expired/iu,
+      `${path}: expired activation must reject first and document reap as the sole transition`);
+    assert.match(source, /lease reap[^\n]{0,240}(?:--owner|owner)[^\n]{0,240}(?:--generation|generation)/iu,
+      `${path}: reap must carry the fresh lease fence`);
+    assert.match(source, /lease reap[\s\S]{0,300}(?:does not accept[^\n]{0,20}--now|--now[^\n]{0,80}(?:forbidden|금지|받지))/iu,
+      `${path}: reap must prohibit public --now`);
+    assert.match(source, /activation-deadline-expired[\s\S]{0,220}(?:no state, event, or\s+deadline mutation|state, event, deadline[\s\S]{0,40}변경하지|mutation 0)/iu,
+      `${path}: expired activation rejection must be non-mutating`);
+  }
+});
+
 test('maintainer and user docs bind independent Codex checkers to strict run-owned captures', () => {
   for (const path of [...USER_DOCS, 'AGENTS.md']) {
     const source = readFileSync(join(R, path), 'utf8');
