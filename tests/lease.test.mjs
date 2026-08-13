@@ -490,9 +490,15 @@ test('emitted sets expires_at → child can take over after stale TTL without ex
   assert.equal(lease.state, 'releasing');
   assert.ok(lease.expires_at, 'expires_at must be set on emitted');
   // 부모가 releaseLease 를 못 하고 죽음. TTL(900s) 경과 전: 인수 불가(releasing 은 takeable 아님)
-  assert.equal(acquireLease(root, runId, { attemptId: 'MIGRATEDATTEMPT01', owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: now0 + 1000 }).ok, false);
+  assert.equal(acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01', owner: 'CHILD', expectGeneration: 1, runtime: 'claude',
+    now: now0 + 1000, clock: () => now0 + 1000,
+  }).ok, false);
   // TTL 경과 후: stale → 인수 가능
-  const ok = acquireLease(root, runId, { attemptId: 'MIGRATEDATTEMPT01', owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: now0 + 901 * 1000 });
+  const ok = acquireLease(root, runId, {
+    attemptId: 'MIGRATEDATTEMPT01', owner: 'CHILD', expectGeneration: 1, runtime: 'claude',
+    now: now0 + 901 * 1000, clock: () => now0 + 901 * 1000,
+  });
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
 });
@@ -507,6 +513,7 @@ test('releasing lease blocks parent self-reacquisition through TTL and permits i
   const withinTtl = acquireLease(root, runId, {
     attemptId: 'MIGRATEDATTEMPT01',
     owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt,
+    clock: () => expiresAt,
   });
   assert.deepEqual(withinTtl, {
     ok: false, generation: 1, reason: 'lease-not-takeable',
@@ -518,6 +525,7 @@ test('releasing lease blocks parent self-reacquisition through TTL and permits i
   const afterTtl = acquireLease(root, runId, {
     attemptId: 'MIGRATEDATTEMPT01',
     owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt + 1,
+    clock: () => expiresAt + 1,
   });
   assert.deepEqual(afterTtl, {
     ok: true, generation: 2, reason: 'acquired',
@@ -526,6 +534,53 @@ test('releasing lease blocks parent self-reacquisition through TTL and permits i
   assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
   assert.equal(readState(root, runId).data.session_chain.lease.generation, 2);
 });
+
+for (const publicNow of [
+  Date.parse('2001-01-01T00:00:00.000Z'),
+  Date.parse('2099-01-01T00:00:00.000Z'),
+]) {
+  test(`public acquire time ${new Date(publicNow).getUTCFullYear()} cannot authorize pre-expiry takeover`, () => {
+    const safetyNow = Date.parse('2026-08-13T02:00:00.000Z');
+
+    for (const released of [false, true]) {
+      const { root, runId } = seed();
+      const { key } = reserveHandoff(root, runId, {
+        trigger: 'public-now-expiry-fence',
+        now: safetyNow,
+      });
+      advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', now: safetyNow });
+      const reservedChild = readState(root, runId).data.session_chain.lease.handoff_child_run_id;
+      if (released) {
+        assert.deepEqual(releaseLease(root, runId, { owner: runId, generation: 1 }), {
+          ok: true, reason: 'released',
+        });
+      }
+
+      const before = readState(root, runId).data;
+      const rejected = acquireLease(root, runId, {
+        attemptId: `PUBLICNOW${new Date(publicNow).getUTCFullYear()}ATTEMPT`,
+        owner: 'UNRESERVED-OWNER',
+        expectGeneration: 1,
+        runtime: 'claude',
+        now: publicNow,
+        clock: () => safetyNow + 1_000,
+      });
+      assert.deepEqual(rejected, {
+        ok: false,
+        generation: 1,
+        reason: released ? 'child-not-reserved' : 'lease-not-takeable',
+        proceed: false,
+        consumed: null,
+        replayed: false,
+      });
+      const after = readState(root, runId).data;
+      assert.equal(after.session_chain.lease.owner_run_id, runId);
+      assert.equal(after.session_chain.lease.generation, 1);
+      assert.equal(after.session_chain.lease.handoff_child_run_id, reservedChild);
+      assert.equal(after.session_chain.lease.expires_at, before.session_chain.lease.expires_at);
+    }
+  });
+}
 
 test('leaseCheck allows accounting during releasing for matching owner/generation', () => {
   const loop = { session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'releasing' } } };

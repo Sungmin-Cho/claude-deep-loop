@@ -340,7 +340,7 @@ export function acquireLease(root, runId, {
     const safetyNow = lockedSafetyTime(clock, 'lease acquire safety');
     const lockedNow = lockedTime(now, () => safetyNow, 'lease acquire');
     const activationDeadlineSec = activationDeadlineSeconds(data);
-    const expired = lease.expires_at && lockedNow > Date.parse(lease.expires_at);
+    const expired = lease.expires_at && safetyNow > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) {
       throw acquireHalt(contractFields({ ok: false, generation: lease.generation, reason: 'lease-not-takeable' }));
