@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
+  closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
   readFileSync, realpathSync, linkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -93,7 +93,7 @@ function defaultWindowsAcl({ path, kind }, execute, executable) {
 }
 
 function validateMode(stat, wanted, platform) {
-  return platform === 'win32' || (stat.mode & 0o777) === wanted;
+  return platform === 'win32' || (stat.mode & (typeof stat.mode === 'bigint' ? 0o777n : 0o777)) === (typeof stat.mode === 'bigint' ? BigInt(wanted) : wanted);
 }
 
 function ensureDirectory(path, { platform, mkdirFn, lstatFn, realpathFn, windowsAclFn }) {
@@ -169,7 +169,7 @@ export function activateStoredLease(root, runId, {
   const writeFn = deps.writeFn ?? writeFileSync;
   const readFn = deps.readFn ?? readFileSync;
   const openFn = deps.openFn ?? openSync;
-  const fsyncFn = deps.fsyncFn ?? fsyncSync;
+  const fsyncFn = deps.fsyncFn ?? fsyncSync; const fstatFn = deps.fstatFn ?? fstatSync;
   const closeFn = deps.closeFn ?? closeSync;
   const linkFn = deps.linkFn ?? linkSync;
   const unlinkFn = deps.unlinkFn ?? unlinkSync;
@@ -226,7 +226,7 @@ export function activateStoredLease(root, runId, {
       const key = digest([canonicalRoot, runId, owner, String(generation), runtime, attemptId].join('\0'));
       const path = join(canonicalDirectory, `${key}.json`);
       if (existsSync(path)) {
-        token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
+        token = readTrustedStored(path, binding, { platform, lstatFn, openFn, fstatFn, readFn, closeFn, windowsAclFn });
       } else {
         if (!allowCreate) throw closed('ACTIVATION_SECRET_IO_UNAVAILABLE');
         const candidate = randomBytesFn(32).toString('base64url');
@@ -253,7 +253,7 @@ export function activateStoredLease(root, runId, {
           catch (error) {
             if (platform !== 'win32' || !['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM'].includes(error?.code)) throw error;
           } finally { if (dirFd !== undefined) closeFn(dirFd); }
-          token = parseStored(readFn(path, 'utf8'), binding, lstatFn(path), platform, windowsAclFn, path);
+          token = readTrustedStored(path, binding, { platform, lstatFn, openFn, fstatFn, readFn, closeFn, windowsAclFn });
         } finally {
           if (!published) { try { unlinkFn(temp); } catch { /* preserve primary failure */ } }
         }
@@ -272,5 +272,57 @@ export function activateStoredLease(root, runId, {
     return { ok: result?.ok === true, reason: result?.reason };
   } catch (error) {
     throw mapKernelError(error);
+  }
+}
+
+function sameStoredIdentity(left, right) {
+  return sameStoredNode(left, right) && left.mode === right.mode
+    && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+function sameStoredNode(left, right) {
+  if (left.ino !== 0n && right.ino !== 0n) return left.dev === right.dev && left.ino === right.ino;
+  return left.birthtimeNs !== 0n && left.birthtimeNs === right.birthtimeNs;
+}
+
+function safeStoredStat(stat, platform) {
+  return stat.isFile() && !stat.isSymbolicLink() && validateMode(stat, 0o600, platform);
+}
+
+function readTrustedStored(path, expected, {
+  platform, lstatFn, openFn, fstatFn, readFn, closeFn, windowsAclFn,
+}) {
+  const before = lstatFn(path, { bigint: true });
+  if (!safeStoredStat(before, platform)) throw closed('ACTIVATION_SECRET_UNSAFE');
+  if (platform === 'win32' && !windowsAclFn({ path, kind: 'file' })) {
+    throw closed('ACTIVATION_SECRET_UNSAFE');
+  }
+  const afterAcl = lstatFn(path, { bigint: true });
+  if (!safeStoredStat(afterAcl, platform) || !sameStoredNode(before, afterAcl)) {
+    throw closed('ACTIVATION_SECRET_UNSAFE');
+  }
+  let fd;
+  try {
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+    try { fd = openFn(path, flags); } catch (error) {
+      if (['ELOOP', 'EMLINK'].includes(error?.code)) throw closed('ACTIVATION_SECRET_UNSAFE');
+      throw error;
+    }
+    const opened = fstatFn(fd, { bigint: true });
+    if (!safeStoredStat(opened, platform) || !sameStoredIdentity(afterAcl, opened)) {
+      throw closed('ACTIVATION_SECRET_UNSAFE');
+    }
+    const bytes = readFn(fd, 'utf8');
+    const afterRead = fstatFn(fd, { bigint: true });
+    if (!safeStoredStat(afterRead, platform) || !sameStoredIdentity(opened, afterRead)) {
+      throw closed('ACTIVATION_SECRET_UNSAFE');
+    }
+    const afterPath = lstatFn(path, { bigint: true });
+    if (!safeStoredStat(afterPath, platform) || !sameStoredIdentity(opened, afterPath)) {
+      throw closed('ACTIVATION_SECRET_UNSAFE');
+    }
+    return parseStored(bytes, expected, opened, platform, () => true, path);
+  } finally {
+    if (fd !== undefined) closeFn(fd);
   }
 }

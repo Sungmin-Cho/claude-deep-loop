@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync,
-  rmSync, writeFileSync,
+  chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, mkdirSync,
+  openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { activateStoredLease } from '../scripts/lib/activation-secret.mjs';
 import {
-  canonicalRealpath, createDirectoryJunction, createFileSymlink,
+  canonicalRealpath, createDirectoryJunction, createFileSymlink, createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
 
 const ROOT = '/canonical/project';
@@ -21,6 +21,24 @@ const BINDING = {
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function storedSecretPath(stateRoot) {
+  const directory = join(canonicalRealpath(stateRoot), 'deep-loop', 'activation-secrets');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const key = sha256([ROOT, RUN, BINDING.owner, '2', 'claude', BINDING.attemptId].join('\0'));
+  return join(directory, `${key}.json`);
+}
+
+function storedSecretBytes(token = Buffer.alloc(32, 0x44).toString('base64url')) {
+  return `${JSON.stringify({
+    schema_version: '1.0',
+    binding: {
+      project_root_sha256: sha256(ROOT), run_id: RUN, owner_run_id: BINDING.owner,
+      generation: 2, runtime: 'claude', attempt_id: BINDING.attemptId,
+    },
+    token,
+  })}\n`;
 }
 
 function linuxDeps(stateRoot, overrides = {}) {
@@ -213,6 +231,161 @@ test('stored activation rejects malformed, mismatched, unsafe and symlink entrie
   }
 });
 
+test('stored activation rejects a secret symlink before reading its target or reaching kernel mutation', (t) => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-symlink-no-read-'));
+  const path = storedSecretPath(stateRoot);
+  const target = `${path}.outside`;
+  writeFileSync(target, 'RAW-SYMLINK-TARGET-SECRET');
+  if (!createFileSymlinkOrSkip(t, target, path)) return;
+  const reads = [];
+  let mutated = false;
+  const deps = linuxDeps(stateRoot, {
+    readFn(value, ...args) { reads.push(value); return readFileSync(value, ...args); },
+    activateLeaseFn(_root, _runId, options) {
+      options.activationTokenProvider({ guard: { assertOwned() {}, renew() {} }, allowCreate: true });
+      mutated = true;
+      return { ok: true, reason: 'activated' };
+    },
+  });
+  assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
+    error => error?.message === 'ACTIVATION_SECRET_UNSAFE');
+  assert.deepEqual(reads, [], 'a rejected symlink target must never reach the byte reader');
+  assert.equal(mutated, false);
+  assert.equal(readFileSync(target, 'utf8'), 'RAW-SYMLINK-TARGET-SECRET');
+});
+
+test('stored activation binds lstat, open, fstat and read to one unchanged regular file', () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-descriptor-'));
+  const path = storedSecretPath(stateRoot);
+  writeFileSync(path, storedSecretBytes(), { mode: 0o600 });
+  const opened = [];
+  const fstats = [];
+  const reads = [];
+  const closes = [];
+  const deps = linuxDeps(stateRoot, {
+    openFn(value, flags, mode) {
+      const fd = openSync(value, flags, mode);
+      if (value === path) opened.push({ fd, flags });
+      return fd;
+    },
+    fstatFn(fd, options) { fstats.push(fd); return fstatSync(fd, options); },
+    readFn(fd, ...args) {
+      assert.equal(Number.isInteger(fd), true, 'stored bytes must be read through the opened descriptor');
+      reads.push(fd);
+      return readFileSync(fd, ...args);
+    },
+    closeFn(fd) { closes.push(fd); closeSync(fd); },
+  });
+  assert.deepEqual(activateStoredLease(ROOT, RUN, BINDING, deps), { ok: true, reason: 'activated' });
+  assert.equal(opened.length, 1);
+  assert.equal((opened[0].flags & (constants.O_NOFOLLOW ?? 0)) === (constants.O_NOFOLLOW ?? 0), true);
+  assert.equal((opened[0].flags & (constants.O_NONBLOCK ?? 0)) === (constants.O_NONBLOCK ?? 0), true);
+  assert.deepEqual(fstats, [opened[0].fd, opened[0].fd]);
+  assert.deepEqual(reads, [opened[0].fd]);
+  assert.equal(closes.includes(opened[0].fd), true);
+});
+
+test('stored activation rejects a regular-file replacement between lstat and open before reading bytes', () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-open-race-'));
+  const path = storedSecretPath(stateRoot);
+  const held = `${path}.held`;
+  writeFileSync(path, storedSecretBytes(), { mode: 0o600 });
+  const reads = [];
+  let replaced = false;
+  let mutated = false;
+  const deps = linuxDeps(stateRoot, {
+    openFn(value, flags, mode) {
+      if (value === path && !replaced) {
+        replaced = true;
+        renameSync(path, held);
+        writeFileSync(path, storedSecretBytes(Buffer.alloc(32, 0x55).toString('base64url')), { mode: 0o600 });
+      }
+      return openSync(value, flags, mode);
+    },
+    readFn(value, ...args) { reads.push(value); return readFileSync(value, ...args); },
+    activateLeaseFn(_root, _runId, options) {
+      options.activationTokenProvider({ guard: { assertOwned() {}, renew() {} }, allowCreate: true });
+      mutated = true;
+      return { ok: true, reason: 'activated' };
+    },
+  });
+  assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
+    error => error?.message === 'ACTIVATION_SECRET_UNSAFE');
+  assert.equal(replaced, true);
+  assert.deepEqual(reads, [], 'replacement bytes must not be read before descriptor identity validation');
+  assert.equal(mutated, false);
+});
+
+test('stored activation rejects a special opened descriptor before reading and closes it', () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'dl-secret-special-fd-'));
+  const path = storedSecretPath(stateRoot);
+  writeFileSync(path, storedSecretBytes(), { mode: 0o600 });
+  const reads = [];
+  const closed = [];
+  let secretFd;
+  const deps = linuxDeps(stateRoot, {
+    openFn(value, flags, mode) {
+      const fd = openSync(value, flags, mode);
+      if (value === path) secretFd = fd;
+      return fd;
+    },
+    fstatFn(fd, options) {
+      const stat = fstatSync(fd, options);
+      return fd === secretFd ? { ...stat, isFile: () => false, isSymbolicLink: () => false } : stat;
+    },
+    readFn(value, ...args) { reads.push(value); return readFileSync(value, ...args); },
+    closeFn(fd) { closed.push(fd); closeSync(fd); },
+  });
+  assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
+    error => error?.message === 'ACTIVATION_SECRET_UNSAFE');
+  assert.deepEqual(reads, []);
+  assert.equal(closed.includes(secretFd), true);
+});
+
+test('stored activation rejects descriptor or path identity drift after reading without kernel mutation', () => {
+  for (const axis of ['descriptor', 'path']) {
+    const stateRoot = mkdtempSync(join(tmpdir(), `dl-secret-after-read-${axis}-`));
+    const path = storedSecretPath(stateRoot);
+    writeFileSync(path, storedSecretBytes(), { mode: 0o600 });
+    let targetFd;
+    let fstats = 0;
+    let pathStats = 0;
+    let mutated = false;
+    const deps = linuxDeps(stateRoot, {
+      openFn(value, flags, mode) {
+        const fd = openSync(value, flags, mode);
+        if (value === path) targetFd = fd;
+        return fd;
+      },
+      fstatFn(fd, options) {
+        const stat = fstatSync(fd, options);
+        if (fd === targetFd && ++fstats === 2 && axis === 'descriptor') {
+          return { ...stat, size: stat.size + 1n, isFile: () => true, isSymbolicLink: () => false };
+        }
+        return stat;
+      },
+      lstatFn(value, options) {
+        if (value === path && ++pathStats === 3 && axis === 'path') {
+          renameSync(path, `${path}.held`);
+          writeFileSync(path, storedSecretBytes(Buffer.alloc(32, 0x66).toString('base64url')), { mode: 0o600 });
+        }
+        return lstatSync(value, options);
+      },
+      readFn(fd, ...args) {
+        return readFileSync(fd, ...args);
+      },
+      activateLeaseFn(_root, _runId, options) {
+        options.activationTokenProvider({ guard: { assertOwned() {}, renew() {} }, allowCreate: true });
+        mutated = true;
+        return { ok: true, reason: 'activated' };
+      },
+    });
+    assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, deps),
+      error => error?.message === 'ACTIVATION_SECRET_UNSAFE', axis);
+    assert.equal(mutated, false, axis);
+  }
+});
+
 test('stored activation root selection rejects relative trusted config and Windows ACL must verify', () => {
   assert.throws(() => activateStoredLease(ROOT, RUN, BINDING, linuxDeps('relative/path')),
     error => error?.message === 'ACTIVATION_SECRET_ROOT_INVALID');
@@ -319,6 +492,10 @@ test('exclusive publish race discards the losing candidate and reuses the valida
       value.token = winner;
       writeFileSync(path, `${JSON.stringify(value)}\n`, { flag: 'wx', mode: 0o600 });
       throw Object.assign(new Error('race'), { code: 'EEXIST' });
+    },
+    readFn(fd, ...args) {
+      assert.equal(Number.isInteger(fd), true, 'EEXIST winner must be read through its descriptor');
+      return readFileSync(fd, ...args);
     },
     activateLeaseFn(_root, _runId, options) {
       observed = options.activationTokenProvider({
