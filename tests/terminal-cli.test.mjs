@@ -598,6 +598,28 @@ test('CLI lease acquire rejects duplicate identity flags in either ordering with
   }
 });
 
+test('CLI lease acquire rejects simultaneous generation aliases in either order without mutation', () => {
+  for (const sameValue of [false, true]) {
+    for (const reverse of [false, true]) {
+      const { root, runId, owner, gen } = seedTerminal('running');
+      const before = terminalDurableBytes(root, runId);
+      const generation = ['--generation', String(gen)];
+      const expectGeneration = ['--expect-generation', String(sameValue ? gen : gen + 1)];
+      const aliases = reverse
+        ? [...expectGeneration, ...generation]
+        : [...generation, ...expectGeneration];
+      const result = run(root, [
+        'lease', 'acquire', '--owner', owner, ...aliases,
+        '--runtime', 'claude', '--attempt-id', 'ACQUIREALIASATTEMPT',
+      ]);
+      assert.equal(result.status, 2,
+        `${sameValue ? 'same' : 'conflicting'} ${reverse ? 'expect-first' : 'generation-first'}\n${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /USAGE:/);
+      assert.deepEqual(terminalDurableBytes(root, runId), before);
+    }
+  }
+});
+
 test('CLI lease acquire rejects duplicate project-root in either ordering without mutation', () => {
   for (const reverse of [false, true]) {
     const { root, runId, owner, gen } = seedTerminal('running');

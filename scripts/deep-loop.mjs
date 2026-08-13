@@ -1239,8 +1239,10 @@ const handlers = {
         'owner', 'generation', 'expect-generation', 'runtime', 'attempt-id', 'now',
         'project-root', 'run-id',
       ]);
-      if (!knownFlagVocabulary(rest, acquireFlags) || !exactFlagGrammar(rest, acquireFlags)) {
-        error('USAGE: lease acquire accepts each known flag at most once');
+      if (!knownFlagVocabulary(rest, acquireFlags) || !exactFlagGrammar(rest, acquireFlags)
+        || (flagOccurrences(rest, 'generation') === 1
+          && flagOccurrences(rest, 'expect-generation') === 1)) {
+        error('USAGE: lease acquire accepts each known flag at most once; --generation and --expect-generation are mutually exclusive');
         return 2;
       }
     }
