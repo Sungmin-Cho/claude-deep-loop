@@ -215,19 +215,25 @@ function fixture() {
     checker_terminal_status: 'approved',
   };
   const loopPath = join(runDir, 'loop.json');
+  const loopHashPath = join(runDir, '.loop.hash');
   const eventPath = join(runDir, 'event-log.jsonl');
   const inputPath = join(projectRoot, 'manual-review.json');
   const observationPath = join(projectRoot, 'external-observation.json');
   const receiptPath = join(projectRoot, 'receipt.json');
-  writeFileSync(loopPath, `${JSON.stringify(loop, null, 2)}\n`);
+  const writeLoop = () => {
+    const bytes = Buffer.from(`${JSON.stringify(loop, null, 2)}\n`);
+    writeFileSync(loopPath, bytes);
+    writeFileSync(loopHashPath, sha256(bytes));
+  };
+  writeLoop();
   writeFileSync(eventPath, `${JSON.stringify(event)}\n`);
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
   writeFileSync(observationPath, `${JSON.stringify(observation, null, 2)}\n`);
   writeFileSync(receiptPath, 'sentinel-receipt-bytes\n');
   return {
-    projectRoot, runId, worktreePrefix, worktree, runDir, reportPath, loopPath, eventPath,
+    projectRoot, runId, worktreePrefix, worktree, runDir, reportPath, loopPath, loopHashPath, eventPath,
     inputPath, observationPath, receiptPath, loop, event, input, observation, envelope,
-    writeLoop: () => writeFileSync(loopPath, `${JSON.stringify(loop, null, 2)}\n`),
+    writeLoop,
     writeEvents: (events) => {
       let prev = 'GENESIS';
       events.forEach((item, index) => {
@@ -239,7 +245,7 @@ function fixture() {
         ? { seq: events.at(-1).seq, checksum: events.at(-1).checksum }
         : { seq: 0, checksum: 'GENESIS' };
       writeFileSync(eventPath, events.map((item) => JSON.stringify(item)).join('\n') + (events.length ? '\n' : ''));
-      writeFileSync(loopPath, `${JSON.stringify(loop, null, 2)}\n`);
+      writeLoop();
     },
     writeObservation: () => writeFileSync(observationPath, `${JSON.stringify(observation, null, 2)}\n`),
   };
@@ -261,6 +267,24 @@ function invoke(fx, extraEnv = {}) {
   assert.equal(result.stdout, '');
   assert.deepEqual(readFileSync(fx.receiptPath), sentinel, 'negative path changed receipt bytes');
   return result;
+}
+
+function invokeWithoutReceipt(fx, extraEnv = {}) {
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, verifierArgs(fx), {
+    encoding: 'utf8', env: { ...process.env, ...extraEnv },
+  });
+  assert.notEqual(result.status, 0, 'negative verifier fixture unexpectedly passed');
+  assert.equal(result.stdout, '');
+  assert.equal(lstatOrNull(fx.receiptPath), null, 'negative path created a receipt');
+  return result;
+}
+
+function lstatOrNull(path) {
+  try { return lstatSync(path); } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 function verifierArgs(fx) {
@@ -294,6 +318,25 @@ negative('F26-ACTUAL-NEG-HUMAN-POLICY', 'WSU1_F26_HUMAN_POLICY', (fx) => {
 negative('F26-ACTUAL-NEG-SYNTHETIC-RUN', 'WSU1_F26_SYNTHETIC_RUN', (fx) => {
   fx.loop.project.root = join(tmpdir(), 'different-project-root'); fx.writeLoop();
 });
+test('F26-ACTUAL-NEG-RUN-INTEGRITY requires the anchored loop bytes without leaking evidence', () => {
+  const cases = [
+    ['missing-hash', (fx) => unlinkSync(fx.loopHashPath)],
+    ['malformed-hash', (fx) => writeFileSync(fx.loopHashPath, 'not-a-sha256')],
+    ['mismatched-hash', (fx) => writeFileSync(fx.loopHashPath, '0'.repeat(64))],
+    ['stale-hash-after-loop-tamper', (fx) => {
+      const secret = 'RAW-LOOP-SECRET-MUST-NOT-LEAK';
+      fx.loop.untrusted = secret;
+      writeFileSync(fx.loopPath, `${JSON.stringify(fx.loop, null, 2)}\n`);
+    }],
+  ];
+  for (const [name, mutate] of cases) {
+    const fx = fixture();
+    mutate(fx);
+    const result = invokeWithoutReceipt(fx);
+    assert.equal(result.stderr, 'WSU1_F26_RUN_INTEGRITY\n', name);
+    assert.doesNotMatch(result.stderr, /RAW-LOOP-SECRET|loop\.json|\.loop\.hash|wsu1-f26-verifier-/u, name);
+  }
+});
 negative('F26-ACTUAL-NEG-MISSING-COST-EVENT', 'WSU1_F26_COST_EVENT_COUNT', (fx) => fx.writeEvents([]));
 negative('F26-ACTUAL-NEG-DUPLICATE-COST-EVENT', 'WSU1_F26_COST_EVENT_COUNT', (fx) => {
   fx.writeEvents([fx.event, structuredClone(fx.event)]);
@@ -316,6 +359,28 @@ negative('F26-ACTUAL-NEG-OBSERVATION-NON-REGULAR', 'WSU1_F26_OBSERVATION_NON_REG
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-SHAPE', 'WSU1_F26_OBSERVATION_SHAPE', (fx) => {
   delete fx.observation.observed_at; fx.writeObservation();
+});
+test('F26-ACTUAL-NEG-OBSERVATION-CHRONOLOGY rejects impossible intervals and permits equality', () => {
+  const invalid = [
+    ['finish-before-start', (fx) => { fx.observation.finished_at = '2026-08-09T23:59:59.999Z'; }],
+    ['observe-before-finish', (fx) => { fx.observation.observed_at = '2026-08-10T00:00:59.999Z'; }],
+  ];
+  for (const [name, mutate] of invalid) {
+    const fx = fixture();
+    mutate(fx);
+    fx.writeObservation();
+    const result = invokeWithoutReceipt(fx);
+    assert.equal(result.stderr, 'WSU1_F26_OBSERVATION_SHAPE\n', name);
+  }
+
+  const fx = fixture();
+  fx.observation.finished_at = fx.observation.started_at;
+  fx.observation.observed_at = fx.observation.finished_at;
+  fx.writeObservation();
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-RUN-MISMATCH', 'WSU1_F26_OBSERVATION_RUN', (fx) => {
   fx.observation.run_id = '01DIFFERENTRUN00000000000000'; fx.writeObservation();
@@ -435,4 +500,22 @@ test('STEP0-3 verifier receipt publication flushes its parent before and after t
   const unlink = body.indexOf('unlinkSync(temporary)', firstFlush);
   const secondFlush = body.indexOf('flushDirectory(dirname(path))', unlink);
   assert.equal(link >= 0 && link < firstFlush && firstFlush < unlink && unlink < secondFlush, true);
+});
+
+test('STEP0-3 verifier rechecks the anchored run evidence before receipt publication', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  const body = source.slice(
+    source.indexOf('function verifyRunEvidenceUnchanged('),
+    source.indexOf('\nfunction canonicalDirectory(', source.indexOf('function verifyRunEvidenceUnchanged(')),
+  );
+  assert.deepEqual(
+    ['loopBytes', 'loopHashBytes', 'eventBytes'].filter((name) => body.includes(`evidence.${name}]`)),
+    ['loopBytes', 'loopHashBytes', 'eventBytes'],
+  );
+  assert.match(body, /if \(!observed\.equals\(expected\)\) fail\('WSU1_F26_RUN_INTEGRITY'\)/u);
+  const initial = source.indexOf('const runEvidence = readRunEvidence(runDirectory)');
+  const eventValidation = source.indexOf('validateEventLog(events, loop.event_log_head)', initial);
+  const reread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', eventValidation);
+  const publication = source.indexOf('atomicallyCreate(resolve(args[\'--receipt\'])', reread);
+  assert.equal(initial >= 0 && initial < eventValidation && eventValidation < reread && reread < publication, true);
 });

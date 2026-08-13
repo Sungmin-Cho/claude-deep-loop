@@ -62,6 +62,31 @@ function regularJson(path, missingDiagnostic, nonRegularDiagnostic = missingDiag
   catch { fail(parseDiagnostic); }
 }
 
+function readRunEvidence(runDirectory) {
+  const loopPath = join(runDirectory, 'loop.json');
+  const loopHashPath = join(runDirectory, '.loop.hash');
+  const eventPath = join(runDirectory, 'event-log.jsonl');
+  const { bytes: loopBytes, value: loop } = regularJson(loopPath, 'WSU1_F26_SYNTHETIC_RUN');
+  const loopHashBytes = regularBytes(loopHashPath, 'WSU1_F26_RUN_INTEGRITY');
+  const loopHash = loopHashBytes.toString('utf8');
+  if (!SHA256.test(loopHash) || loopHash !== sha256(loopBytes)) fail('WSU1_F26_RUN_INTEGRITY');
+  const eventBytes = regularBytes(eventPath, 'WSU1_F26_EVENT_LOG');
+  return {
+    loop, loopPath, loopBytes, loopHashPath, loopHashBytes, eventPath, eventBytes,
+  };
+}
+
+function verifyRunEvidenceUnchanged(evidence) {
+  for (const [path, expected] of [
+    [evidence.loopPath, evidence.loopBytes],
+    [evidence.loopHashPath, evidence.loopHashBytes],
+    [evidence.eventPath, evidence.eventBytes],
+  ]) {
+    const observed = regularBytes(path, 'WSU1_F26_RUN_INTEGRITY');
+    if (!observed.equals(expected)) fail('WSU1_F26_RUN_INTEGRITY');
+  }
+}
+
 function canonicalDirectory(path, diagnostic) {
   let stat;
   try { stat = lstatSync(path); } catch { fail(diagnostic); }
@@ -225,12 +250,14 @@ function locateReport(runDirectory, input, claim, runId) {
 }
 
 function validateObservation(observation, context) {
+  const observedAt = Date.parse(observation?.observed_at);
+  const startedAt = Date.parse(observation?.started_at);
+  const finishedAt = Date.parse(observation?.finished_at);
   if (!exactKeys(observation, OBSERVATION_KEYS) || observation.schema_version !== 1
     || observation.observer_role !== 'orchestrator'
     || typeof observation.observer_session_id !== 'string' || observation.observer_session_id.length === 0
-    || !Number.isFinite(Date.parse(observation.observed_at))
-    || !Number.isFinite(Date.parse(observation.started_at))
-    || !Number.isFinite(Date.parse(observation.finished_at))) fail('WSU1_F26_OBSERVATION_SHAPE');
+    || !Number.isFinite(observedAt) || !Number.isFinite(startedAt) || !Number.isFinite(finishedAt)
+    || startedAt > finishedAt || finishedAt > observedAt) fail('WSU1_F26_OBSERVATION_SHAPE');
   if (observation.project_root !== context.projectRoot || observation.worktree !== context.worktreePrefix
     || observation.run_id !== context.runId || observation.workstream_id !== context.workstream.id
     || observation.point !== context.point || observation.maker_episode_id !== context.maker.id
@@ -280,7 +307,8 @@ function main() {
   if (point !== 'wsu1-f26-independent-review') fail('WSU1_F26_CLAIM_CONTEXT');
   const runDirectory = canonicalDirectory(join(projectRoot, '.deep-loop', 'runs', runId), 'WSU1_F26_SYNTHETIC_RUN');
   if (!within(projectRoot, runDirectory)) fail('WSU1_F26_SYNTHETIC_RUN');
-  const { value: loop } = regularJson(join(runDirectory, 'loop.json'), 'WSU1_F26_SYNTHETIC_RUN');
+  const runEvidence = readRunEvidence(runDirectory);
+  const { loop } = runEvidence;
   if (loop?.run_id !== runId) fail('WSU1_F26_SYNTHETIC_RUN');
   let loopRoot;
   try { loopRoot = realpathSync(resolve(loop?.project?.root)); } catch { fail('WSU1_F26_SYNTHETIC_RUN'); }
@@ -329,7 +357,7 @@ function main() {
     fail('WSU1_F26_WORKTREE_K');
   }
   const report = locateReport(runDirectory, input, claim, runId);
-  const eventBytes = regularBytes(join(runDirectory, 'event-log.jsonl'), 'WSU1_F26_EVENT_LOG');
+  const { eventBytes } = runEvidence;
   const events = eventLines(eventBytes);
   validateEventLog(events, loop.event_log_head);
   const claimHash = sha256(Buffer.from(JSON.stringify(claim)));
@@ -388,6 +416,7 @@ function main() {
     report_sha256: report.sha,
     envelope: report.report,
   };
+  verifyRunEvidenceUnchanged(runEvidence);
   atomicallyCreate(resolve(args['--receipt']), Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
   process.stdout.write('WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 }
