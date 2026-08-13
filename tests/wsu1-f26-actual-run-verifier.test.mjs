@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tokenize } from './helpers/wsu1-f26-static-analyzer.mjs';
-import { createDirectoryJunction, createFileSymlink } from './helpers/fs-fixtures.mjs';
+import {
+  createDirectoryJunction, createFileSymlink, createFileSymlinkOrSkip,
+} from './helpers/fs-fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -56,7 +58,9 @@ function baselineNode20TraversalViolations(source, file = '<source>') {
   return violations;
 }
 
-function fixture() {
+function fixture({
+  scriptDecoy = null, ignoredRuntime = false, includeIgnoredArtifact = true, testContext = null,
+} = {}) {
   const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), 'wsu1-f26-verifier-')));
   const runId = '01WSU1F26TESTACTUALRUN0001';
   const worktreePrefix = '.claude/worktrees/wsu1-acquire-contract';
@@ -68,13 +72,32 @@ function fixture() {
   mkdirSync(join(scripts, 'nested'), { recursive: true });
   mkdirSync(fixtures, { recursive: true });
   mkdirSync(reviews, { recursive: true });
-  writeFileSync(join(scripts, 'surface.mjs'), 'export function surface() {}\n');
+  const imports = [];
   writeFileSync(join(scripts, 'nested', 'surface-nested.mjs'), 'export const nested = true;\n');
-  createFileSymlink('surface.mjs', join(scripts, 'surface-decoy.mjs'));
-  const outsideScripts = join(projectRoot, 'outside-scripts');
-  mkdirSync(outsideScripts);
-  writeFileSync(join(outsideScripts, 'outside.mjs'), 'export const outside = true;\n');
-  createDirectoryJunction(outsideScripts, join(scripts, 'directory-decoy'));
+  if (scriptDecoy === 'file') {
+    const outside = join(projectRoot, 'outside-file.mjs');
+    writeFileSync(outside, 'export const outside = true;\n');
+    if (testContext && !createFileSymlinkOrSkip(testContext, outside, join(scripts, 'imported-decoy.mjs'))) {
+      return null;
+    }
+    if (!testContext) createFileSymlink(outside, join(scripts, 'imported-decoy.mjs'));
+    imports.push("import './imported-decoy.mjs';");
+  }
+  if (scriptDecoy === 'directory') {
+    const outsideScripts = join(projectRoot, 'outside-scripts');
+    mkdirSync(outsideScripts);
+    writeFileSync(join(outsideScripts, 'outside.mjs'), 'export const outside = true;\n');
+    createDirectoryJunction(outsideScripts, join(scripts, 'directory-decoy'));
+    imports.push("import './directory-decoy/outside.mjs';");
+  }
+  if (ignoredRuntime) {
+    const initialized = spawnSync('git', ['init', '--quiet', worktree], { encoding: 'utf8' });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    writeFileSync(join(worktree, '.gitignore'), 'scripts/ignored-runtime.mjs\n');
+    writeFileSync(join(scripts, 'ignored-runtime.mjs'), 'export const ignoredRuntime = true;\n');
+    imports.push("import './ignored-runtime.mjs';");
+  }
+  writeFileSync(join(scripts, 'surface.mjs'), `${imports.join('\n')}${imports.length ? '\n' : ''}export function surface() {}\n`);
   writeFileSync(join(fixtures, 'activation-pending-classification.seed.md'), 'seed\n');
   writeFileSync(join(fixtures, 'activation-pending-classification.md'), 'live\n');
   writeFileSync(join(fixtures, 'activation-pending-classification-evidence.json'), '{"rows":[]}\n');
@@ -86,6 +109,8 @@ function fixture() {
     'tests/fixtures/activation-pending-classification.md',
     'tests/fixtures/activation-pending-classification-evidence.json',
   ].sort();
+  if (ignoredRuntime && includeIgnoredArtifact) relativeArtifacts.push('scripts/ignored-runtime.mjs');
+  relativeArtifacts.sort();
   const artifacts = relativeArtifacts.map((path) => ({
     path: `${worktreePrefix}/${path}`,
     sha256: sha256(readFileSync(join(worktree, ...path.split('/')))),
@@ -446,14 +471,47 @@ test('STEP0-3 traversal sources use only baseline Node20 Dirent fields and non-r
   ), ['recursive readdirSync']);
 });
 
-test('STEP0-3 verifier does not follow a directory-symlink script decoy', () => {
-  const fx = fixture();
+test('F26-ACTUAL-NEG-WORKTREE-K rejects an imported file symlink without leakage', (t) => {
+  const fx = fixture({ scriptDecoy: 'file', testContext: t });
+  if (!fx) return;
+  assert.equal(lstatSync(join(fx.worktree, 'scripts', 'imported-decoy.mjs')).isSymbolicLink(), true);
+  const result = invokeWithoutReceipt(fx);
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  assert.doesNotMatch(result.stderr, /outside|decoy|wsu1-f26-verifier-/u);
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K rejects an imported directory symlink without leakage', () => {
+  const fx = fixture({ scriptDecoy: 'directory' });
   assert.equal(lstatSync(join(fx.worktree, 'scripts', 'directory-decoy')).isSymbolicLink(), true);
-  assert.equal(fx.input.artifacts.some(({ path }) => path.includes('outside.mjs')), false);
+  const result = invokeWithoutReceipt(fx);
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  assert.doesNotMatch(result.stderr, /outside|decoy|wsu1-f26-verifier-/u);
+});
+
+test('STEP0-3 verifier includes an ignored imported regular script in the coherent source contract', () => {
+  const fx = fixture({ ignoredRuntime: true });
+  assert.equal(fx.input.artifacts.some(({ path }) => path.endsWith('/scripts/ignored-runtime.mjs')), true);
   unlinkSync(fx.receiptPath);
   const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K rejects omission of an ignored imported regular script', () => {
+  const fx = fixture({ ignoredRuntime: true, includeIgnoredArtifact: false });
+  const result = invokeWithoutReceipt(fx);
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K rejects a nonregular scripts entry', {
+  skip: process.platform === 'win32' ? 'mkfifo is unavailable on Windows' : false,
+}, () => {
+  const fx = fixture();
+  const fifo = join(fx.worktree, 'scripts', 'runtime-fifo');
+  const made = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+  const result = invokeWithoutReceipt(fx);
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
 });
 
 test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production checksum chain', () => {

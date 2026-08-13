@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
@@ -119,16 +118,6 @@ function canonicalArtifacts(value) {
   return result.sort((left, right) => byteSort(left.path, right.path));
 }
 
-function shouldIgnore(worktree, path) {
-  if (!existsSync(join(worktree, '.git'))) return false;
-  const checked = spawnSync('git', ['-C', worktree, 'check-ignore', '--no-index', '--quiet', '--', path], {
-    stdio: 'ignore',
-  });
-  if (checked.status === 0) return true;
-  if (checked.status === 1) return false;
-  fail('WSU1_F26_WORKTREE_K');
-}
-
 function sourceArtifacts(worktree) {
   const files = [];
   const scripts = join(worktree, 'scripts');
@@ -138,13 +127,14 @@ function sourceArtifacts(worktree) {
     const parent = directories.pop();
     for (const entry of readdirSync(parent, { withFileTypes: true })) {
       const path = join(parent, entry.name);
-      if (entry.isDirectory()) {
+      let stat;
+      try { stat = lstatSync(path); } catch { fail('WSU1_F26_WORKTREE_K'); }
+      if (stat.isSymbolicLink()) fail('WSU1_F26_WORKTREE_K');
+      if (stat.isDirectory()) {
         directories.push(path);
         continue;
       }
-      if (!entry.isFile()) continue;
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || !stat.isFile()) fail('WSU1_F26_WORKTREE_K');
+      if (!stat.isFile()) fail('WSU1_F26_WORKTREE_K');
       files.push(path);
     }
   }
@@ -156,7 +146,6 @@ function sourceArtifacts(worktree) {
   const rows = [];
   for (const path of files.sort(byteSort)) {
     const bytes = regularBytes(path, 'WSU1_F26_WORKTREE_K');
-    if (shouldIgnore(worktree, path)) continue;
     const rel = relative(worktree, path).split(sep).join('/');
     if (!portableRelative(rel)) fail('WSU1_F26_WORKTREE_K');
     rows.push({ path: rel, sha256: sha256(bytes), bytes });
