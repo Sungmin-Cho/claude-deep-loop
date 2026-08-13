@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
+  closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
   readdirSync, realpathSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -98,6 +98,38 @@ function within(parent, child) {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep));
 }
 
+function stableIdentity(stat) {
+  return Object.freeze({
+    dev: String(stat.dev), ino: String(stat.ino), birthtime_ns: String(stat.birthtimeNs),
+  });
+}
+
+function matchingIdentity(left, right) {
+  if (!left || !right || left.ino === '0' || right.ino === '0' || left.ino !== right.ino) return false;
+  if (left.dev !== '0' && right.dev !== '0') return left.dev === right.dev;
+  return left.birthtime_ns !== '0' && right.birthtime_ns !== '0'
+    && left.birthtime_ns === right.birthtime_ns;
+}
+
+function inspectReceiptParent(parent) {
+  let before;
+  try { before = lstatSync(parent, { bigint: true }); } catch { fail('WSU1_F26_WORKTREE_K'); }
+  if (before.isSymbolicLink() || !before.isDirectory()) fail('WSU1_F26_WORKTREE_K');
+  let canonical;
+  try { canonical = (realpathSync.native || realpathSync)(parent); } catch { fail('WSU1_F26_WORKTREE_K'); }
+  let after;
+  try { after = lstatSync(canonical, { bigint: true }); } catch { fail('WSU1_F26_WORKTREE_K'); }
+  if (resolve(canonical) !== resolve(parent) || after.isSymbolicLink() || !after.isDirectory()
+    || !matchingIdentity(stableIdentity(before), stableIdentity(after))) fail('WSU1_F26_WORKTREE_K');
+  return { canonical, identity: stableIdentity(after) };
+}
+
+function verifyReceiptParent(binding) {
+  const observed = inspectReceiptParent(binding.parent);
+  if (observed.canonical !== binding.canonical_parent
+    || !matchingIdentity(observed.identity, binding.parent_identity)) fail('WSU1_F26_WORKTREE_K');
+}
+
 function canonicalProspectivePath(path, diagnostic) {
   const suffix = [];
   let cursor = resolve(path);
@@ -133,7 +165,15 @@ function safeReceiptTarget(value, worktree) {
       fail('WSU1_F26_WORKTREE_K');
     }
   }
-  return lexical;
+  const parent = dirname(lexical);
+  try { mkdirSync(parent, { recursive: true }); } catch { fail('WSU1_F26_WORKTREE_K'); }
+  const inspected = inspectReceiptParent(parent);
+  return Object.freeze({
+    path: lexical,
+    parent,
+    canonical_parent: inspected.canonical,
+    parent_identity: inspected.identity,
+  });
 }
 
 function portableRelative(path) {
@@ -315,16 +355,43 @@ function validateObservation(observation, context) {
     || result.attemptId !== context.claim.attempt_id) fail('WSU1_F26_OBSERVATION_RESULT');
 }
 
-function atomicallyCreate(path, bytes) {
-  mkdirSync(dirname(path), { recursive: true });
+function unlinkExact(path, identity) {
+  if (!identity) return;
+  try {
+    const observed = stableIdentity(lstatSync(path, { bigint: true }));
+    if (matchingIdentity(observed, identity)) unlinkSync(path);
+  } catch { /* cleanup is best-effort and never follows a replacement */ }
+}
+
+function atomicallyCreate(binding, bytes) {
+  const { path, parent } = binding;
+  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_PRE_OPEN
   if (existsSync(path)) fail('WSU1_F26_RECEIPT_EXISTS');
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
   const fd = openSync(temporary, 'wx', 0o600);
-  try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
-  try { linkSync(temporary, path); } catch { unlinkSync(temporary); fail('WSU1_F26_RECEIPT_EXISTS'); }
-  flushDirectory(dirname(path));
-  unlinkSync(temporary);
-  flushDirectory(dirname(path));
+  let temporaryIdentity;
+  let installedIdentity;
+  try {
+    temporaryIdentity = stableIdentity(fstatSync(fd, { bigint: true }));
+    writeFileSync(fd, bytes);
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  try {
+    verifyReceiptParent(binding); // RECEIPT_BOUNDARY_PRE_LINK
+    linkSync(temporary, path);
+    installedIdentity = stableIdentity(lstatSync(path, { bigint: true }));
+    if (!matchingIdentity(temporaryIdentity, installedIdentity)) fail('WSU1_F26_WORKTREE_K');
+    verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_LINK
+    flushDirectory(parent);
+    unlinkExact(temporary, temporaryIdentity);
+    flushDirectory(parent);
+    return installedIdentity;
+  } catch (error) {
+    unlinkExact(path, installedIdentity);
+    unlinkExact(temporary, temporaryIdentity);
+    if (error?.diagnostic) throw error;
+    fail(error?.code === 'EEXIST' ? 'WSU1_F26_RECEIPT_EXISTS' : 'WSU1_F26_WORKTREE_K');
+  }
 }
 
 function main() {
@@ -337,7 +404,7 @@ function main() {
   if (!within(projectRoot, worktree) || relative(projectRoot, worktree).split(sep).join('/') !== worktreePrefix) {
     fail('WSU1_F26_WORKTREE_K');
   }
-  const receiptPath = safeReceiptTarget(args['--receipt'], worktree);
+  const receiptBinding = safeReceiptTarget(args['--receipt'], worktree);
   const runId = args['--run-id'];
   const point = args['--point'];
   if (point !== 'wsu1-f26-independent-review') fail('WSU1_F26_CLAIM_CONTEXT');
@@ -453,8 +520,18 @@ function main() {
     envelope: report.report,
   };
   verifyRunEvidenceUnchanged(runEvidence);
-  verifySourceArtifactsUnchanged(worktree, relativeContract);
-  atomicallyCreate(receiptPath, Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
+  verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION
+  const receiptIdentity = atomicallyCreate(receiptBinding,
+    Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
+  const binding = receiptBinding;
+  try {
+  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_PUBLICATION
+    verifySourceArtifactsUnchanged(worktree, relativeContract);
+  } catch {
+    unlinkExact(receiptBinding.path, receiptIdentity);
+    try { flushDirectory(receiptBinding.parent); } catch { /* parent drift is already fail-closed */ }
+    fail('WSU1_F26_WORKTREE_K');
+  }
   process.stdout.write('WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 }
 

@@ -352,8 +352,8 @@ function invokeWithSourceRace(fx, mutationSource) {
   const runnerScripts = join(runnerRoot, 'scripts');
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
   const source = readFileSync(VERIFIER, 'utf8');
-  const seam = '  verifySourceArtifactsUnchanged(worktree, relativeContract);';
-  assert.equal(source.split(seam).length, 2, 'final source recheck must have one unambiguous seam');
+  const seam = '  verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION';
+  assert.equal(source.split(seam).length, 2, 'pre-publication source recheck must have one unambiguous seam');
   writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(seam, `  ${mutationSource}\n${seam}`));
   writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
   unlinkSync(fx.receiptPath);
@@ -364,6 +364,39 @@ function invokeWithSourceRace(fx, mutationSource) {
   assert.equal(result.stdout, '');
   assert.equal(lstatOrNull(fx.receiptPath), null, 'source race created a receipt');
   return result;
+}
+
+function invokeWithReceiptParentRace(fx, boundary) {
+  const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-parent-race-'));
+  const runnerScripts = join(runnerRoot, 'scripts');
+  mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
+  const target = join(fx.projectRoot, 'race-receipts', 'verified.json');
+  mkdirSync(dirname(target));
+  const held = `${dirname(target)}-held`;
+  const replacement = [
+    `process.getBuiltinModule('node:fs').renameSync(${JSON.stringify(dirname(target))}, ${JSON.stringify(held)});`,
+    `process.getBuiltinModule('node:fs').symlinkSync(${JSON.stringify(join(fx.worktree, 'scripts'))},`,
+    `  ${JSON.stringify(dirname(target))}, process.platform === 'win32' ? 'junction' : 'dir');`,
+  ].join('\n');
+  const marker = `  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_${boundary}`;
+  const source = readFileSync(VERIFIER, 'utf8');
+  assert.equal(source.split(marker).length, 2, `${boundary} boundary must be unique`);
+  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(marker, `  ${replacement}\n${marker}`));
+  writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
+  unlinkSync(fx.receiptPath);
+  const args = verifierArgs(fx);
+  args[args.indexOf('--receipt') + 1] = target;
+  const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...args.slice(1)], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, `${boundary} parent race unexpectedly passed`);
+  assert.equal(result.stdout, '');
+  assert.equal(lstatOrNull(target), null, `${boundary} parent race left a target receipt`);
+  assert.equal(lstatSync(dirname(target)).isSymbolicLink(), true);
+  assert.equal(lstatOrNull(join(fx.worktree, 'scripts', 'verified.json')), null,
+    `${boundary} parent race wrote into K`);
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  assert.doesNotMatch(result.stderr, /race-receipts|verified\.json|scripts|wsu1-f26-verifier-/u);
 }
 
 function negative(name, diagnostic, mutate, extraEnv) {
@@ -625,6 +658,25 @@ test('STEP0-3 verifier permits a new receipt outside the reviewed source closure
   assert.equal(JSON.parse(readFileSync(target, 'utf8')).run_id, fx.runId);
 });
 
+test('F26-ACTUAL-NEG-WORKTREE-K rejects receipt-parent replacement at every publication boundary', () => {
+  for (const boundary of ['PRE_OPEN', 'PRE_LINK', 'POST_LINK', 'POST_PUBLICATION']) {
+    invokeWithReceiptParentRace(fixture(), boundary);
+  }
+});
+
+test('STEP0-3 verifier materializes and binds an initially missing outside receipt parent', () => {
+  const fx = fixture();
+  const target = join(fx.projectRoot, 'missing-parent', 'nested', 'verified.json');
+  assert.equal(lstatOrNull(dirname(target)), null);
+  unlinkSync(fx.receiptPath);
+  const args = verifierArgs(fx);
+  args[args.indexOf('--receipt') + 1] = target;
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
+  assert.equal(JSON.parse(readFileSync(target, 'utf8')).run_id, fx.runId);
+});
+
 test('STEP0-3 receipt target guard binds both lexical and canonical reviewed-source axes', () => {
   const source = readFileSync(VERIFIER, 'utf8');
   const body = source.slice(
@@ -677,9 +729,9 @@ test('STEP0-3 verifier receipt publication flushes its parent before and after t
   const source = readFileSync(VERIFIER, 'utf8');
   const body = source.slice(source.indexOf('function atomicallyCreate('), source.indexOf('\nfunction main()', source.indexOf('function atomicallyCreate(')));
   const link = body.indexOf('linkSync(temporary, path)');
-  const firstFlush = body.indexOf('flushDirectory(dirname(path))', link);
-  const unlink = body.indexOf('unlinkSync(temporary)', firstFlush);
-  const secondFlush = body.indexOf('flushDirectory(dirname(path))', unlink);
+  const firstFlush = body.indexOf('flushDirectory(parent)', link);
+  const unlink = body.indexOf('unlinkExact(temporary, temporaryIdentity)', firstFlush);
+  const secondFlush = body.indexOf('flushDirectory(parent)', unlink);
   assert.equal(link >= 0 && link < firstFlush && firstFlush < unlink && unlink < secondFlush, true);
 });
 
@@ -697,7 +749,7 @@ test('STEP0-3 verifier rechecks the anchored run evidence before receipt publica
   const initial = source.indexOf('const runEvidence = readRunEvidence(runDirectory)');
   const eventValidation = source.indexOf('validateEventLog(events, loop.event_log_head)', initial);
   const reread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', eventValidation);
-  const publication = source.indexOf('atomicallyCreate(receiptPath', reread);
+  const publication = source.indexOf('atomicallyCreate(receiptBinding', reread);
   assert.equal(initial >= 0 && initial < eventValidation && eventValidation < reread && reread < publication, true);
 });
 
@@ -706,8 +758,10 @@ test('STEP0-3 verifier re-enumerates K after run evidence and immediately before
   const initial = source.indexOf('const sources = sourceArtifacts(worktree)');
   const runReread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', initial);
   const sourceReread = source.indexOf('verifySourceArtifactsUnchanged(worktree, relativeContract)', runReread);
-  const publication = source.indexOf('atomicallyCreate(receiptPath', sourceReread);
+  const publication = source.indexOf('atomicallyCreate(receiptBinding', sourceReread);
   assert.equal(initial >= 0 && initial < runReread && runReread < sourceReread && sourceReread < publication, true);
-  assert.equal(source.slice(sourceReread, publication).trim(),
-    'verifySourceArtifactsUnchanged(worktree, relativeContract);');
+  assert.equal(source.slice(sourceReread, publication).trim(), [
+    'verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION',
+    '  const receiptIdentity =',
+  ].join('\n'));
 });
