@@ -8,7 +8,6 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   rmSync,
   renameSync,
   writeFileSync,
@@ -873,7 +872,7 @@ test('verified root-recovery capture diagnoses a moved root from immutable bytes
 test('verified root diagnosis propagates the path-free atomic-replacement race descriptor', async () => {
   const moved = movedRun('dl-root-verified-atomic-replacement-');
   const target = join(
-    realpathSync(moved.candidateRoot),
+    canonicalProjectRoot(moved.candidateRoot),
     '.deep-loop',
     'runs',
     moved.runId,
@@ -917,7 +916,7 @@ test('verified root diagnosis propagates the path-free atomic-replacement race d
 test('verified root diagnosis keeps same-inode same-length content drift integrity-invalid', async () => {
   const moved = movedRun('dl-root-verified-same-inode-content-');
   const target = join(
-    realpathSync(moved.candidateRoot),
+    canonicalProjectRoot(moved.candidateRoot),
     '.deep-loop',
     'runs',
     moved.runId,
