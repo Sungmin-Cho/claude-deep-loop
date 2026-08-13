@@ -16,6 +16,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const VERIFIER = join(ROOT, 'scripts', 'verify-wsu1-f26-actual-run.mjs');
+const ATOMIC_WRITE = join(ROOT, 'scripts', 'lib', 'atomic-write.mjs');
 const NODE20_TRAVERSAL_SOURCES = [
   VERIFIER,
   join(HERE, 'helpers', 'baseline-node20-walk.mjs'),
@@ -325,6 +326,25 @@ function verifierArgs(fx) {
   ];
 }
 
+function invokeWithSourceRace(fx, mutationSource) {
+  const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-race-runner-'));
+  const runnerScripts = join(runnerRoot, 'scripts');
+  mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
+  const source = readFileSync(VERIFIER, 'utf8');
+  const seam = '  verifySourceArtifactsUnchanged(worktree, relativeContract);';
+  assert.equal(source.split(seam).length, 2, 'final source recheck must have one unambiguous seam');
+  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(seam, `  ${mutationSource}\n${seam}`));
+  writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, 'source race unexpectedly minted a receipt');
+  assert.equal(result.stdout, '');
+  assert.equal(lstatOrNull(fx.receiptPath), null, 'source race created a receipt');
+  return result;
+}
+
 function negative(name, diagnostic, mutate, extraEnv) {
   test(name, () => {
     const fx = fixture();
@@ -514,6 +534,26 @@ test('F26-ACTUAL-NEG-WORKTREE-K rejects a nonregular scripts entry', {
   assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
 });
 
+test('F26-ACTUAL-NEG-WORKTREE-K rejects add, change, and remove races at the publication seam', () => {
+  const cases = [
+    ['add', (fx) => `writeFileSync(${JSON.stringify(join(fx.worktree, 'scripts', 'race-added.mjs'))}, 'secret-add')`],
+    ['change', (fx) => `writeFileSync(${JSON.stringify(join(fx.worktree, 'scripts', 'surface.mjs'))}, 'secret-change')`],
+    ['remove', (fx) => `unlinkSync(${JSON.stringify(join(fx.worktree, 'scripts', 'nested', 'surface-nested.mjs'))})`],
+    ['rename-same-bytes', (fx) => {
+      const oldPath = join(fx.worktree, 'scripts', 'nested', 'surface-nested.mjs');
+      const newPath = join(fx.worktree, 'scripts', 'nested', 'surface-renamed.mjs');
+      return `writeFileSync(${JSON.stringify(newPath)}, readFileSync(${JSON.stringify(oldPath)})); unlinkSync(${JSON.stringify(oldPath)})`;
+    }],
+  ];
+  for (const [name, buildMutation] of cases) {
+    const fx = fixture();
+    const mutation = buildMutation(fx);
+    const result = invokeWithSourceRace(fx, mutation);
+    assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n', name);
+    assert.doesNotMatch(result.stderr, /secret-|race-added|surface\.mjs|wsu1-f26-verifier-/u, name);
+  }
+});
+
 test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production checksum chain', () => {
   const fx = fixture();
   fx.event.checksum = nulChecksumFor(
@@ -576,4 +616,15 @@ test('STEP0-3 verifier rechecks the anchored run evidence before receipt publica
   const reread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', eventValidation);
   const publication = source.indexOf('atomicallyCreate(resolve(args[\'--receipt\'])', reread);
   assert.equal(initial >= 0 && initial < eventValidation && eventValidation < reread && reread < publication, true);
+});
+
+test('STEP0-3 verifier re-enumerates K after run evidence and immediately before publication', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  const initial = source.indexOf('const sources = sourceArtifacts(worktree)');
+  const runReread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', initial);
+  const sourceReread = source.indexOf('verifySourceArtifactsUnchanged(worktree, relativeContract)', runReread);
+  const publication = source.indexOf('atomicallyCreate(resolve(args[\'--receipt\'])', sourceReread);
+  assert.equal(initial >= 0 && initial < runReread && runReread < sourceReread && sourceReread < publication, true);
+  assert.equal(source.slice(sourceReread, publication).trim(),
+    'verifySourceArtifactsUnchanged(worktree, relativeContract);');
 });

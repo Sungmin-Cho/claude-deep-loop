@@ -153,6 +153,14 @@ function sourceArtifacts(worktree) {
   return rows.sort((left, right) => byteSort(left.path, right.path));
 }
 
+function sourceContract(rows) {
+  return rows.map(({ path, sha256: digest }) => ({ path, sha256: digest }));
+}
+
+function verifySourceArtifactsUnchanged(worktree, expectedContract) {
+  if (!same(sourceContract(sourceArtifacts(worktree)), expectedContract)) fail('WSU1_F26_WORKTREE_K');
+}
+
 function reviewedSourceHash(rows) {
   const hash = createHash('sha256');
   for (const row of rows) {
@@ -336,7 +344,7 @@ function main() {
     }));
 
   const sources = sourceArtifacts(worktree);
-  const relativeContract = sources.map(({ path, sha256: digest }) => ({ path, sha256: digest }));
+  const relativeContract = sourceContract(sources);
   const kernelContract = relativeContract.map(({ path, sha256: digest }) => ({
     path: `${worktreePrefix}/${path}`, sha256: digest,
   })).sort((left, right) => byteSort(left.path, right.path));
@@ -406,6 +414,7 @@ function main() {
     envelope: report.report,
   };
   verifyRunEvidenceUnchanged(runEvidence);
+  verifySourceArtifactsUnchanged(worktree, relativeContract);
   atomicallyCreate(resolve(args['--receipt']), Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
   process.stdout.write('WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 }
