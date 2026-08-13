@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync,
+  lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tokenize } from './helpers/wsu1-f26-static-analyzer.mjs';
 import {
@@ -326,6 +327,26 @@ function verifierArgs(fx) {
   ];
 }
 
+function invokeReceiptTarget(fx, receiptTarget, { cwd = ROOT } = {}) {
+  if (lstatOrNull(fx.receiptPath)) unlinkSync(fx.receiptPath);
+  const args = verifierArgs(fx);
+  args[args.indexOf('--receipt') + 1] = receiptTarget;
+  const absoluteTarget = resolve(cwd, receiptTarget);
+  const before = lstatOrNull(absoluteTarget);
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8', cwd });
+  assert.notEqual(result.status, 0, 'protected receipt target unexpectedly passed');
+  assert.equal(result.stdout, '');
+  const after = lstatOrNull(absoluteTarget);
+  if (before === null) assert.equal(after, null, 'protected receipt target was created');
+  else assert.equal(after?.isSymbolicLink(), before.isSymbolicLink(), 'protected receipt target type changed');
+  const parent = dirname(absoluteTarget);
+  if (lstatOrNull(parent)?.isDirectory()) {
+    assert.equal(readdirSync(parent).some((name) => name.startsWith(`${basename(absoluteTarget)}.tmp-`)), false,
+      'protected receipt temporary was created');
+  }
+  return result;
+}
+
 function invokeWithSourceRace(fx, mutationSource) {
   const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-race-runner-'));
   const runnerScripts = join(runnerRoot, 'scripts');
@@ -554,6 +575,68 @@ test('F26-ACTUAL-NEG-WORKTREE-K rejects add, change, and remove races at the pub
   }
 });
 
+test('F26-ACTUAL-NEG-WORKTREE-K rejects direct and relative receipt targets under scripts', () => {
+  const cases = [
+    ['direct', (fx) => join(fx.worktree, 'scripts', 'new-receipt.json'), ROOT],
+    ['relative', (fx) => relative(fx.projectRoot, join(fx.worktree, 'scripts', 'nested', 'new-receipt.json')),
+      (fx) => fx.projectRoot],
+  ];
+  for (const [name, targetOf, cwdOf] of cases) {
+    const fx = fixture();
+    const target = targetOf(fx);
+    const cwd = typeof cwdOf === 'function' ? cwdOf(fx) : cwdOf;
+    const before = readFileSync(join(fx.worktree, 'scripts', 'surface.mjs'));
+    const result = invokeReceiptTarget(fx, target, { cwd });
+    assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n', name);
+    assert.deepEqual(readFileSync(join(fx.worktree, 'scripts', 'surface.mjs')), before, name);
+    assert.doesNotMatch(result.stderr, /new-receipt|scripts|wsu1-f26-verifier-/u, name);
+  }
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K rejects receipt aliases into reviewed source paths', () => {
+  const fx = fixture();
+  const alias = join(fx.projectRoot, 'source-alias');
+  createDirectoryJunction(join(fx.worktree, 'scripts'), alias);
+  let result = invokeReceiptTarget(fx, join(alias, 'aliased-receipt.json'));
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+
+  const fixtureAlias = join(fx.projectRoot, 'fixture-alias.json');
+  const reviewedFixture = join(fx.worktree, 'tests', 'fixtures', 'activation-pending-classification.md');
+  try {
+    createFileSymlink(reviewedFixture, fixtureAlias);
+  } catch (error) {
+    if (process.platform === 'win32' && error?.code === 'EPERM') return;
+    throw error;
+  }
+  result = invokeReceiptTarget(fx, fixtureAlias);
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  assert.doesNotMatch(result.stderr, /source-alias|fixture-alias|activation-pending/u);
+});
+
+test('STEP0-3 verifier permits a new receipt outside the reviewed source closure', () => {
+  const fx = fixture();
+  const target = join(fx.projectRoot, 'receipts', 'verified.json');
+  unlinkSync(fx.receiptPath);
+  const args = verifierArgs(fx);
+  args[args.indexOf('--receipt') + 1] = target;
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
+  assert.equal(JSON.parse(readFileSync(target, 'utf8')).run_id, fx.runId);
+});
+
+test('STEP0-3 receipt target guard binds both lexical and canonical reviewed-source axes', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  const body = source.slice(
+    source.indexOf('function safeReceiptTarget('),
+    source.indexOf('\nfunction portableRelative(', source.indexOf('function safeReceiptTarget(')),
+  );
+  assert.match(body, /within\(resolve\(worktree, 'scripts'\), lexical\)/u);
+  assert.match(body, /within\(scripts, canonical\)/u);
+  assert.match(body, /lexical === resolve\(fixture\)/u);
+  assert.match(body, /canonical === canonicalProspectivePath\(fixture, 'WSU1_F26_WORKTREE_K'\)/u);
+});
+
 test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production checksum chain', () => {
   const fx = fixture();
   fx.event.checksum = nulChecksumFor(
@@ -614,7 +697,7 @@ test('STEP0-3 verifier rechecks the anchored run evidence before receipt publica
   const initial = source.indexOf('const runEvidence = readRunEvidence(runDirectory)');
   const eventValidation = source.indexOf('validateEventLog(events, loop.event_log_head)', initial);
   const reread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', eventValidation);
-  const publication = source.indexOf('atomicallyCreate(resolve(args[\'--receipt\'])', reread);
+  const publication = source.indexOf('atomicallyCreate(receiptPath', reread);
   assert.equal(initial >= 0 && initial < eventValidation && eventValidation < reread && reread < publication, true);
 });
 
@@ -623,7 +706,7 @@ test('STEP0-3 verifier re-enumerates K after run evidence and immediately before
   const initial = source.indexOf('const sources = sourceArtifacts(worktree)');
   const runReread = source.indexOf('verifyRunEvidenceUnchanged(runEvidence)', initial);
   const sourceReread = source.indexOf('verifySourceArtifactsUnchanged(worktree, relativeContract)', runReread);
-  const publication = source.indexOf('atomicallyCreate(resolve(args[\'--receipt\'])', sourceReread);
+  const publication = source.indexOf('atomicallyCreate(receiptPath', sourceReread);
   assert.equal(initial >= 0 && initial < runReread && runReread < sourceReread && sourceReread < publication, true);
   assert.equal(source.slice(sourceReread, publication).trim(),
     'verifySourceArtifactsUnchanged(worktree, relativeContract);');

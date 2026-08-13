@@ -4,7 +4,7 @@ import {
   closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
   readdirSync, realpathSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { flushDirectory } from './lib/atomic-write.mjs';
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -96,6 +96,44 @@ function canonicalDirectory(path, diagnostic) {
 function within(parent, child) {
   const rel = relative(parent, child);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep));
+}
+
+function canonicalProspectivePath(path, diagnostic) {
+  const suffix = [];
+  let cursor = resolve(path);
+  for (;;) {
+    try {
+      lstatSync(cursor);
+      return resolve(realpathSync(cursor), ...suffix.reverse());
+    } catch (error) {
+      if (error?.code !== 'ENOENT') fail(diagnostic);
+      const parent = dirname(cursor);
+      if (parent === cursor) fail(diagnostic);
+      suffix.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function safeReceiptTarget(value, worktree) {
+  const lexical = resolve(value);
+  const canonical = canonicalProspectivePath(lexical, 'WSU1_F26_WORKTREE_K');
+  const scripts = canonicalDirectory(join(worktree, 'scripts'), 'WSU1_F26_WORKTREE_K');
+  if (within(resolve(worktree, 'scripts'), lexical) || within(scripts, canonical)) {
+    fail('WSU1_F26_WORKTREE_K');
+  }
+  for (const name of [
+    'activation-pending-classification.seed.md',
+    'activation-pending-classification.md',
+    'activation-pending-classification-evidence.json',
+  ]) {
+    const fixture = join(worktree, 'tests', 'fixtures', name);
+    if (lexical === resolve(fixture)
+      || canonical === canonicalProspectivePath(fixture, 'WSU1_F26_WORKTREE_K')) {
+      fail('WSU1_F26_WORKTREE_K');
+    }
+  }
+  return lexical;
 }
 
 function portableRelative(path) {
@@ -299,6 +337,7 @@ function main() {
   if (!within(projectRoot, worktree) || relative(projectRoot, worktree).split(sep).join('/') !== worktreePrefix) {
     fail('WSU1_F26_WORKTREE_K');
   }
+  const receiptPath = safeReceiptTarget(args['--receipt'], worktree);
   const runId = args['--run-id'];
   const point = args['--point'];
   if (point !== 'wsu1-f26-independent-review') fail('WSU1_F26_CLAIM_CONTEXT');
@@ -415,7 +454,7 @@ function main() {
   };
   verifyRunEvidenceUnchanged(runEvidence);
   verifySourceArtifactsUnchanged(worktree, relativeContract);
-  atomicallyCreate(resolve(args['--receipt']), Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
+  atomicallyCreate(receiptPath, Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
   process.stdout.write('WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 }
 
