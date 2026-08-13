@@ -39,6 +39,7 @@ import {
   verifyHead,
   verifyLog,
 } from '../scripts/lib/integrity.mjs';
+import { captureStableFileIdentity, matchingStableFileIdentity } from '../scripts/lib/fs-safe.mjs';
 import {
   codexCheckerClaimHash,
   extendBudget,
@@ -524,6 +525,16 @@ function lockBusyResult(result) {
   return descriptor?.ok === false && descriptor.kind === 'lock-busy' && descriptor.retryable === true;
 }
 
+function retryableVerifiedReadResult(result) {
+  if (result?.status !== 1 || String(result?.stderr || '').trim() !== '') return false;
+  let descriptor;
+  try { descriptor = JSON.parse(String(result?.stdout || '')); } catch { return false; }
+  return descriptor?.ok === false
+    && descriptor.kind === 'verified-read-race'
+    && descriptor.reason === 'identity-drift'
+    && descriptor.retryable === true;
+}
+
 test('lockBusyResult recognizes only the exact CLI LOCK_BUSY diagnostic', () => {
   assert.equal(lockBusyResult({
     status: 1,
@@ -612,14 +623,49 @@ test('a contended root diagnose reports retryable contention, not an integrity f
   });
 });
 
-async function retryLockBusyDiagnose(result, args, cwd) {
+async function retryLockBusyDiagnose(result, args, cwd, runner = runCliAsync) {
   let current = result;
-  for (let attempt = 0; attempt < 5 && lockBusyResult(current); attempt += 1) {
+  for (let attempt = 0; attempt < 5 && (lockBusyResult(current) || retryableVerifiedReadResult(current)); attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 100));
-    current = await runCliAsync(args, cwd);
+    current = await runner(args, cwd);
   }
   return current;
 }
+
+test('retryLockBusyDiagnose retries verified-read races but not tamper descriptors', async () => {
+  const race = {
+    status: 1,
+    stderr: '',
+    stdout: JSON.stringify({
+      ok: false,
+      kind: 'verified-read-race',
+      reason: 'identity-drift',
+      retryable: true,
+      operation_id: null,
+      phase: 'verified-vector',
+    }),
+  };
+  let attempts = 0;
+  const recovered = await retryLockBusyDiagnose(race, [], freshRoot('dl-root-race-retry-'), async () => {
+    attempts += 1;
+    return { status: 0, stderr: '', stdout: '{}' };
+  });
+  assert.equal(attempts, 1);
+  assert.equal(retryableVerifiedReadResult(race), true);
+  const tampered = {
+    status: 1,
+    stderr: '',
+    stdout: JSON.stringify({ ok: false, kind: 'integrity-invalid', phase: 'verified-vector' }),
+  };
+  const notRetried = await retryLockBusyDiagnose(tampered, [], freshRoot('dl-root-tamper-no-retry-'), async () => {
+    attempts += 1;
+    return { status: 0, stderr: '', stdout: '{}' };
+  });
+  assert.equal(retryableVerifiedReadResult(tampered), false);
+  assert.equal(notRetried.status, 1);
+  assert.equal(attempts, 1);
+  assert.equal(recovered.status, 0);
+});
 
 function durableSnapshot(root, runId) {
   const dir = runDir(root, runId);
@@ -821,6 +867,93 @@ test('verified root-recovery capture diagnoses a moved root from immutable bytes
   assert.equal(diagnosis.action, 'rebind');
   assert.equal(diagnosis.current_root_digest, projectRootDigest(moved.storedRoot));
   assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), before);
+});
+
+test('verified root diagnosis propagates the path-free atomic-replacement race descriptor', async () => {
+  const moved = movedRun('dl-root-verified-atomic-replacement-');
+  const target = join(
+    canonicalProjectRoot(moved.candidateRoot),
+    '.deep-loop',
+    'runs',
+    moved.runId,
+    'artifacts',
+    'atomic-replace.bin',
+  );
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, 'before-replacement');
+  let replaced = false;
+  const { diagnoseVerifiedProjectRoot } = await recoveryApi();
+  const result = diagnoseVerifiedProjectRoot(moved.candidateRoot, moved.runId, {
+    captureOptions: {
+      vectorOptions: {
+        readFileFn(path, ...args) {
+          if (path === target && !replaced) {
+            const temp = `${target}.tmp`;
+            writeFileSync(temp, 'after-replacement');
+            renameSync(temp, target);
+            replaced = true;
+          }
+          return readFileSync(path, ...args);
+        },
+      },
+    },
+  });
+
+  assert.equal(replaced, true);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'verified-read-race',
+    reason: 'identity-drift',
+    retryable: true,
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.equal(result.kind, 'verified-read-race');
+  assert.notEqual(result.kind, 'integrity-invalid');
+  assert.equal(JSON.stringify(result).includes(target), false);
+});
+
+test('verified root diagnosis keeps same-inode same-length content drift integrity-invalid', async () => {
+  const moved = movedRun('dl-root-verified-same-inode-content-');
+  const target = join(
+    canonicalProjectRoot(moved.candidateRoot),
+    '.deep-loop',
+    'runs',
+    moved.runId,
+    'artifacts',
+    'same-inode-content.bin',
+  );
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, 'AAAA');
+  const before = captureStableFileIdentity(target);
+  let rewritten = false;
+  const { diagnoseVerifiedProjectRoot } = await recoveryApi();
+  const result = diagnoseVerifiedProjectRoot(moved.candidateRoot, moved.runId, {
+    captureOptions: {
+      vectorOptions: {
+        readFileFn(path, ...args) {
+          if (path === target && !rewritten) {
+            const bytes = readFileSync(path, ...args);
+            writeFileSync(path, 'BBBB');
+            rewritten = true;
+            return bytes;
+          }
+          return readFileSync(path, ...args);
+        },
+      },
+    },
+  });
+  const after = captureStableFileIdentity(target);
+
+  assert.equal(rewritten, true);
+  assert.equal(matchingStableFileIdentity(before, after), true);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.notEqual(result.kind, 'verified-read-race');
 });
 
 test('verified root diagnosis discards the result when the run vector drifts after evidence sampling', async () => {

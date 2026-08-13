@@ -241,7 +241,10 @@ function canonicalRegularEntry(path) {
     const canonical = (realpathSync.native || realpathSync)(path);
     const canonicalParent = (realpathSync.native || realpathSync)(dirname(path));
     return resolve(canonical) === resolve(join(canonicalParent, basename(path)));
-  } catch { return false; }
+  } catch (error) {
+    if (isVerifiedReadError(error)) throw error;
+    return false;
+  }
 }
 
 function canonicalDirectoryEntry(path) {
@@ -251,7 +254,10 @@ function canonicalDirectoryEntry(path) {
     const canonical = (realpathSync.native || realpathSync)(path);
     const canonicalParent = (realpathSync.native || realpathSync)(dirname(path));
     return resolve(canonical) === resolve(join(canonicalParent, basename(path)));
-  } catch { return false; }
+  } catch (error) {
+    if (isVerifiedReadError(error)) throw error;
+    return false;
+  }
 }
 
 function validTransactionOwner(path, runId, operationId, expectedToken = null, allowPrepared = false, readOptions = {}) {
@@ -314,7 +320,10 @@ function validTransactionOwner(path, runId, operationId, expectedToken = null, a
       );
     }
     return !children.includes('prepared.json');
-  } catch { return false; }
+  } catch (error) {
+    if (isVerifiedReadError(error)) throw error;
+    return false;
+  }
 }
 
 // #3: every business-intent mutation is charged at least this many turns via appendAnchored's `opts.floor`
@@ -396,10 +405,86 @@ function assertNoUnresolvedGenericPublicationLocked(root, runId, guard) {
   }
 }
 
-function integrityInvalidError(message) {
+const VERIFIED_READ_REASON = Object.freeze({
+  IDENTITY_DRIFT: 'identity-drift',
+  BOUND_EXCEEDED: 'bound-exceeded',
+  DEADLINE_EXCEEDED: 'deadline-exceeded',
+});
+
+function inferVerifiedReadReason(message) {
+  const text = String(message || '');
+  if (text === 'verified vector deadline'
+    || text === 'verified capture deadline'
+    || /^read deadline /.test(text)
+    || /^directory deadline /.test(text)) {
+    return VERIFIED_READ_REASON.DEADLINE_EXCEEDED;
+  }
+  if (text === 'verified vector relative byte limits'
+    || text === 'verified vector bound'
+    || text === 'verified vector bytes'
+    || text === 'verified vector depth'
+    || /^read bound /.test(text)
+    || /^directory bound /.test(text)) {
+    return VERIFIED_READ_REASON.BOUND_EXCEEDED;
+  }
+  return null;
+}
+
+function integrityInvalidError(message, reason = inferVerifiedReadReason(message)) {
   const error = new Error(`VERIFIED_READ_INTEGRITY_INVALID: ${message}`);
   error.code = 'VERIFIED_READ_INTEGRITY_INVALID';
+  if (reason !== null) error.verified_read_reason = reason;
   return error;
+}
+
+function isVerifiedReadError(error) {
+  return error?.code === 'VERIFIED_READ_INTEGRITY_INVALID';
+}
+
+function rethrowVerifiedReadError(error, fallbackMessage) {
+  if (isVerifiedReadError(error)) throw error;
+  throw integrityInvalidError(fallbackMessage);
+}
+
+function verifiedReadFailureDescriptor(error, phase = 'verified-vector') {
+  let reason = error?.verified_read_reason || null;
+  if (error?.message === 'LOCK_DEADLINE_EXCEEDED') reason = VERIFIED_READ_REASON.DEADLINE_EXCEEDED;
+  if (reason === VERIFIED_READ_REASON.IDENTITY_DRIFT) {
+    return {
+      ok: false,
+      kind: 'verified-read-race',
+      reason,
+      retryable: true,
+      operation_id: null,
+      phase,
+    };
+  }
+  if (reason === VERIFIED_READ_REASON.BOUND_EXCEEDED) {
+    return {
+      ok: false,
+      kind: 'verified-read-bound-exceeded',
+      reason,
+      retryable: false,
+      operation_id: null,
+      phase,
+    };
+  }
+  if (reason === VERIFIED_READ_REASON.DEADLINE_EXCEEDED) {
+    return {
+      ok: false,
+      kind: 'verified-read-deadline-exceeded',
+      reason,
+      retryable: false,
+      operation_id: null,
+      phase,
+    };
+  }
+  return {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase,
+  };
 }
 
 function readStableRegularFile(path, options = {}) {
@@ -418,7 +503,7 @@ function readStableRegularFile(path, options = {}) {
   try {
     checkDeadline();
     stat = lstatSync(path, { bigint: true });
-  } catch { throw integrityInvalidError(`read ${path}`); }
+  } catch (error) { rethrowVerifiedReadError(error, `read ${path}`); }
   if (stat.isSymbolicLink() || !stat.isFile()) throw integrityInvalidError(`file type ${path}`);
   const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
   const declaredSize = Number(stat.size);
@@ -434,10 +519,14 @@ function readStableRegularFile(path, options = {}) {
     bytes = readFileSync(path);
     checkDeadline();
     after = captureStableFileIdentity(path);
-  } catch { throw integrityInvalidError(`file read ${path}`); }
-  if (!matchingStableFileIdentity(initialIdentity, before)
-    || !matchingStableFileIdentity(before, after) || bytes.length !== declaredSize) {
-    throw integrityInvalidError(`file identity drift ${path}`);
+  } catch (error) { rethrowVerifiedReadError(error, `file read ${path}`); }
+  const identityDrift = !matchingStableFileIdentity(initialIdentity, before)
+    || !matchingStableFileIdentity(before, after);
+  if (identityDrift) {
+    throw integrityInvalidError(`file identity drift ${path}`, VERIFIED_READ_REASON.IDENTITY_DRIFT);
+  }
+  if (bytes.length !== declaredSize) {
+    throw integrityInvalidError(`file size drift ${path}`);
   }
   return { bytes, before, after };
 }
@@ -478,7 +567,7 @@ function readStableDirectoryNames(path, options = {}) {
     before = identityFn(path);
     if (!matchingStableFileIdentity(initialIdentity, before)
       || (expectedIdentity && !matchingStableFileIdentity(expectedIdentity, before))) {
-      throw integrityInvalidError(`directory identity drift ${path}`);
+      throw integrityInvalidError(`directory identity drift ${path}`, VERIFIED_READ_REASON.IDENTITY_DRIFT);
     }
     directory = openDirFn(path);
     names = [];
@@ -493,12 +582,12 @@ function readStableDirectoryNames(path, options = {}) {
     names.sort();
     checkDeadline();
     after = identityFn(path);
-  } catch { throw integrityInvalidError(`directory read ${path}`); }
+  } catch (error) { rethrowVerifiedReadError(error, `directory read ${path}`); }
   finally {
     try { directory?.closeSync(); } catch { /* inspection will fail on identity/read evidence, not cleanup */ }
   }
   if (!matchingStableFileIdentity(before, after)) {
-    throw integrityInvalidError(`directory identity drift ${path}`);
+    throw integrityInvalidError(`directory identity drift ${path}`, VERIFIED_READ_REASON.IDENTITY_DRIFT);
   }
   return { names, before, after };
 }
@@ -616,7 +705,7 @@ function captureArtifactLocked(root, runId, rel) {
     if (!stat.isFile()) throw integrityInvalidError(`ARTIFACT_REL_INVALID: target ${rel}`);
     let bytes;
     try { ({ bytes } = readStableRegularFile(current)); }
-    catch { throw integrityInvalidError(`ARTIFACT_REL_INVALID: identity drift ${rel}`); }
+    catch (error) { rethrowVerifiedReadError(error, `ARTIFACT_REL_INVALID: read ${rel}`); }
     return Object.freeze({ state: 'present', bytes: Buffer.from(bytes), sha256: contentHash(bytes) });
   }
   throw new Error(`ARTIFACT_REL_INVALID: ${rel}`);
@@ -1030,7 +1119,8 @@ function committedMarkerInspection(prepared) {
       candidate_loop_hash: prepared.manifest.candidateLoopHash,
     });
     return { present: true, valid: readStableRegularFile(path).bytes.toString('utf8') === expected };
-  } catch {
+  } catch (error) {
+    if (isVerifiedReadError(error)) throw error;
     return { present: true, valid: false };
   }
 }
@@ -1139,7 +1229,7 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
   const statAt = path => {
     checkDeadline();
     try { return lstatFn(path, { bigint: true }); }
-    catch { throw integrityInvalidError(`verified vector entry ${path}`); }
+    catch (error) { rethrowVerifiedReadError(error, `verified vector entry ${path}`); }
   };
   const readNames = (path, expectedIdentity) => readStableDirectoryNames(path, {
     maxEntries: Math.max(0, maxEntries - entries.length),
@@ -1195,7 +1285,8 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
       if (!stat.isFile()) throw integrityInvalidError(`verified vector entry type ${rel}`);
       const before = (() => {
         checkDeadline();
-        try { return identityFn(path); } catch { throw integrityInvalidError(`verified vector identity ${rel}`); }
+        try { return identityFn(path); }
+        catch (error) { rethrowVerifiedReadError(error, `verified vector identity ${rel}`); }
       })();
       const initialIdentity = captureStableFileIdentity(path, { lstatFn: () => stat });
       const declaredSize = Number(stat.size);
@@ -1210,14 +1301,19 @@ function captureVerifiedDurableVectorLocked(dir, runId, options = {}, sharedDead
       try {
         checkDeadline();
         bytes = Buffer.from(readFileFn(path));
-      } catch { throw integrityInvalidError(`verified vector read ${rel}`); }
+      } catch (error) { rethrowVerifiedReadError(error, `verified vector read ${rel}`); }
       const after = (() => {
         checkDeadline();
-        try { return identityFn(path); } catch { throw integrityInvalidError(`verified vector identity ${rel}`); }
+        try { return identityFn(path); }
+        catch (error) { rethrowVerifiedReadError(error, `verified vector identity ${rel}`); }
       })();
-      if (!matchingStableFileIdentity(initialIdentity, before)
-        || !matchingStableFileIdentity(before, after) || bytes.length !== declaredSize) {
-        throw integrityInvalidError(`verified vector identity drift ${rel}`);
+      const identityDrift = !matchingStableFileIdentity(initialIdentity, before)
+        || !matchingStableFileIdentity(before, after);
+      if (identityDrift) {
+        throw integrityInvalidError(`verified vector identity drift ${rel}`, VERIFIED_READ_REASON.IDENTITY_DRIFT);
+      }
+      if (bytes.length !== declaredSize) {
+        throw integrityInvalidError(`verified vector size drift ${rel}`);
       }
       totalBytes += bytes.length;
       const portable = deepFreeze({
@@ -1260,7 +1356,8 @@ function inspectTransactionTreeLocked(dir, readOptions = {}) {
       };
     }
     entries = readStableDirectoryNames(transactions, readOptions).names;
-  } catch {
+  } catch (error) {
+    if (isVerifiedReadError(error)) throw error;
     return {
       entries: Object.freeze([]),
       error: { ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' },
@@ -1303,7 +1400,8 @@ function inspectTransactionTreeLocked(dir, readOptions = {}) {
       }
       else if (validTransactionOwner(operationDir, basename(dir), name, null, false, readOptions)) unprepared.push(name);
       else invalid.push({ ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'transaction-tree' });
-    } catch {
+    } catch (error) {
+      if (isVerifiedReadError(error)) throw error;
       invalid.push({
         ok: false,
         kind: 'integrity-invalid',
@@ -1417,6 +1515,7 @@ function verifiedCaptureLocked(root, runId, guard, options) {
       prepared = findPreparedPublicationLocked(dir, guard);
       checkDeadline();
     } catch (error) {
+      if (isVerifiedReadError(error)) throw error;
       const operationId = transactionTree.prepared[0] || null;
       const kind = String(error?.message || error).includes('multiple prepared operations')
         ? 'reconciliation-required' : 'integrity-invalid';
@@ -1439,6 +1538,7 @@ function verifiedCaptureLocked(root, runId, guard, options) {
       rootRecovery: options.rootRecovery === true,
     });
   } catch (caught) {
+    if (isVerifiedReadError(caught)) throw caught;
     error = caught;
   }
   checkDeadline();
@@ -1517,65 +1617,70 @@ for (const [name, reader] of VERIFIED_READ_CLOSURE) {
 }
 // VERIFIED_READ_CLOSURE_END
 
-export function captureVerifiedRunSnapshot(root, runId, options = {}) {
+function captureVerifiedReadWithRetry(root, runId, options = {}, {
+  rootRecovery = false,
+} = {}) {
+  let retriedIdentityDrift = false;
+  let observedIdentityDrift = false;
   try {
     const vectorDeadlineAtMs = readDeadlineAtMs(options);
-    return withReadLock(
-      root,
-      runId,
-      guard => verifiedCaptureLocked(root, runId, guard, { ...options, vectorDeadlineAtMs }),
-      {
-        ...options.lockOptions,
-        ...(options.lockOptions?.nowFn === undefined && typeof options.nowFn === 'function'
-          ? { nowFn: options.nowFn } : {}),
-        ...(vectorDeadlineAtMs === undefined ? {} : { deadlineAtMs: vectorDeadlineAtMs }),
-      },
-    );
+    while (true) {
+      try {
+        const result = withReadLock(
+          root,
+          runId,
+          guard => verifiedCaptureLocked(root, runId, guard, {
+            ...options,
+            ...(rootRecovery ? { requireProjectBinding: false, rootRecovery: true } : {}),
+            vectorDeadlineAtMs,
+          }),
+          {
+            ...options.lockOptions,
+            ...(options.lockOptions?.nowFn === undefined && typeof options.nowFn === 'function'
+              ? { nowFn: options.nowFn } : {}),
+            ...(vectorDeadlineAtMs === undefined ? {} : { deadlineAtMs: vectorDeadlineAtMs }),
+          },
+        );
+        if (observedIdentityDrift && result?.ok === true) {
+          return verifiedReadFailureDescriptor({
+            verified_read_reason: VERIFIED_READ_REASON.IDENTITY_DRIFT,
+          });
+        }
+        return result;
+      } catch (error) {
+        if (!retriedIdentityDrift
+          && error?.verified_read_reason === VERIFIED_READ_REASON.IDENTITY_DRIFT) {
+          observedIdentityDrift = true;
+          retriedIdentityDrift = true;
+          continue;
+        }
+        if (isVerifiedReadError(error)
+          || String(error?.message || '').startsWith('LOG_TAMPERED')
+          || error?.message === 'LOCK_DEADLINE_EXCEEDED') {
+          return verifiedReadFailureDescriptor(error);
+        }
+        throw error;
+      }
+    }
   } catch (error) {
-    if (error?.code === 'VERIFIED_READ_INTEGRITY_INVALID'
+    if (isVerifiedReadError(error)
       || String(error?.message || '').startsWith('LOG_TAMPERED')
       || error?.message === 'LOCK_DEADLINE_EXCEEDED') {
-      return {
-        ok: false,
-        kind: 'integrity-invalid',
-        operation_id: null,
-        phase: 'verified-vector',
-      };
+      return verifiedReadFailureDescriptor(error);
     }
     throw error;
   }
+}
+
+export function captureVerifiedRunSnapshot(root, runId, options = {}) {
+  return captureVerifiedReadWithRetry(root, runId, options);
 }
 
 // Root-recovery diagnosis is a verified read of a relocated run. It deliberately
 // keeps the transaction/vector classification above while relaxing only the
 // ordinary project-root binding check; no reconciler or writer is reachable.
 export function captureVerifiedRootRecoverySnapshot(root, runId, options = {}) {
-  try {
-    const vectorDeadlineAtMs = readDeadlineAtMs(options);
-    return withReadLock(
-      root,
-      runId,
-      guard => verifiedCaptureLocked(root, runId, guard, {
-        ...options,
-        requireProjectBinding: false,
-        rootRecovery: true,
-        vectorDeadlineAtMs,
-      }),
-      {
-        ...options.lockOptions,
-        ...(options.lockOptions?.nowFn === undefined && typeof options.nowFn === 'function'
-          ? { nowFn: options.nowFn } : {}),
-        ...(vectorDeadlineAtMs === undefined ? {} : { deadlineAtMs: vectorDeadlineAtMs }),
-      },
-    );
-  } catch (error) {
-    if (error?.code === 'VERIFIED_READ_INTEGRITY_INVALID'
-      || String(error?.message || '').startsWith('LOG_TAMPERED')
-      || error?.message === 'LOCK_DEADLINE_EXCEEDED') {
-      return { ok: false, kind: 'integrity-invalid', operation_id: null, phase: 'verified-vector' };
-    }
-    throw error;
-  }
+  return captureVerifiedReadWithRetry(root, runId, options, { rootRecovery: true });
 }
 
 function nowMillis(nowFn) {

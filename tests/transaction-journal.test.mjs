@@ -1944,13 +1944,146 @@ test('verified vector rejects entry, byte, depth, and deadline limit violations 
     const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
       vectorOptions,
     });
+    const isDeadline = vectorOptions.deadlineAtMs !== undefined;
     assert.deepEqual(result, {
       ok: false,
-      kind: 'integrity-invalid',
+      kind: isDeadline ? 'verified-read-deadline-exceeded' : 'verified-read-bound-exceeded',
+      ...(isDeadline ? { reason: 'deadline-exceeded' } : { reason: 'bound-exceeded' }),
+      retryable: false,
       operation_id: null,
       phase: 'verified-vector',
     }, JSON.stringify(vectorOptions));
   }
+});
+
+test('verified read preserves race, bound, and deadline classifications without leaking paths', () => {
+  const raceFixture = anchoredSeed();
+  const raceTarget = join(raceFixture.dir, 'artifacts', 'race.bin');
+  mkdirSync(dirname(raceTarget), { recursive: true });
+  writeFileSync(raceTarget, 'race');
+  let identityCalls = 0;
+  const race = integrityApi.captureVerifiedRunSnapshot(raceFixture.root, raceFixture.runId, {
+    vectorOptions: {
+      identityFn(path) {
+        const identity = captureStableFileIdentity(path);
+        if (path === raceTarget && (++identityCalls % 2) === 0) {
+          return { ...identity, ino: (BigInt(identity.ino) + 1n).toString() };
+        }
+        return identity;
+      },
+    },
+  });
+  assert.deepEqual(race, {
+    ok: false,
+    kind: 'verified-read-race',
+    reason: 'identity-drift',
+    retryable: true,
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.equal(JSON.stringify(race).includes(raceTarget), false);
+
+  const boundFixture = anchoredSeed();
+  const bounded = integrityApi.captureVerifiedRunSnapshot(boundFixture.root, boundFixture.runId, {
+    vectorOptions: { maxBytes: 1 },
+  });
+  assert.deepEqual(bounded, {
+    ok: false,
+    kind: 'verified-read-bound-exceeded',
+    reason: 'bound-exceeded',
+    retryable: false,
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+
+  const deadlineFixture = anchoredSeed();
+  const deadline = integrityApi.captureVerifiedRunSnapshot(deadlineFixture.root, deadlineFixture.runId, {
+    vectorOptions: { nowFn: () => 100, deadlineAtMs: 100 },
+  });
+  assert.deepEqual(deadline, {
+    ok: false,
+    kind: 'verified-read-deadline-exceeded',
+    reason: 'deadline-exceeded',
+    retryable: false,
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+});
+
+test('verified read classifies a deterministic atomic filesystem replacement as a race', () => {
+  const fixtureState = anchoredSeed();
+  const target = join(fixtureState.dir, 'artifacts', 'atomic-replace.bin');
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, 'before-replacement');
+  let replaced = false;
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      readFileFn(path, ...args) {
+        if (path === target && !replaced) {
+          const temp = `${target}.tmp`;
+          writeFileSync(temp, 'after-replacement');
+          renameSync(temp, target);
+          replaced = true;
+        }
+        return readFileSync(path, ...args);
+      },
+    },
+  });
+
+  assert.equal(replaced, true);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'verified-read-race',
+    reason: 'identity-drift',
+    retryable: true,
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.equal(JSON.stringify(result).includes(target), false);
+});
+
+test('verified vector keeps same-inode same-length content drift integrity-invalid', () => {
+  const fixtureState = anchoredSeed();
+  const target = join(fixtureState.dir, 'artifacts', 'same-inode-content.bin');
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, 'AAAA');
+  const before = captureStableFileIdentity(target);
+  let rewritten = false;
+  const result = integrityApi.captureVerifiedRunSnapshot(fixtureState.root, fixtureState.runId, {
+    vectorOptions: {
+      readFileFn(path, ...args) {
+        if (path === target && !rewritten) {
+          const bytes = readFileSync(path, ...args);
+          writeFileSync(path, 'BBBB');
+          rewritten = true;
+          return bytes;
+        }
+        return readFileSync(path, ...args);
+      },
+    },
+  });
+  const after = captureStableFileIdentity(target);
+
+  assert.equal(rewritten, true);
+  assert.equal(matchingStableFileIdentity(before, after), true);
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'integrity-invalid',
+    operation_id: null,
+    phase: 'verified-vector',
+  });
+  assert.notEqual(result.kind, 'verified-read-race');
+});
+
+test('verified read keeps anchor tampering non-retryable', () => {
+  const fixtureState = anchoredSeed();
+  writeFileSync(join(fixtureState.dir, '.loop.hash'), '0'.repeat(64));
+  const result = integrityApi.captureVerifiedRunSet(fixtureState.root, {
+    runIds: [fixtureState.runId],
+  });
+  assert.deepEqual(Object.keys(result.runs), []);
+  assert.equal(result.errors[fixtureState.runId].kind, 'integrity-invalid');
+  assert.notEqual(result.errors[fixtureState.runId].retryable, true);
 });
 
 test('verified exact and run-set classify symlink residue as structured integrity-invalid', t => {
@@ -1997,7 +2130,7 @@ test('verified exact and run-set classify readdir, read, identity drift, and spe
         const identity = captureStableFileIdentity(path);
         const calls = (identityCalls.get(path) || 0) + 1;
         identityCalls.set(path, calls);
-        if (failure === 'identity' && path === target && calls === 2) {
+        if (failure === 'identity' && path === target && (calls % 2) === 0) {
           return { ...identity, ino: (BigInt(identity.ino) + 1n).toString() };
         }
         return identity;
@@ -2025,14 +2158,22 @@ test('verified exact and run-set classify readdir, read, identity drift, and spe
       runIds: [fixtureState.runId],
       vectorOptionsByRun: { [fixtureState.runId]: vectorOptions },
     });
-    assert.deepEqual(exact, {
+    const expected = failure === 'identity' ? {
+      ok: false,
+      kind: 'verified-read-race',
+      reason: 'identity-drift',
+      retryable: true,
+      operation_id: null,
+      phase: 'verified-vector',
+    } : {
       ok: false,
       kind: 'integrity-invalid',
       operation_id: null,
       phase: 'verified-vector',
-    }, failure);
+    };
+    assert.deepEqual(exact, expected, failure);
     assert.deepEqual(Object.keys(set.runs), [], failure);
-    assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid', failure);
+    assert.equal(set.errors[fixtureState.runId].kind, expected.kind, failure);
   }
 });
 
@@ -2041,7 +2182,9 @@ test('verified exact and run-set propagate one absolute deadline through lock an
   const nowFn = () => 100;
   const expected = {
     ok: false,
-    kind: 'integrity-invalid',
+    kind: 'verified-read-deadline-exceeded',
+    reason: 'deadline-exceeded',
+    retryable: false,
     operation_id: null,
     phase: 'verified-vector',
   };
@@ -2056,7 +2199,7 @@ test('verified exact and run-set propagate one absolute deadline through lock an
     nowFn,
   });
   assert.deepEqual(Object.keys(set.runs), []);
-  assert.equal(set.errors[fixtureState.runId].kind, 'integrity-invalid');
+  assert.equal(set.errors[fixtureState.runId].kind, 'verified-read-deadline-exceeded');
 });
 
 test('verified read lock clamps contention sleep to the shared deadline', () => {
@@ -2080,7 +2223,9 @@ test('verified read lock clamps contention sleep to the shared deadline', () => 
     });
     assert.deepEqual(result, {
       ok: false,
-      kind: 'integrity-invalid',
+      kind: 'verified-read-deadline-exceeded',
+      reason: 'deadline-exceeded',
+      retryable: false,
       operation_id: null,
       phase: 'verified-vector',
     });
@@ -2103,7 +2248,9 @@ test('verified read lock clamps contention sleep to the shared deadline', () => 
     });
     assert.deepEqual(result, {
       ok: false,
-      kind: 'integrity-invalid',
+      kind: 'verified-read-deadline-exceeded',
+      reason: 'deadline-exceeded',
+      retryable: false,
       operation_id: null,
       phase: 'verified-vector',
     });
@@ -2136,7 +2283,9 @@ test('verified vector bounds directory iteration before materializing an oversiz
 
   assert.deepEqual(result, {
     ok: false,
-    kind: 'integrity-invalid',
+    kind: 'verified-read-bound-exceeded',
+    reason: 'bound-exceeded',
+    retryable: false,
     operation_id: null,
     phase: 'verified-vector',
   });
@@ -2291,7 +2440,9 @@ test('verified vector binds parent directory identity while reading children', (
 
   assert.deepEqual(result, {
     ok: false,
-    kind: 'integrity-invalid',
+    kind: 'verified-read-race',
+    reason: 'identity-drift',
+    retryable: true,
     operation_id: null,
     phase: 'verified-vector',
   });
