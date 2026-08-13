@@ -248,7 +248,9 @@ function validateObservation(observation, context) {
   let result;
   try { result = JSON.parse(observation.stdout.trim()); } catch { fail('WSU1_F26_OBSERVATION_RESULT'); }
   if (observation.exit_code !== 0 || observation.stderr !== '' || observation.checker_terminal_status !== 'approved'
-    || result?.ok !== true) fail('WSU1_F26_OBSERVATION_RESULT');
+    || result?.ok !== true || result.action !== 'checker-complete'
+    || result.checkerEpisodeId !== context.checker.id
+    || result.attemptId !== context.claim.attempt_id) fail('WSU1_F26_OBSERVATION_RESULT');
 }
 
 function atomicallyCreate(path, bytes) {
@@ -348,7 +350,9 @@ function main() {
   const observationPath = resolve(args['--external-observation']);
   const { bytes: observationBytes, value: observation } = regularJson(observationPath,
     'WSU1_F26_OBSERVATION_MISSING', 'WSU1_F26_OBSERVATION_NON_REGULAR', 'WSU1_F26_OBSERVATION_SHAPE');
-  validateObservation(observation, { projectRoot, worktreePrefix, worktree, runId, workstream, maker, checker, point });
+  validateObservation(observation, {
+    projectRoot, worktreePrefix, worktree, runId, workstream, maker, checker, claim, point,
+  });
   const observationSha = sha256(observationBytes);
   if (process.env.WSU1_F26_EXPECT_OBSERVATION_SHA256 !== undefined
     && process.env.WSU1_F26_EXPECT_OBSERVATION_SHA256 !== observationSha) fail('WSU1_F26_OBSERVATION_DIGEST');

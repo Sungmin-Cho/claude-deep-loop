@@ -205,7 +205,12 @@ function fixture() {
     started_at: '2026-08-10T00:00:00.000Z',
     finished_at: '2026-08-10T00:01:00.000Z',
     exit_code: 0,
-    stdout: '{"ok":true,"action":"checker-approved"}\n',
+    stdout: `${JSON.stringify({
+      ok: true,
+      action: 'checker-complete',
+      checkerEpisodeId: checkerId,
+      attemptId,
+    })}\n`,
     stderr: '',
     checker_terminal_status: 'approved',
   };
@@ -333,6 +338,26 @@ test('F26-ACTUAL-NEG-OBSERVATION-COMMAND-MISMATCH', () => {
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-RESULT-MISMATCH', 'WSU1_F26_OBSERVATION_RESULT', (fx) => {
   fx.observation.exit_code = 1; fx.writeObservation();
+});
+test('F26-ACTUAL-NEG-OBSERVATION-CHECKER-OUTCOME requires the exact durable checker identity', () => {
+  const cases = [
+    ['no-pending-handoff', { ok: true, action: 'no-pending-handoff' }],
+    ['unknown-action', { ok: true, action: 'unknown-action' }],
+    ['fixture-checker-approved', { ok: true, action: 'checker-approved' }],
+    ['wrong-checker', {
+      ok: true, action: 'checker-complete', checkerEpisodeId: 'wrong-checker', attemptId: 'attempt-010',
+    }],
+    ['wrong-attempt', {
+      ok: true, action: 'checker-complete', checkerEpisodeId: '002-deep-review', attemptId: 'wrong-attempt',
+    }],
+  ];
+  for (const [name, outcome] of cases) {
+    const fx = fixture();
+    fx.observation.stdout = `${JSON.stringify(outcome)}\n`;
+    fx.writeObservation();
+    const result = invoke(fx);
+    assert.equal(result.stderr, 'WSU1_F26_OBSERVATION_RESULT\n', name);
+  }
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-DIGEST-MISMATCH', 'WSU1_F26_OBSERVATION_DIGEST',
   () => {}, () => ({ WSU1_F26_EXPECT_OBSERVATION_SHA256: '0'.repeat(64) }));
