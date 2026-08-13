@@ -71,6 +71,22 @@ test('workflow has only the requested triggers and top-level read-only contents 
     'permissions must be declared once at the top level');
 });
 
+test('push builds only main, so a pull-request commit is never built twice', requiresWorkflow, () => {
+  assert.deepEqual(directMappingKeys(mappingBlock('push', 2), 4), ['branches'],
+    'push must carry a branch filter and nothing else');
+  assert.deepEqual(scalarOccurrences('branches'), ['[main]']);
+  assert.deepEqual(directMappingKeys(mappingBlock('pull_request', 2), 4), [],
+    'pull_request stays unfiltered so every proposed change runs the full matrix');
+});
+
+test('a superseded pull-request run is cancelled while main keeps one run per commit', requiresWorkflow, () => {
+  assert.deepEqual(directMappingKeys(mappingBlock('concurrency'), 2), ['group', 'cancel-in-progress']);
+  assert.deepEqual(scalarOccurrences('group'), ['${{ github.workflow }}-${{ github.ref }}']);
+  assert.deepEqual(scalarOccurrences('cancel-in-progress'),
+    ["${{ github.event_name == 'pull_request' }}"],
+    'main pushes must not cancel each other, or a per-commit pass record is lost');
+});
+
 test('strategy keeps all cells running across the exact 3 by 2 OS and Node matrix', requiresWorkflow, () => {
   assert.deepEqual(scalarOccurrences('fail-fast'), ['false']);
 
