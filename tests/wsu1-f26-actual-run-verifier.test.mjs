@@ -366,22 +366,29 @@ function invokeWithSourceRace(fx, mutationSource) {
   return result;
 }
 
-function invokeWithReceiptParentRace(fx, boundary) {
+function invokeWithReceiptParentRace(fx, boundary, { preexistingBytes = null } = {}) {
   const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-parent-race-'));
   const runnerScripts = join(runnerRoot, 'scripts');
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
   const target = join(fx.projectRoot, 'race-receipts', 'verified.json');
   mkdirSync(dirname(target));
+  if (preexistingBytes !== null) writeFileSync(target, preexistingBytes);
   const held = `${dirname(target)}-held`;
   const replacement = [
     `process.getBuiltinModule('node:fs').renameSync(${JSON.stringify(dirname(target))}, ${JSON.stringify(held)});`,
-    `process.getBuiltinModule('node:fs').symlinkSync(${JSON.stringify(join(fx.worktree, 'scripts'))},`,
-    `  ${JSON.stringify(dirname(target))}, process.platform === 'win32' ? 'junction' : 'dir');`,
+    `process.getBuiltinModule('node:fs').mkdirSync(${JSON.stringify(dirname(target))});`,
   ].join('\n');
-  const marker = `  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_${boundary}`;
+  const marker = `// RECEIPT_BOUNDARY_${boundary}`;
   const source = readFileSync(VERIFIER, 'utf8');
   assert.equal(source.split(marker).length, 2, `${boundary} boundary must be unique`);
-  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(marker, `  ${replacement}\n${marker}`));
+  const markerIndex = source.indexOf(marker);
+  const markerLine = source.lastIndexOf('\n', markerIndex) + 1;
+  const markerLineEnd = source.indexOf('\n', markerIndex);
+  const crossed = join(runnerRoot, `crossed-${boundary}`);
+  writeFileSync(join(runnerScripts, 'verify.mjs'),
+    `${source.slice(0, markerLine)}  ${replacement}\n${source.slice(markerLine, markerLineEnd + 1)}`
+    + `  process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(crossed)}, 'crossed');\n`
+    + source.slice(markerLineEnd + 1));
   writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
   unlinkSync(fx.receiptPath);
   const args = verifierArgs(fx);
@@ -390,13 +397,59 @@ function invokeWithReceiptParentRace(fx, boundary) {
     encoding: 'utf8',
   });
   assert.notEqual(result.status, 0, `${boundary} parent race unexpectedly passed`);
+  assert.equal(lstatOrNull(crossed), null, `${boundary} guard allowed control to cross the drift boundary`);
   assert.equal(result.stdout, '');
   assert.equal(lstatOrNull(target), null, `${boundary} parent race left a target receipt`);
-  assert.equal(lstatSync(dirname(target)).isSymbolicLink(), true);
+  assert.equal(lstatSync(dirname(target)).isDirectory(), true);
   assert.equal(lstatOrNull(join(fx.worktree, 'scripts', 'verified.json')), null,
     `${boundary} parent race wrote into K`);
+  const heldEntries = readdirSync(held);
+  if (preexistingBytes !== null) {
+    assert.deepEqual(readFileSync(join(held, basename(target))), preexistingBytes,
+      `${boundary} parent race changed the pre-existing receipt`);
+  } else if (boundary === 'PRE_OPEN') {
+    assert.deepEqual(heldEntries, []);
+  } else {
+    // Node exposes no portable openat/unlinkat handle. Once the caller-owned parent is renamed
+    // away, fail-closed means no VERIFIED/current-target/K artifact, not zero unreachable residue.
+    assert.equal(heldEntries.every((name) => name === basename(target)
+      || name.startsWith(`${basename(target)}.tmp-`)), true);
+  }
   assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
   assert.doesNotMatch(result.stderr, /race-receipts|verified\.json|scripts|wsu1-f26-verifier-/u);
+}
+
+function invokeWithReachablePostPublicationFailure(fx, { competingReceiptBytes = null } = {}) {
+  const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-cleanup-race-'));
+  const runnerScripts = join(runnerRoot, 'scripts');
+  mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
+  const source = readFileSync(VERIFIER, 'utf8');
+  const marker = '  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_PUBLICATION';
+  assert.equal(source.split(marker).length, 2, 'post-publication boundary must be unique');
+  const receiptReplacement = competingReceiptBytes === null ? '' : [
+    `process.getBuiltinModule('node:fs').unlinkSync(${JSON.stringify(fx.receiptPath)});`,
+    `process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(fx.receiptPath)},`,
+    `  Buffer.from(${JSON.stringify(competingReceiptBytes.toString('base64'))}, 'base64'));`,
+  ].join('\n    ');
+  const mutation = [receiptReplacement,
+    `process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(
+      join(fx.worktree, 'scripts', 'surface.mjs'),
+    )}, 'post-publication drift\\n');`].filter(Boolean).join('\n    ');
+  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(marker, `${marker}\n    ${mutation}`));
+  writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, 'post-publication K drift unexpectedly passed');
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  if (competingReceiptBytes === null) {
+    assert.equal(lstatOrNull(fx.receiptPath), null, 'new receipt survived reachable cleanup');
+  } else {
+    assert.deepEqual(readFileSync(fx.receiptPath), competingReceiptBytes,
+      'identity-safe cleanup removed or changed a competing receipt');
+  }
 }
 
 function negative(name, diagnostic, mutate, extraEnv) {
@@ -662,6 +715,22 @@ test('F26-ACTUAL-NEG-WORKTREE-K rejects receipt-parent replacement at every publ
   for (const boundary of ['PRE_OPEN', 'PRE_LINK', 'POST_LINK', 'POST_PUBLICATION']) {
     invokeWithReceiptParentRace(fixture(), boundary);
   }
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K preserves a pre-existing outside receipt across parent drift', () => {
+  invokeWithReceiptParentRace(fixture(), 'PRE_OPEN', {
+    preexistingBytes: Buffer.from('pre-existing receipt must survive\n'),
+  });
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K removes a newly published receipt on reachable postpublication drift', () => {
+  invokeWithReachablePostPublicationFailure(fixture());
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K preserves a competing outside receipt during reachable cleanup', () => {
+  invokeWithReachablePostPublicationFailure(fixture(), {
+    competingReceiptBytes: Buffer.from('competing receipt must survive cleanup\n'),
+  });
 });
 
 test('STEP0-3 verifier materializes and binds an initially missing outside receipt parent', () => {
