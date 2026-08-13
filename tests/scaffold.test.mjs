@@ -18,9 +18,15 @@ test('package.json is module type with node>=20', () => {
   assert.match(pkg.engines.node, />=20/);
 });
 
-test('package.json uses portable Node test discovery without a shell glob', () => {
+// The suite is wait-dominated, not compute-dominated: a full local run burns 11
+// minutes of CPU over 24 minutes of wall clock, under half a core. Node defaults
+// file concurrency to availableParallelism() - 1, which on a four-core CI runner
+// is three lanes for 74 minutes of Windows work -- lane-bound at ~25 minutes
+// before a single test is slow. Oversubscribe the cores deliberately; the lanes
+// spend most of their life waiting on spawned CLI children, not computing.
+test('package.json uses portable Node test discovery, oversubscribed past the runner core count', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
-  assert.equal(pkg.scripts.test, 'node --test');
+  assert.equal(pkg.scripts.test, 'node --test --test-concurrency=8');
 });
 
 // Regression: the Claude Code plugin installer validates `.claude-plugin/plugin.json`
