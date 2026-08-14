@@ -452,6 +452,38 @@ function invokeWithReachablePostPublicationFailure(fx, { competingReceiptBytes =
   }
 }
 
+function invokeWithLinkObservationReplacement(fx) {
+  const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-link-observe-race-'));
+  const runnerScripts = join(runnerRoot, 'scripts');
+  mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
+  const target = join(fx.projectRoot, 'link-observe-race', 'verified.json');
+  const competitor = Buffer.from('competing receipt before lstat must survive\n');
+  const source = readFileSync(VERIFIER, 'utf8');
+  const seam = '    linkSync(temporary, path);';
+  assert.equal(source.split(seam).length, 2, 'link publication seam must be unique');
+  const replacement = [
+    seam,
+    `    process.getBuiltinModule('node:fs').unlinkSync(path);`,
+    `    process.getBuiltinModule('node:fs').writeFileSync(path,`,
+    `      Buffer.from(${JSON.stringify(competitor.toString('base64'))}, 'base64'));`,
+  ].join('\n');
+  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(seam, replacement));
+  writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
+  unlinkSync(fx.receiptPath);
+  const args = verifierArgs(fx);
+  args[args.indexOf('--receipt') + 1] = target;
+  const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...args.slice(1)], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, 'link-to-lstat replacement unexpectedly passed');
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  assert.deepEqual(readFileSync(target), competitor, 'identity mismatch cleanup deleted the competitor');
+  assert.equal(readdirSync(dirname(target)).some(name => name.startsWith(`${basename(target)}.tmp-`)), false,
+    'identity mismatch cleanup retained the verifier-owned temporary');
+  assert.doesNotMatch(result.stderr, /link-observe-race|verified\.json|competing/u);
+}
+
 function negative(name, diagnostic, mutate, extraEnv) {
   test(name, () => {
     const fx = fixture();
@@ -731,6 +763,10 @@ test('F26-ACTUAL-NEG-WORKTREE-K preserves a competing outside receipt during rea
   invokeWithReachablePostPublicationFailure(fixture(), {
     competingReceiptBytes: Buffer.from('competing receipt must survive cleanup\n'),
   });
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K never owns a link-to-lstat competitor and cleans only its temp', () => {
+  invokeWithLinkObservationReplacement(fixture());
 });
 
 test('STEP0-3 verifier materializes and binds an initially missing outside receipt parent', () => {

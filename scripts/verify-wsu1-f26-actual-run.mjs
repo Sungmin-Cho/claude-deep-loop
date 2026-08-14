@@ -379,8 +379,9 @@ function atomicallyCreate(binding, bytes) {
   try {
     verifyReceiptParent(binding); // RECEIPT_BOUNDARY_PRE_LINK
     linkSync(temporary, path);
-    installedIdentity = stableIdentity(lstatSync(path, { bigint: true }));
-    if (!matchingIdentity(temporaryIdentity, installedIdentity)) fail('WSU1_F26_WORKTREE_K');
+    const observedIdentity = stableIdentity(lstatSync(path, { bigint: true }));
+    if (!matchingIdentity(temporaryIdentity, observedIdentity)) fail('WSU1_F26_WORKTREE_K');
+    installedIdentity = observedIdentity;
     verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_LINK
     flushDirectory(parent);
     unlinkExact(temporary, temporaryIdentity);
