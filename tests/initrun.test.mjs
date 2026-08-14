@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { initRun, buildInitialLoop } from '../scripts/lib/initrun.mjs';
-import { readState, runDir } from '../scripts/lib/state.mjs';
+import { extendBudget, checkHardBudget } from '../scripts/lib/budget.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 
 const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 
@@ -96,6 +98,122 @@ test('initRun creates state, current pointer, valid schema', () => {
   assert.deepEqual(data.review.points, ['design', 'plan', 'implementation']);
   assert.equal(data.autonomy.tier, 'recommend'); // 기본
   assert.equal(data.session_chain.lease.owner_run_id, runId);
+});
+
+test('initial token budget keeps the 4M default and accepts a human-approved 10M absolute seed', () => {
+  const defaultLoop = buildInitialLoop({
+    runtime: 'claude', runId: 'default-budget', goal: 'g', recipe: {},
+    now: new Date('2026-08-14T00:00:00Z'), env: noSignalEnv,
+    platform: noSignalPlatform, run: noOpRun,
+  });
+  assert.deepEqual({
+    total: defaultLoop.budget.total,
+    spent: defaultLoop.budget.spent,
+    tokens_total: defaultLoop.budget.tokens_total,
+    tokens_spent: defaultLoop.budget.tokens_spent,
+    max_wallclock_sec: defaultLoop.budget.max_wallclock_sec,
+    soft_stop_ratio: defaultLoop.budget.soft_stop_ratio,
+    hard_stop_ratio: defaultLoop.budget.hard_stop_ratio,
+  }, {
+    total: 200,
+    spent: 0,
+    tokens_total: 4_000_000,
+    tokens_spent: 0,
+    max_wallclock_sec: 86_400,
+    soft_stop_ratio: 0.8,
+    hard_stop_ratio: 1,
+  });
+
+  const apiRoot = mkdtempSync(join(tmpdir(), 'dl-init-budget-api-'));
+  const direct = initRun(apiRoot, {
+    runtime: 'claude', goal: 'g', budgetTokens: 10_000_000,
+    now: new Date('2026-08-14T00:00:00Z'), env: noSignalEnv,
+    platform: noSignalPlatform, run: noOpRun,
+  });
+  assert.equal(direct.loop.budget.tokens_total, 10_000_000);
+  assert.equal(direct.loop.budget.tokens_spent, 0);
+  assert.equal(direct.loop.budget.spent, 0);
+  assert.equal(existsSync(join(runDir(apiRoot, direct.runId), 'event-log.jsonl')), false,
+    'an initial seed must not masquerade as a budget extension or cost event');
+
+  const cliRoot = mkdtempSync(join(tmpdir(), 'dl-init-budget-cli-'));
+  const cli = initializedState(cliRoot, initCli(cliRoot, ['--budget-tokens', '10000000']));
+  assert.equal(cli.budget.tokens_total, 10_000_000);
+  assert.equal(cli.budget.tokens_spent, 0);
+  assert.equal(cli.budget.total, 200);
+  assert.equal(cli.budget.spent, 0);
+});
+
+test('init-run rejects invalid direct and CLI token seeds before durable creation', () => {
+  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '10000000']) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-budget-api-invalid-'));
+    assert.throws(() => initRun(root, {
+      runtime: 'claude', goal: 'g', budgetTokens: value,
+      now: new Date('2026-08-14T00:00:00Z'), env: noSignalEnv,
+      platform: noSignalPlatform, run: noOpRun,
+    }), /INITIAL_BUDGET_TOKENS_INVALID/, String(value));
+    assert.equal(existsSync(join(root, '.deep-loop')), false, String(value));
+  }
+
+  for (const value of ['0', '-1', '1.5', '1e7', '9007199254740992', 'ten-million']) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-budget-cli-invalid-'));
+    const result = initCli(root, ['--budget-tokens', value]);
+    assert.equal(result.status, 1, `${value}: ${result.stderr}`);
+    assert.match(result.stderr, /INITIAL_BUDGET_TOKENS_INVALID/);
+    assert.equal(existsSync(join(root, '.deep-loop')), false, value);
+  }
+});
+
+test('init-run closes value-less, duplicate, unknown, and positional budget grammar before durable creation', () => {
+  const cases = [
+    ['bare', ['--budget-tokens']],
+    ['empty equals', ['--budget-tokens=']],
+    ['empty argv', ['--budget-tokens', '']],
+    ['valid then invalid duplicate', ['--budget-tokens', '10000000', '--budget-tokens', '1e7']],
+    ['invalid then valid duplicate', ['--budget-tokens', '1e7', '--budget-tokens', '10000000']],
+    ['unknown flag', ['--budegt-tokens', '10000000']],
+    ['positional', ['unexpected-positional']],
+  ];
+  for (const [label, args] of cases) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-budget-cli-usage-'));
+    const result = initCli(root, args);
+    assert.equal(result.status, 2, `${label}: ${result.stderr}`);
+    assert.equal(existsSync(join(root, '.deep-loop')), false, label);
+  }
+});
+
+test('a hard-stopped custom token seed resumes only through an additive confirmed extension', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-init-budget-resume-'));
+  const now = Date.parse('2026-08-14T00:00:00Z');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', budgetTokens: 10_000_000, now: new Date(now),
+    env: noSignalEnv, platform: noSignalPlatform, run: noOpRun,
+  });
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'gate:tokens-hard-stop';
+  data.budget.tokens_spent = 10_000_000;
+  writeState(root, runId, data);
+  assert.deepEqual(checkHardBudget(data, { now }), { blocked: true, reason: 'tokens-hard-stop' });
+
+  assert.deepEqual(extendBudget(root, runId, {
+    tokens: 1_000_000,
+    reason: 'human approved one bounded token extension',
+    confirm: true,
+    fence: { owner: runId, generation: 1 },
+    now,
+  }), { ok: true, status: 'running' });
+  const after = readState(root, runId).data;
+  assert.equal(after.budget.tokens_total, 11_000_000);
+  assert.equal(after.budget.tokens_spent, 10_000_000);
+  assert.equal(after.budget.spent, 0);
+  assert.equal(after.status, 'running');
+  assert.equal(after.pause_reason, null);
+  assert.deepEqual(checkHardBudget(after, { now }), { blocked: false, reason: null });
+  const events = readLines(root, runId);
+  assert.deepEqual(events.map(event => [event.type, event.data.tokens]), [
+    ['budget-extended', 1_000_000],
+  ]);
 });
 
 test('new runs persist the activation deadline config and explicit null lease marker', () => {

@@ -731,6 +731,10 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = loopJson.budget[k];
     if (v !== undefined && typeof v !== 'number') errors.push(`budget.${k} must be number`);
   }
+  if (loopJson.budget?.tokens_total !== undefined
+    && (!Number.isSafeInteger(loopJson.budget.tokens_total) || loopJson.budget.tokens_total < 0)) {
+    errors.push('budget.tokens_total must be a non-negative safe integer');
+  }
   // schema.properties is not read by this validator, so custom optional-field contracts live here.
   // session_effort/session_runtime/runtime_source enum membership is enforced by the loop above.
   const autonomy = loopJson.autonomy;

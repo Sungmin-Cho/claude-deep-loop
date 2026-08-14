@@ -3205,7 +3205,7 @@
             "initrun.mjs#buildInitialLoop"
           ],
           "coordinates": [
-            "scripts/lib/initrun.mjs:13"
+            "scripts/lib/initrun.mjs:22"
           ]
         }
       ]
@@ -3224,7 +3224,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/initrun.mjs:61"
+            "scripts/lib/initrun.mjs:72"
           ]
         },
         {
@@ -3234,14 +3234,14 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/initrun.mjs:61"
+            "scripts/lib/initrun.mjs:72"
           ]
         }
       ],
       "structural_precondition": {
         "kind": "fresh-target-isolation",
         "coordinates": [
-          "scripts/lib/initrun.mjs:54"
+          "scripts/lib/initrun.mjs:65"
         ]
       }
     },

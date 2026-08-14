@@ -91,6 +91,20 @@ test('README recovery and relief examples preserve exact descriptor authority', 
   }
 });
 
+test('English/Korean docs keep the 4M initial default and separate token from turn relief', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /4,?000,?000[\s\S]{0,420}--budget-tokens[\s\S]{0,220}10,?000,?000/i,
+      `${path}: initial token budget default and approved absolute example missing`);
+    assert.match(source, /(?:explicit human approval|명시적 사람 승인)[\s\S]{0,320}--budget-tokens|--budget-tokens[\s\S]{0,320}(?:explicit human approval|명시적 사람 승인)/i,
+      `${path}: nondefault initial seed must remain human-approved`);
+    assert.match(source, /tokens-hard-stop[\s\S]{0,360}budget extend --tokens|budget extend --tokens[\s\S]{0,360}tokens-hard-stop/i,
+      `${path}: token hard stop must use token-axis extension`);
+    assert.match(source, /turns-hard-stop[\s\S]{0,360}budget extend --turns|budget extend --turns[\s\S]{0,360}turns-hard-stop/i,
+      `${path}: turn hard stop must use turn-axis extension`);
+  }
+});
+
 test('README.ko mirrors commands', () => {
   const s = readFileSync(join(R, 'README.ko.md'), 'utf8');
   for (const c of SKILL_CMDS) assert.ok(s.includes(c), `README.ko missing ${c}`);

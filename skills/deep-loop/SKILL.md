@@ -119,10 +119,15 @@ respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 
 
 ### 2-5. Run 생성 (`init-run`)
 
+`<approved_or_default_initial_token_budget>`은 token delta가 아니라 새 run의 절대
+`tokens_total` seed다. 기본값은 4,000,000이다. 10,000,000 같은 비기본값은
+사람의 명시적 승인이 이 run 생성에 존재할 때만 사용하며 model, prompt, recipe,
+과거 소비량에서 추론하지 않는다. 승인된 값이 없으면 4,000,000을 넣는다.
+
 현재 runtime을 실제 `claude` 또는 `codex`로 치환하고 다음 완전한 명령 하나를 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --session-profile '<session_profile_json_compact>' --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --session-profile '<session_profile_json_compact>' --budget-tokens <approved_or_default_initial_token_budget> --project-root "<canonical_project_root>"
 ```
 
 `--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.

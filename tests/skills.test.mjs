@@ -853,6 +853,15 @@ test('deep-loop init skill observes + seeds session model/effort into init-run (
   assert.match(body, /CLAUDE_EFFORT/, 'init skill observes CLAUDE_EFFORT');
   assert.match(body, /init-run[^\n]*--session-profile\s+'<session_profile_json_compact>'/,
     'init skill threads one compact session profile into init-run');
+  assert.match(body, /init-run[^\n]*--budget-tokens\s+<approved_or_default_initial_token_budget>/,
+    'init skill threads one explicit absolute initial token budget into init-run');
+  assert.match(body, /4,?000,?000[\s\S]{0,360}10,?000,?000[\s\S]{0,360}(?:human|사람)[^\n]*(?:approv|승인)/i,
+    'init skill keeps 4M default and uses 10M only with explicit human approval');
+
+  const status = readFileSync(new URL('../skills/deep-loop-status/SKILL.md', import.meta.url), 'utf8');
+  assert.match(status, /budget extend --tokens\s+<positive_token_delta>/,
+    'token hard stops must use the token relief axis');
+  assert.match(status, /tokens-hard-stop[\s\S]{0,300}--tokens|--tokens[\s\S]{0,300}tokens-hard-stop/i);
 });
 
 test('runtime-facing skills assert runtime and carry explicit resume root/run identity', () => {

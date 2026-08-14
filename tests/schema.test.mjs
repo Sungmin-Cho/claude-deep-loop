@@ -699,6 +699,21 @@ test('non-number budget.soft_stop_ratio fails', () => {
   assert.equal(validate(o).ok, false);
 });
 
+test('budget.tokens_total accepts legacy zero and safe integer seeds but rejects unsafe state', () => {
+  for (const value of [0, 4_000_000, 10_000_000, Number.MAX_SAFE_INTEGER]) {
+    const loop = minimalValid();
+    loop.budget.tokens_total = value;
+    assert.equal(validate(loop).ok, true, String(value));
+  }
+  for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '10000000']) {
+    const loop = minimalValid();
+    loop.budget.tokens_total = value;
+    const result = validate(loop);
+    assert.equal(result.ok, false, String(value));
+    assert.ok(result.errors.some(error => error.includes('budget.tokens_total')), String(value));
+  }
+});
+
 test('spawn_style enum accepts visible; session_spawn additive validates', () => {
   const loop = buildInitialLoop({ runtime: 'claude', runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
   loop.autonomy.spawn_style = 'visible';

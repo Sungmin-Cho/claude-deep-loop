@@ -147,7 +147,11 @@ positive delta를 확인한 경우에만 예산을 확장한다:
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget extend --turns <positive_turn_delta> --reason "<human_confirmed_reason>" --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget extend --tokens <positive_token_delta> --reason "<human_confirmed_reason>" --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+`turns-hard-stop`에는 `--turns`, `tokens-hard-stop`에는 `--tokens`인 exact axis만
+사용한다. 이 relief는 초기 절대 seed를 교체하지 않고 확인된 positive delta만 더한다.
 
 breaker reset은 위 §4의 exact command를 사람이 직접 확인한 경우에만
 실행한다. recovery reservation에서는 두 route 모두 exact child/capsule을

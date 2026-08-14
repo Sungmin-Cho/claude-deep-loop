@@ -803,8 +803,24 @@ const handlers = {
     return 0;
   },
   'init-run': async (a) => {
+    const allowed = new Set([
+      'runtime', 'goal', 'protocol', 'recipe', 'review', 'session-profile', 'model',
+      'effort', 'continuation', 'now', 'project-root', 'budget-tokens',
+    ]);
+    if (!knownFlagVocabulary(a, allowed) || !exactFlagGrammar(a, allowed)) {
+      error('USAGE: init-run accepts only known flags at most once and no positional arguments');
+      return 2;
+    }
     const f = parseFlags(a);
-    const root = rootOf(f);
+    if (f['budget-tokens'] === true || f['budget-tokens'] === '') {
+      error('USAGE: --budget-tokens requires a positive safe integer');
+      return 2;
+    }
+    const budgetTokens = positiveDeltaArg(f, 'budget-tokens');
+    if (budgetTokens === null) {
+      error('INITIAL_BUDGET_TOKENS_INVALID: must be a positive safe integer');
+      return 1;
+    }
     const runtime = reqStr(f, 'runtime');
     if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
     if (f['session-profile'] === undefined && (f.model === true || f.effort === true)) {
@@ -815,8 +831,9 @@ const handlers = {
     if (f.continuation === true) { error('USAGE: --continuation <workstream-session>'); return 2; }
     const model = profile.value.model ?? null;
     const effort = profile.value.effort ?? null;
+    const root = rootOf(f);
     try {
-      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null, now: new Date(parseNow(f)) });
+      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null, budgetTokens, now: new Date(parseNow(f)) });
       json({ run_id: runId }); return 0;
     } catch (e) {
       error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
