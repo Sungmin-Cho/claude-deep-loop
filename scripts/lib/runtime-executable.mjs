@@ -1047,7 +1047,7 @@ export function approveLauncherExecutable(root, runId, {
     { type: 'launcher-executable-approved', data: eventData },
     (loop) => { applyLauncherApproval(loop, kind, approval); },
     (loop) => {
-      const lease = leaseCheck(loop, { ...fence, intent: 'recover' });
+      const lease = leaseCheck(loop, fence, 'recover');
       if (!lease.ok) {
         if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease'
           || lease.reason === 'RUN_PAUSED' || lease.reason === 'lease-released'
@@ -1216,7 +1216,7 @@ export function approveRuntimeExecutable(root, runId, {
   appendAnchored(root, runId, { type: 'runtime-executable-approved', data: eventData },
     (loop) => { loop.autonomy.runtime_executable_approval = approval; },
     (loop) => {
-      const lease = leaseCheck(loop, { ...fence, runtime, intent: 'recover' });
+      const lease = leaseCheck(loop, { ...fence, runtime }, 'recover');
       if (!lease.ok) {
         if (lease.reason === 'RUNTIME_FENCED') throw runtimeError('RUNTIME_FENCED', 'stored runtime does not match approval');
         if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease') {

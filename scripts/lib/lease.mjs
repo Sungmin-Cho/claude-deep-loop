@@ -150,9 +150,10 @@ function boundaryReservationError(data, boundaryEvent, now) {
   return null;
 }
 
-// 펜싱 가드 — 읽기를 제외한 모든 커널 mutating 경로가 진입 전에 호출 (spec §9.1).
-// RUN_PAUSED gate: paused 상태에서 업무 write 거부. 예외 intent: 'recover', 'resume', 'breaker-reset'.
-export function leaseCheck(loop, { owner, generation, runtime, intent = 'business' } = {}) {
+const LEASE_OPERATION_INTENTS = new Set(['business', 'lease', 'accounting', 'recover', 'resume', 'breaker-reset']);
+// The mutator owns operationIntent; caller fence metadata never selects an authorization class.
+export function leaseCheck(loop, { owner, generation, runtime } = {}, operationIntent = 'business') {
+  const intent = LEASE_OPERATION_INTENTS.has(operationIntent) ? operationIntent : 'business';
   if (runtime !== undefined) {
     const fence = runtimeFence(loop, runtime);
     if (!fence.ok) return fence;
@@ -178,9 +179,8 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
     && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
     return { ok: false, reason: 'RUN_PAUSED' };
   }
-  // A successful acquire publishes ownership before the replacement session proves that it started.
-  // Until activateLease clears this deadline, only kernel lease/accounting/recovery traffic may write;
-  // ordinary business mutations must fail closed without changing the anchored state.
+  // A successful acquire publishes ownership before the replacement session proves that it started. Until
+  // activateLease clears this deadline, only kernel lease/accounting/recovery traffic may write; business fails closed.
   if (intent === 'business'
     && lease.activation_deadline_at !== null
     && lease.activation_deadline_at !== undefined) {

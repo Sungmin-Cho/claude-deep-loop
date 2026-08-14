@@ -2173,7 +2173,7 @@ test('recordCost rejects negative / non-finite values', () => {
   assert.throws(() => recordCost(root, 'R', { turns: 1, tokens: Infinity }), /INVALID_COST/);
 });
 
-test('recordCost records one known checker turn on a paused run only through the matching accounting fence', () => {
+test('recordCost owns accounting intent while caller labels cannot widen or narrow its fence', () => {
   const { root, runId } = floorRun();
   const { data } = readState(root, runId);
   data.status = 'paused';
@@ -2182,14 +2182,19 @@ test('recordCost records one known checker turn on a paused run only through the
   assert.doesNotThrow(() => recordCost(root, runId, {
     turns: 1,
     tokens: 12,
-    fence: { owner: runId, generation: 1, intent: 'accounting' },
+    fence: { owner: runId, generation: 1, intent: 'business' },
   }));
   assert.equal(readState(root, runId).data.budget.spent, 1);
   assert.throws(() => recordCost(root, runId, {
     turns: 1,
     tokens: 12,
-    fence: { owner: runId, generation: 1, intent: 'business' },
-  }), /LEASE_FENCED: RUN_PAUSED/);
+    fence: { owner: 'STALE', generation: 1, intent: 'accounting' },
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => recordCost(root, runId, {
+    turns: 1,
+    tokens: 12,
+    fence: { owner: runId, generation: 2, intent: 'accounting' },
+  }), /LEASE_FENCED: generation-mismatch/);
 });
 
 test('reconcileBudget detects event-log suffix truncation', () => {

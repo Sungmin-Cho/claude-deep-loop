@@ -544,6 +544,17 @@ const REASONS = Object.freeze({
   E7: new Set(['expanded-read-pure-non-run-state']),
   E8: new Set(['non-callable-value']),
 });
+const LEASE_OPERATION_INTENTS = new Set(['business', 'lease', 'accounting', 'recover', 'resume', 'breaker-reset']);
+const TRUSTED_LEASE_OPERATION_BY_RECORD = new Map([
+  ['breaker.mjs#assertResetBreakerFence', 'breaker-reset'],
+  ['budget.mjs#recordCost', 'accounting'],
+  ['budget.mjs#settleCodexPreflightCost', 'accounting'],
+  ['budget.mjs#settleCodexProcessCost', 'accounting'],
+  ['deep-loop.mjs#requireLeaseMaintenance', 'lease'],
+  ['runtime-executable.mjs#approveLauncherExecutable', 'recover'],
+  ['runtime-executable.mjs#approveRuntimeExecutable', 'recover'],
+  ['session-profile.mjs#setSessionProfile', 'lease'],
+]);
 
 function relativeSourcePath(file) {
   const normalized = file.replaceAll('\\', '/');
@@ -856,6 +867,93 @@ function splitArguments(tokens, open, close) {
 function rangeHasIdentifier(tokens, range, identifier) {
   if (!range) return false;
   return tokens.slice(range[0], range[1]).some((token) => token.type === 'identifier' && token.value === identifier);
+}
+
+function exactClosedStringSet(module, name, expected) {
+  const tokens = module.tokens;
+  for (let index = 0; index < tokens.length - 7; index += 1) {
+    if (tokens[index].value !== 'const' || tokens[index + 1]?.value !== name
+      || tokens[index + 2]?.value !== '=' || tokens[index + 3]?.value !== 'new'
+      || tokens[index + 4]?.value !== 'Set' || tokens[index + 5]?.value !== '('
+      || tokens[index + 6]?.value !== '[') continue;
+    const close = matching(tokens, index + 6, '[', ']');
+    if (close < 0 || tokens[close + 1]?.value !== ')') return 'delimiter';
+    const values = [];
+    for (let cursor = index + 7; cursor < close; cursor += 1) {
+      if (tokens[cursor].value === ',') continue;
+      if (tokens[cursor].type !== 'string') return `member:${tokens[cursor].value}`;
+      values.push(tokens[cursor].value);
+    }
+    return JSON.stringify([...new Set(values)].sort(byteSort))
+      === JSON.stringify([...expected].sort(byteSort)) && values.length === expected.size
+      ? null : `values:${values.join('|')}`;
+  }
+  return 'missing';
+}
+
+function closedLeaseCheckAuthority(record) {
+  if (!record?.parametersStart || !record.parametersEnd) return 'parameter-range';
+  const tokens = record.module.tokens;
+  const parameters = splitArguments(tokens, record.parametersStart - 1, record.parametersEnd);
+  if (parameters.length !== 3) return 'parameter-count';
+  const second = tokens.slice(parameters[1][0], parameters[1][1]);
+  const third = tokens.slice(parameters[2][0], parameters[2][1]);
+  if (second.some((token) => token.type === 'identifier' && token.value === 'intent')) return 'caller-intent';
+  if (third.length !== 3 || third[0]?.value !== 'operationIntent' || third[1]?.value !== '='
+    || third[2]?.type !== 'string' || third[2]?.value !== 'business') return 'operation-default';
+  let setName = null;
+  const normalizedTail = ['.', 'has', '(', 'operationIntent', ')', '?', 'operationIntent', ':', 'business', ';'];
+  for (let index = record.start; index < record.end - normalizedTail.length - 3; index += 1) {
+    if (tokens[index].value === 'const' && tokens[index + 1]?.value === 'intent'
+      && tokens[index + 2]?.value === '=' && tokens[index + 3]?.type === 'identifier'
+      && normalizedTail.every((value, offset) => tokens[index + 4 + offset]?.value === value)) {
+      setName = tokens[index + 3].value;
+      break;
+    }
+  }
+  if (!setName) return 'normalization';
+  const closedSetFailure = exactClosedStringSet(record.module, setName, LEASE_OPERATION_INTENTS);
+  if (closedSetFailure) return `closed-set:${closedSetFailure}`;
+  return tokens.slice(record.start, record.end)
+    .filter((token) => token.type === 'identifier' && token.value === 'operationIntent').length === 2
+    ? null : 'unnormalized-use';
+}
+
+function exactStringArgument(tokens, range) {
+  const argument = tokens.slice(range[0], range[1]);
+  return argument.length === 1 && argument[0].type === 'string' ? argument[0].value : null;
+}
+
+function leaseIntentAuthorityViolations(recordsByFile) {
+  const violations = [];
+  const records = [...recordsByFile.values()].flatMap((byName) => [...byName.values()]);
+  const leaseCheck = records.find((record) => record.id === 'lease.mjs#leaseCheck');
+  const authorityFailure = leaseCheck ? closedLeaseCheckAuthority(leaseCheck) : null;
+  if (authorityFailure) {
+    violations.push({ code: 'L_CALLER_INTENT_AUTHORITY', id: leaseCheck.id, axis: authorityFailure });
+  }
+  const seenTrusted = new Set();
+  for (const record of records) {
+    const expected = TRUSTED_LEASE_OPERATION_BY_RECORD.get(record.id);
+    for (let index = record.start; index < record.end; index += 1) {
+      const call = callAt(record, index, recordsByFile);
+      if (call?.target !== 'lease.mjs#leaseCheck') continue;
+      const args = splitArguments(record.module.tokens, call.open, call.close);
+      if (expected !== undefined) seenTrusted.add(record.id);
+      const actual = args.length === 3 ? exactStringArgument(record.module.tokens, args[2]) : null;
+      if (args.length > 3 || expected === undefined && args.length > 2
+        || expected !== undefined && actual !== expected) {
+        violations.push({ code: 'L_CALLER_INTENT_AUTHORITY', id: record.id });
+      }
+      index = call.close;
+    }
+  }
+  for (const id of TRUSTED_LEASE_OPERATION_BY_RECORD.keys()) {
+    if (records.some((record) => record.id === id) && !seenTrusted.has(id)) {
+      violations.push({ code: 'L_CALLER_INTENT_AUTHORITY', id });
+    }
+  }
+  return violations;
 }
 
 function rangeIsConditional(tokens, range, identifier) {
@@ -1180,6 +1278,7 @@ export function analyzeClassification({ files, live, requireExactSurface = true 
   const failures = [...surface.failures, ...analysisFailures]
     .sort((left, right) => byteSort(JSON.stringify(left), JSON.stringify(right)));
   const violations = [];
+  violations.push(...leaseIntentAuthorityViolations(recordsByFile));
   if (requireExactSurface) {
     const liveIds = [...live.rows.keys()].sort(byteSort);
     if (JSON.stringify(surface.canonical_ids) !== JSON.stringify(liveIds)) {

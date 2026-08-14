@@ -50,7 +50,7 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
 
   let needsWrite = false;
   withReconciledMutationLock(root, runId, (_guard, { data }) => {
-    const lc = leaseCheck(data, { owner: expect.owner, generation: expect.generation, intent: 'lease' });
+    const lc = leaseCheck(data, { owner: expect.owner, generation: expect.generation }, 'lease');
     if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);   // in-lock authoritative fence (even for no-op)
     if (empty) return;
     validateRuntimeProfile(sessionRuntime(data), {
@@ -71,7 +71,7 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
       if (effort != null) l.autonomy.session_effort = effort;
     },
     (l) => {
-      const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation, intent: 'lease' });
+      const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation }, 'lease');
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
       validateRuntimeProfile(sessionRuntime(l), {
         model: model ?? l.autonomy?.session_model ?? null,

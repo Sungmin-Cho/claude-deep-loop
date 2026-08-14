@@ -425,7 +425,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
         ],
         coordinates: [
           'scripts/lib/headless-host.mjs:213',
-          'scripts/lib/state.mjs:270',
+          'scripts/lib/state.mjs:271',
           'scripts/lib/integrity.mjs:1953',
           'scripts/lib/integrity.mjs:1806',
         ],
@@ -440,7 +440,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
         ],
         coordinates: [
           'scripts/lib/headless-host.mjs:213',
-          'scripts/lib/state.mjs:270',
+          'scripts/lib/state.mjs:271',
           'scripts/lib/integrity.mjs:1953',
           'scripts/lib/integrity.mjs:1806',
         ],
@@ -525,6 +525,77 @@ test('STEP0-3 higher-order authorize gates dominate writes and gate-removal muta
     const result = analyze('mutant.mjs', mutant);
     assert.equal(result.violations.some(({ code }) => code === 'L_WRITE_NOT_DOMINATED'), true);
   }
+});
+
+test('STEP0-3 lease operation authority rejects caller intent and business exception escalation', async () => {
+  const analyzer = await import(STATIC_ANALYZER_URL);
+  const analyze = ({
+    leaseSource,
+    writerCall = 'leaseCheck(data, fence)',
+    writerName = 'writer.mjs',
+    functionName = 'surface',
+  }) => {
+    const scratch = mkdtempSync(join(tmpdir(), 'wsu1-lease-intent-authority-'));
+    const leaseFile = join(scratch, 'lease.mjs');
+    const writerFile = join(scratch, writerName);
+    writeFileSync(leaseFile, leaseSource);
+    writeFileSync(writerFile, [
+      "import { leaseCheck } from './lease.mjs';",
+      "import { withReconciledMutationLock, writeState } from './state.mjs';",
+      `export function ${functionName}(root, runId, fence) {`,
+      '  return withReconciledMutationLock(root, runId, (_guard, { data }) => {',
+      '    writeState(root, runId, data);',
+      `  }, { authorize: (_guard, { data }) => ${writerCall} });`,
+      '}',
+    ].join('\n'));
+    return analyzer.analyzeClassification({
+      files: [leaseFile, writerFile],
+      live: { rows: new Map([[`${writerName}#${functionName}`, {
+        classification: 'L', reason: 'leasecheck-dominated',
+      }]]) },
+      requireExactSurface: false,
+    });
+  };
+  const safeLease = [
+    "const OPERATION_INTENTS = new Set(['business', 'lease', 'accounting', 'recover', 'resume', 'breaker-reset']);",
+    "export function leaseCheck(loop, { owner, generation, runtime } = {}, operationIntent = 'business') {",
+    "  const intent = OPERATION_INTENTS.has(operationIntent) ? operationIntent : 'business';",
+    "  if (intent === 'business' && loop.pending) return { ok: false };",
+    "  return { ok: owner === loop.owner && generation === loop.generation && runtime !== 'wrong' };",
+    '}',
+  ].join('\n');
+  const unsafeCallerIntent = safeLease
+    .replace('{ owner, generation, runtime }', "{ owner, generation, runtime, intent = 'business' }")
+    .replace("const intent = OPERATION_INTENTS.has(operationIntent) ? operationIntent : 'business';", '');
+
+  const safe = analyze({ leaseSource: safeLease });
+  assert.equal(safe.violations.some(({ code }) => code === 'L_CALLER_INTENT_AUTHORITY'), false,
+    JSON.stringify(safe.violations));
+  for (const result of [
+    analyze({ leaseSource: unsafeCallerIntent }),
+    analyze({ leaseSource: safeLease.replace("'resume', ", '') }),
+    analyze({
+      leaseSource: safeLease.replace(
+        "OPERATION_INTENTS.has(operationIntent) ? operationIntent : 'business'", 'operationIntent',
+      ),
+    }),
+    analyze({ leaseSource: safeLease, writerCall: 'leaseCheck(data, fence, fence.intent)' }),
+    analyze({ leaseSource: safeLease, writerCall: "leaseCheck(data, fence, 'accounting')" }),
+  ]) {
+    assert.equal(result.violations.some(({ code }) => code === 'L_CALLER_INTENT_AUTHORITY'), true);
+  }
+  assert.equal(analyze({
+    leaseSource: safeLease,
+    writerName: 'budget.mjs',
+    functionName: 'recordCost',
+    writerCall: "leaseCheck(data, fence, 'accounting')",
+  }).violations.some(({ code }) => code === 'L_CALLER_INTENT_AUTHORITY'), false);
+  assert.equal(analyze({
+    leaseSource: safeLease,
+    writerName: 'budget.mjs',
+    functionName: 'recordCost',
+  }).violations.some(({ code }) => code === 'L_CALLER_INTENT_AUTHORITY'), true,
+  'removing a trusted operation literal must fail closed');
 });
 
 test('STEP0-3 dual pending-block proof rejects missing, misplaced, conditional, and partial guards', async () => {

@@ -41,7 +41,7 @@ function assertResetBreakerFence(data, fence) {
       throw new Error('LEASE_FENCED: recovery-parent-mismatch');
     }
   } else if (fence) {
-    const r = leaseCheck(data, fence);
+    const r = leaseCheck(data, fence, 'breaker-reset');
     if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
   }
   return recoveryKind;

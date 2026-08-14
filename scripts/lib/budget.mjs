@@ -876,7 +876,7 @@ function trailingFloor(lines, owner, generation) {
 export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
   return withReconciledMutationLock(root, runId, (_guard, { data: loop }) => {
-    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    if (fence) { const r = leaseCheck(loop, fence, 'accounting'); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     // v1.6 (spec §2.3-7): recordCost는 자체 appendEvent+writeState 경로(appendAnchored 관문 비경유).
     // fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착 — drive-headless의 LEASE_FENCED
     // swallow 계약 보존(순서가 계약). fence-less 직접 호출만 이 자체 가드가 잡는다.
@@ -1050,7 +1050,7 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
     }
     if (identityEvents.length === 1) throw new Error('PREFLIGHT_ACCOUNTING_MISMATCH');
 
-    const authorized = leaseCheck(loop, fence);
+    const authorized = leaseCheck(loop, fence, 'accounting');
     if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
     const { tf, tk } = trailingFloor(lines, exact.owner, exact.generation);
     const adjustedTurns = Math.max(0, exact.usage.num_turns - tf);
@@ -1476,7 +1476,7 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
       ? makerOrigin(loop, exact, lines)
       : checkerOrigin(loop, exact);
 
-    const authorized = leaseCheck(loop, fence);
+    const authorized = leaseCheck(loop, fence, 'accounting');
     if (!authorized.ok) {
       if (authorized.reason !== 'RUN_TERMINAL') {
         throw new Error(`LEASE_FENCED: ${authorized.reason}`);

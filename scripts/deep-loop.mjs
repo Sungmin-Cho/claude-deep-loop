@@ -445,11 +445,21 @@ function classifyKernelError(e) {
   }
   return null;
 }
-function requireLease(root, runId, f, intent = 'business') {
+function captureLeaseCandidate(root, runId, f) {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
   const { data } = captureReconciledRunSnapshot(root, runId);
-  const r = leaseCheck(data, { owner: f.owner, generation, intent });
+  return { data, fence: { owner: f.owner, generation } };
+}
+function requireLease(root, runId, f) {
+  const { data, fence } = captureLeaseCandidate(root, runId, f);
+  const r = leaseCheck(data, fence);
+  if (!r.ok) { error(`LEASE_FENCED: ${r.reason}`); process.exit(3); }
+  return data;
+}
+function requireLeaseMaintenance(root, runId, f) {
+  const { data, fence } = captureLeaseCandidate(root, runId, f);
+  const r = leaseCheck(data, fence, 'lease');
   if (!r.ok) { error(`LEASE_FENCED: ${r.reason}`); process.exit(3); }
   return data;
 }
@@ -1594,7 +1604,7 @@ const handlers = {
   },
   handoff: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    const data = requireLease(root, runId, f, 'lease');
+    const data = requireLeaseMaintenance(root, runId, f);
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     if (verb === 'emit') {
       let boundaryEvent;
@@ -1629,7 +1639,7 @@ const handlers = {
     const { data } = captureReconciledRunSnapshot(root, runId);
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
     // Require + fence --owner/--generation (exit 3). intent 'lease' so a releasing handoff lease is not rejected.
-    requireLease(root, runId, f, 'lease');
+    requireLeaseMaintenance(root, runId, f);
     const headless = f.headless === true || f.headless === 'true';
     const attended = f.attended === true || f.attended === 'true';
     let timeoutMs;
@@ -2153,7 +2163,7 @@ const handlers = {
     if (profile.source === 'legacy' && model === undefined && effort === undefined) {
       error('NOTHING_TO_SET'); return 2;
     }
-    requireLease(root, runId, f, 'lease');   // releasing-safe outer fence (exit 3)
+    requireLeaseMaintenance(root, runId, f);   // releasing-safe outer fence (exit 3)
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     try {
       const r = setSessionProfile(root, runId, {
@@ -2170,7 +2180,7 @@ const handlers = {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
     // intent:'lease' so a releasing lease is not rejected (releasing-safe R11-HH)
-    requireLease(root, runId, f, 'lease');
+    requireLeaseMaintenance(root, runId, f);
     const now = new Date(parseNow(f)).toISOString();
     try {
       const d = detectAndPersist(root, runId, { owner: f.owner, generation: intArg(f, 'generation'), now });

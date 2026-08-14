@@ -3092,7 +3092,7 @@
           ],
           "coordinates": [
             "scripts/lib/headless-host.mjs:213",
-            "scripts/lib/state.mjs:270",
+            "scripts/lib/state.mjs:271",
             "scripts/lib/integrity.mjs:1953",
             "scripts/lib/integrity.mjs:1806"
           ]
@@ -3107,7 +3107,7 @@
           ],
           "coordinates": [
             "scripts/lib/headless-host.mjs:213",
-            "scripts/lib/state.mjs:270",
+            "scripts/lib/state.mjs:271",
             "scripts/lib/integrity.mjs:1953",
             "scripts/lib/integrity.mjs:1806"
           ]
@@ -7535,7 +7535,7 @@
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:266",
+            "scripts/lib/state.mjs:267",
             "scripts/lib/integrity.mjs:1913",
             "scripts/lib/integrity.mjs:1806"
           ]
@@ -7548,7 +7548,7 @@
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:266",
+            "scripts/lib/state.mjs:267",
             "scripts/lib/integrity.mjs:1913",
             "scripts/lib/integrity.mjs:1806"
           ]
@@ -7571,7 +7571,7 @@
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:262",
+            "scripts/lib/state.mjs:263",
             "scripts/lib/integrity.mjs:1877",
             "scripts/lib/integrity.mjs:1851",
             "scripts/lib/integrity.mjs:1806"
@@ -7586,7 +7586,7 @@
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:262",
+            "scripts/lib/state.mjs:263",
             "scripts/lib/integrity.mjs:1877",
             "scripts/lib/integrity.mjs:1851",
             "scripts/lib/integrity.mjs:1806"
@@ -7609,7 +7609,7 @@
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:258",
+            "scripts/lib/state.mjs:259",
             "scripts/lib/integrity.mjs:1851",
             "scripts/lib/integrity.mjs:1806"
           ]
@@ -7622,7 +7622,7 @@
             "integrity.mjs#reconcileAnchoredPublicationLocked"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:258",
+            "scripts/lib/state.mjs:259",
             "scripts/lib/integrity.mjs:1851",
             "scripts/lib/integrity.mjs:1806"
           ]
@@ -7642,7 +7642,7 @@
             "state.mjs#classifyPatch"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:86"
+            "scripts/lib/state.mjs:87"
           ]
         }
       ]
@@ -7660,7 +7660,7 @@
             "state.mjs#findRoot"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:44"
+            "scripts/lib/state.mjs:45"
           ]
         }
       ]
@@ -7678,7 +7678,7 @@
             "state.mjs#parseHashVerifiedStateBytes"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:218"
+            "scripts/lib/state.mjs:219"
           ]
         }
       ]
@@ -7697,7 +7697,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:322"
+            "scripts/lib/state.mjs:323"
           ]
         },
         {
@@ -7707,7 +7707,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:322"
+            "scripts/lib/state.mjs:323"
           ]
         },
         {
@@ -7717,7 +7717,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:322"
+            "scripts/lib/state.mjs:323"
           ]
         }
       ],
@@ -7737,7 +7737,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:684"
+            "scripts/lib/state.mjs:772"
           ]
         },
         {
@@ -7747,7 +7747,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:684"
+            "scripts/lib/state.mjs:772"
           ]
         }
       ]
@@ -7765,7 +7765,7 @@
             "state.mjs#readState"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:251"
+            "scripts/lib/state.mjs:252"
           ]
         }
       ]
@@ -7783,7 +7783,7 @@
             "state.mjs#readStateForRootRecovery"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:247"
+            "scripts/lib/state.mjs:248"
           ]
         }
       ]
@@ -7801,7 +7801,7 @@
             "state.mjs#runDir"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:65"
+            "scripts/lib/state.mjs:66"
           ]
         }
       ]
@@ -7819,7 +7819,7 @@
             "state.mjs#withLock"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:414"
+            "scripts/lib/state.mjs:415"
           ]
         }
       ]
@@ -7837,7 +7837,7 @@
             "state.mjs#withReadLock"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:641"
+            "scripts/lib/state.mjs:729"
           ]
         }
       ]
@@ -7855,7 +7855,7 @@
             "state.mjs#withReconciledMutationLock"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:269"
+            "scripts/lib/state.mjs:270"
           ]
         }
       ]
@@ -7873,7 +7873,7 @@
             "state.mjs#withReconciledRootRecoveryLock"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:273"
+            "scripts/lib/state.mjs:274"
           ]
         }
       ]
@@ -7891,7 +7891,7 @@
             "state.mjs#writeCompactRestoreState"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:290"
+            "scripts/lib/state.mjs:291"
           ]
         }
       ]
@@ -7909,7 +7909,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/state.mjs:277"
+            "scripts/lib/state.mjs:278"
           ]
         }
       ]

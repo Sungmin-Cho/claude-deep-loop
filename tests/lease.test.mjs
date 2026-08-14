@@ -8,7 +8,7 @@ import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { patch, pauseRun, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
-import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { newWorkstream, recordWorkstreamTerminal, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { setSessionProfile } from '../scripts/lib/session-profile.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
@@ -584,9 +584,9 @@ for (const publicNow of [
 
 test('leaseCheck allows accounting during releasing for matching owner/generation', () => {
   const loop = { session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'releasing' } } };
-  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'business' }).ok, false);    // 업무 write 거부
-  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'accounting' }).ok, true);   // 회계 허용
-  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3, intent: 'accounting' }).ok, false);  // generation 불일치 거부
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2 }).ok, false);    // 업무 write 거부
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2 }, 'accounting').ok, true);   // 회계 허용
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3 }, 'accounting').ok, false);  // generation 불일치 거부
 });
 
 test('leaseCheck allows only matching accounting on a nonterminal paused run', () => {
@@ -594,11 +594,11 @@ test('leaseCheck allows only matching accounting on a nonterminal paused run', (
     status: 'paused',
     session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'active' } },
   };
-  assert.deepEqual(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'accounting' }), { ok: true, reason: 'ok' });
-  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'business' }).reason, 'RUN_PAUSED');
-  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'lease' }).reason, 'RUN_PAUSED');
-  assert.equal(leaseCheck(loop, { owner: 'other', generation: 2, intent: 'accounting' }).reason, 'owner-mismatch');
-  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3, intent: 'accounting' }).reason, 'generation-mismatch');
+  assert.deepEqual(leaseCheck(loop, { owner: 'r', generation: 2 }, 'accounting'), { ok: true, reason: 'ok' });
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2 }).reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2 }, 'lease').reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(loop, { owner: 'other', generation: 2 }, 'accounting').reason, 'owner-mismatch');
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3 }, 'accounting').reason, 'generation-mismatch');
 });
 
 // Fix A: reserveHandoff with stale expect is fenced (generation-mismatch); without expect is unchanged
@@ -797,24 +797,24 @@ test('leaseCheck: terminal run rejects EVERY intent with RUN_TERMINAL', () => {
     const loop = structuredClone(data);
     loop.status = status;
     for (const intent of intents) {
-      assert.deepEqual(leaseCheck(loop, { owner, generation: gen, intent }),
+      assert.deepEqual(leaseCheck(loop, { owner, generation: gen }, intent),
         { ok: false, reason: 'RUN_TERMINAL' }, `${status}/${intent}`);
     }
     // terminal 게이트는 lease.state 게이트보다 앞 (spec r3 🟡3): released/releasing이어도 RUN_TERMINAL
     for (const ls of ['released', 'releasing']) {
       const l2 = structuredClone(loop);
       l2.session_chain.lease.state = ls;
-      assert.equal(leaseCheck(l2, { owner, generation: gen, intent: 'business' }).reason, 'RUN_TERMINAL', `${status}/${ls}`);
+      assert.equal(leaseCheck(l2, { owner, generation: gen }).reason, 'RUN_TERMINAL', `${status}/${ls}`);
     }
     // fence first: owner/generation 불일치가 terminal보다 우선
-    assert.equal(leaseCheck(loop, { owner: 'other', generation: gen, intent: 'business' }).reason, 'owner-mismatch');
-    assert.equal(leaseCheck(loop, { owner, generation: gen + 9, intent: 'business' }).reason, 'generation-mismatch');
+    assert.equal(leaseCheck(loop, { owner: 'other', generation: gen }, 'accounting').reason, 'owner-mismatch');
+    assert.equal(leaseCheck(loop, { owner, generation: gen + 9 }, 'accounting').reason, 'generation-mismatch');
   }
   // 비terminal 회귀: running/paused 기존 reason 불변
-  assert.equal(leaseCheck(data, { owner, generation: gen, intent: 'business' }).ok, true);
+  assert.equal(leaseCheck(data, { owner, generation: gen }).ok, true);
   const paused = structuredClone(data); paused.status = 'paused';
-  assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'business' }).reason, 'RUN_PAUSED');
-  assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'recover' }).ok, true);
+  assert.equal(leaseCheck(paused, { owner, generation: gen }).reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(paused, { owner, generation: gen }, 'recover').ok, true);
 });
 
 test('reserveHandoff / advanceHandoffPhase reject terminal runs (spec §2.3-1/3)', () => {
@@ -1038,17 +1038,20 @@ function activationFence(fixture) {
   return { owner: fixture.owner, generation: fixture.generation };
 }
 
-test('SLICE-005 leaseCheck fences only business intent while activation is pending', () => {
+test('SLICE-005 leaseCheck ignores caller fence intent and accepts only a separate kernel operation intent', () => {
   const f = seedActivationPending();
   const { data } = readState(f.root, f.runId);
   const fence = activationFence(f);
   assert.deepEqual(leaseCheck(data, fence), { ok: false, reason: 'ACTIVATION_PENDING' });
-  assert.deepEqual(leaseCheck(data, { ...fence, intent: 'business' }), {
-    ok: false, reason: 'ACTIVATION_PENDING',
-  });
-  for (const intent of ['lease', 'accounting', 'recover', 'resume', 'breaker-reset']) {
-    assert.deepEqual(leaseCheck(data, { ...fence, intent }), { ok: true, reason: 'ok' });
+  for (const forgedIntent of ['business', 'lease', 'accounting', 'recover', 'resume', 'breaker-reset', 'unknown']) {
+    assert.deepEqual(leaseCheck(data, { ...fence, intent: forgedIntent }), {
+      ok: false, reason: 'ACTIVATION_PENDING',
+    }, `caller fence intent ${forgedIntent} is not authorization`);
   }
+  for (const operationIntent of ['lease', 'accounting', 'recover', 'resume', 'breaker-reset']) {
+    assert.deepEqual(leaseCheck(data, fence, operationIntent), { ok: true, reason: 'ok' });
+  }
+  assert.deepEqual(leaseCheck(data, fence, 'unknown'), { ok: false, reason: 'ACTIVATION_PENDING' });
 });
 
 test('SLICE-005 activation-pending state patch rejects without anchored mutation', () => {
@@ -1152,6 +1155,81 @@ test('F26 fenced exported business writers preserve leaseCheck activation-pendin
   ]) {
     assert.throws(invoke, /LEASE_FENCED: ACTIVATION_PENDING/);
     assert.deepEqual(durableLeaseBytes(f.root, f.runId), before);
+  }
+});
+
+test('F26 forged accounting intent cannot authorize representative exported business writers', () => {
+  const cases = [
+    {
+      label: 'state patch',
+      arrange() {},
+      invoke: (f, fence) => patch(f.root, f.runId, 'discovered_items', ['forged'], { fence }),
+    },
+    {
+      label: 'comprehension ack',
+      arrange(f) {
+        f.episodeId = newEpisode(f.root, f.runId, {
+          plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'forged-ack',
+          fence: { owner: f.runId, generation: 1 },
+        }).id;
+      },
+      invoke: (f, fence) => ack(f.root, f.runId, f.episodeId, { actor: 'agent', env: {}, fence }),
+    },
+    {
+      label: 'review verdict',
+      arrange() {},
+      invoke: (f, fence) => recordReviewVerdict(f.root, f.runId, 'REQUEST_CHANGES', fence),
+    },
+    {
+      label: 'new episode',
+      arrange() {},
+      invoke: (f, fence) => newEpisode(f.root, f.runId, {
+        plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'forged-new-episode', fence,
+      }),
+    },
+    {
+      label: 'new workstream',
+      arrange() {},
+      invoke: (f, fence) => newWorkstream(f.root, f.runId, {
+        title: 'Forged workstream', branch: 'forged-workstream',
+        worktree: '.claude/worktrees/forged-workstream', fence,
+      }),
+    },
+    {
+      label: 'workstream status',
+      arrange(f) {
+        f.workstreamId = newWorkstream(f.root, f.runId, {
+          title: 'Status target', branch: 'status-target', worktree: '.claude/worktrees/status-target',
+          fence: { owner: f.runId, generation: 1 },
+        }).id;
+      },
+      invoke: (f, fence) => setWorkstreamStatus(f.root, f.runId, f.workstreamId, 'in_progress', { fence }),
+    },
+    {
+      label: 'workstream terminal',
+      arrange(f) {
+        f.workstreamId = newWorkstream(f.root, f.runId, {
+          title: 'Terminal target', branch: 'terminal-target', worktree: '.claude/worktrees/terminal-target',
+          fence: { owner: f.runId, generation: 1 },
+        }).id;
+      },
+      invoke: (f, fence) => recordWorkstreamTerminal(f.root, f.runId, f.workstreamId, {
+        status: 'ready', proof: {}, confirm: true, fence,
+      }),
+    },
+  ];
+
+  for (const entry of cases) {
+    const f = seed();
+    entry.arrange(f);
+    const pending = pendingLease(f.root, f.runId, {
+      owner: `FORGED${entry.label.replaceAll(/[^A-Za-z]/g, '').toUpperCase()}OWNER`,
+      attemptId: `FORGED${entry.label.replaceAll(/[^A-Za-z]/g, '').toUpperCase()}ATTEMPT`,
+    });
+    const before = durableLeaseBytes(f.root, f.runId);
+    const fence = { owner: pending.owner, generation: pending.generation, intent: 'accounting' };
+    assert.throws(() => entry.invoke(f, fence), /LEASE_FENCED: ACTIVATION_PENDING/, entry.label);
+    assert.deepEqual(durableLeaseBytes(f.root, f.runId), before, `${entry.label} mutated durable bytes`);
   }
 });
 
