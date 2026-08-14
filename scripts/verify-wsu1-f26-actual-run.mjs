@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
-  readdirSync, realpathSync, unlinkSync, writeFileSync,
+  closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync,
+  readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { flushDirectory } from './lib/atomic-write.mjs';
@@ -109,6 +109,25 @@ function matchingIdentity(left, right) {
   if (left.dev !== '0' && right.dev !== '0') return left.dev === right.dev;
   return left.birthtime_ns !== '0' && right.birthtime_ns !== '0'
     && left.birthtime_ns === right.birthtime_ns;
+}
+
+function regularFileIdentity(stat) {
+  if (stat.isSymbolicLink() || !stat.isFile()) fail('WSU1_F26_WORKTREE_K');
+  return Object.freeze({
+    ...stableIdentity(stat),
+    mode: String(stat.mode),
+    size: String(stat.size),
+    mtime_ns: String(stat.mtimeNs),
+    ctime_ns: String(stat.ctimeNs),
+  });
+}
+
+function matchingRegularFileIdentity(left, right) {
+  return matchingIdentity(left, right)
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtime_ns === right.mtime_ns
+    && left.ctime_ns === right.ctime_ns;
 }
 
 function inspectReceiptParent(parent) {
@@ -395,6 +414,53 @@ function atomicallyCreate(binding, bytes) {
   }
 }
 
+function verifyPublishedReceipt(binding, installedIdentity, expectedBytes) {
+  const { path } = binding;
+  verifyReceiptParent(binding);
+  let before;
+  try { before = regularFileIdentity(lstatSync(path, { bigint: true })); }
+  catch (error) {
+    if (error?.diagnostic) throw error;
+    fail('WSU1_F26_WORKTREE_K');
+  }
+  if (!matchingIdentity(before, installedIdentity)) fail('WSU1_F26_WORKTREE_K');
+
+  let fd;
+  let failure;
+  let afterRead;
+  try {
+    // RECEIPT_VERIFICATION_PRE_OPEN
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const opened = regularFileIdentity(fstatSync(fd, { bigint: true }));
+    if (!matchingRegularFileIdentity(before, opened)) fail('WSU1_F26_WORKTREE_K');
+    const observedBytes = readFileSync(fd);
+    // RECEIPT_VERIFICATION_POST_READ
+    afterRead = regularFileIdentity(fstatSync(fd, { bigint: true }));
+    if (!matchingRegularFileIdentity(opened, afterRead) || !observedBytes.equals(expectedBytes)) {
+      fail('WSU1_F26_WORKTREE_K');
+    }
+  } catch (error) {
+    failure = error;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch (error) { failure ||= error; }
+    }
+  }
+  if (failure) {
+    if (failure?.diagnostic) throw failure;
+    fail('WSU1_F26_WORKTREE_K');
+  }
+
+  // RECEIPT_VERIFICATION_PRE_FINAL_PATH
+  let finalPath;
+  try { finalPath = regularFileIdentity(lstatSync(path, { bigint: true })); }
+  catch (error) {
+    if (error?.diagnostic) throw error;
+    fail('WSU1_F26_WORKTREE_K');
+  }
+  if (!matchingRegularFileIdentity(afterRead, finalPath)) fail('WSU1_F26_WORKTREE_K');
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const projectRoot = canonicalDirectory(resolve(args['--project-root']), 'WSU1_F26_SYNTHETIC_RUN');
@@ -522,12 +588,13 @@ function main() {
   };
   verifyRunEvidenceUnchanged(runEvidence);
   verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION
-  const receiptIdentity = atomicallyCreate(receiptBinding,
-    Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
+  const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
+  const receiptIdentity = atomicallyCreate(receiptBinding, receiptBytes);
   const binding = receiptBinding;
   try {
-  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_PUBLICATION
+    verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_PUBLICATION
     verifySourceArtifactsUnchanged(worktree, relativeContract);
+    verifyPublishedReceipt(binding, receiptIdentity, receiptBytes);
   } catch {
     unlinkExact(receiptBinding.path, receiptIdentity);
     try { flushDirectory(receiptBinding.parent); } catch { /* parent drift is already fail-closed */ }

@@ -484,6 +484,78 @@ function invokeWithLinkObservationReplacement(fx) {
   assert.doesNotMatch(result.stderr, /link-observe-race|verified\.json|competing/u);
 }
 
+function invokeWithFinalReceiptDrift(fx, kind) {
+  const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-final-receipt-race-'));
+  const runnerScripts = join(runnerRoot, 'scripts');
+  mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
+  const source = readFileSync(VERIFIER, 'utf8');
+  const seam = '    verifySourceArtifactsUnchanged(worktree, relativeContract);';
+  assert.equal(source.split(seam).length, 2, 'final K boundary must have one unambiguous seam');
+  const competitor = Buffer.from('foreign receipt installed after the final K check\n');
+  const mutation = kind === 'replacement' ? [
+    `process.getBuiltinModule('node:fs').unlinkSync(${JSON.stringify(fx.receiptPath)});`,
+    `process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(fx.receiptPath)},`,
+    `  Buffer.from(${JSON.stringify(competitor.toString('base64'))}, 'base64'));`,
+  ].join('\n    ') : [
+    `const receiptBytesAfterK = process.getBuiltinModule('node:fs').readFileSync(${JSON.stringify(fx.receiptPath)});`,
+    'receiptBytesAfterK[0] ^= 1;',
+    `process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(fx.receiptPath)}, receiptBytesAfterK);`,
+  ].join('\n    ');
+  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(seam, `${seam}\n    ${mutation}`));
+  writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, `final receipt ${kind} drift unexpectedly passed`);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  if (kind === 'replacement') {
+    assert.deepEqual(readFileSync(fx.receiptPath), competitor,
+      'identity-safe cleanup removed or changed the post-K competitor');
+  } else {
+    assert.equal(lstatOrNull(fx.receiptPath), null,
+      'same-inode corruption of the verifier-owned receipt survived cleanup');
+  }
+  assert.doesNotMatch(result.stderr, /final-receipt-race|receipt\.json|foreign/u);
+}
+
+function invokeWithinFinalReceiptVerification(fx, boundary) {
+  const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-final-receipt-read-race-'));
+  const runnerScripts = join(runnerRoot, 'scripts');
+  mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
+  const source = readFileSync(VERIFIER, 'utf8');
+  const marker = `// RECEIPT_VERIFICATION_${boundary}`;
+  assert.equal(source.split(marker).length, 2, `${boundary} receipt verification boundary must be unique`);
+  const competitor = Buffer.from(`foreign receipt at ${boundary}\n`);
+  const replacement = boundary === 'POST_READ' ? [
+    `const receiptBytesDuringRead = process.getBuiltinModule('node:fs').readFileSync(path);`,
+    'receiptBytesDuringRead[0] ^= 1;',
+    `process.getBuiltinModule('node:fs').writeFileSync(path, receiptBytesDuringRead);`,
+  ] : [
+    `process.getBuiltinModule('node:fs').unlinkSync(path);`,
+    `process.getBuiltinModule('node:fs').writeFileSync(path,`,
+    `  Buffer.from(${JSON.stringify(competitor.toString('base64'))}, 'base64'));`,
+  ];
+  writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(marker, `${marker}\n    ${replacement.join('\n    ')}`));
+  writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
+  unlinkSync(fx.receiptPath);
+  const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, `${boundary} receipt verification race unexpectedly passed`);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  if (boundary === 'POST_READ') {
+    assert.equal(lstatOrNull(fx.receiptPath), null,
+      `${boundary} same-inode corruption of the verifier-owned receipt survived cleanup`);
+  } else {
+    assert.deepEqual(readFileSync(fx.receiptPath), competitor,
+      `${boundary} identity-safe cleanup removed or changed the competitor`);
+  }
+  assert.doesNotMatch(result.stderr, /final-receipt-read-race|receipt\.json|foreign/u);
+}
+
 function negative(name, diagnostic, mutate, extraEnv) {
   test(name, () => {
     const fx = fixture();
@@ -769,6 +841,20 @@ test('F26-ACTUAL-NEG-WORKTREE-K never owns a link-to-lstat competitor and cleans
   invokeWithLinkObservationReplacement(fixture());
 });
 
+test('F26-ACTUAL-NEG-WORKTREE-K rejects a foreign receipt replacement after the final K check', () => {
+  invokeWithFinalReceiptDrift(fixture(), 'replacement');
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K rejects same-inode receipt corruption after the final K check', () => {
+  invokeWithFinalReceiptDrift(fixture(), 'same-inode');
+});
+
+test('F26-ACTUAL-NEG-WORKTREE-K rejects receipt drift across descriptor verification boundaries', () => {
+  for (const boundary of ['PRE_OPEN', 'POST_READ', 'PRE_FINAL_PATH']) {
+    invokeWithinFinalReceiptVerification(fixture(), boundary);
+  }
+});
+
 test('STEP0-3 verifier materializes and binds an initially missing outside receipt parent', () => {
   const fx = fixture();
   const target = join(fx.projectRoot, 'missing-parent', 'nested', 'verified.json');
@@ -840,6 +926,36 @@ test('STEP0-3 verifier receipt publication flushes its parent before and after t
   assert.equal(link >= 0 && link < firstFlush && firstFlush < unlink && unlink < secondFlush, true);
 });
 
+test('STEP0-3 verifier binds final receipt bytes and full same-descriptor identity after final K', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  const start = source.indexOf('function verifyPublishedReceipt(');
+  const end = source.indexOf('\nfunction main()', start);
+  const body = source.slice(start, end);
+  const before = body.indexOf("regularFileIdentity(lstatSync(path, { bigint: true }))");
+  const open = body.indexOf('openSync(path, constants.O_RDONLY');
+  const firstFstat = body.indexOf('regularFileIdentity(fstatSync(fd, { bigint: true }))', open);
+  const read = body.indexOf('readFileSync(fd)', firstFstat);
+  const secondFstat = body.indexOf('regularFileIdentity(fstatSync(fd, { bigint: true }))', firstFstat + 1);
+  const finalLstat = body.indexOf('regularFileIdentity(lstatSync(path, { bigint: true }))', before + 1);
+  assert.equal(before >= 0 && before < open && open < firstFstat && firstFstat < read
+    && read < secondFstat && secondFstat < finalLstat, true);
+  assert.match(body, /constants\.O_RDONLY \| \(constants\.O_NOFOLLOW \?\? 0\) \| \(constants\.O_NONBLOCK \?\? 0\)/u);
+  assert.match(body, /matchingIdentity\(before, installedIdentity\)/u);
+  assert.match(body, /matchingRegularFileIdentity\(before, opened\)/u);
+  assert.match(body, /matchingRegularFileIdentity\(opened, afterRead\)/u);
+  assert.match(body, /observedBytes\.equals\(expectedBytes\)/u);
+  assert.match(body, /matchingRegularFileIdentity\(afterRead, finalPath\)/u);
+  assert.match(body, /finally \{[\s\S]*closeSync\(fd\)/u);
+
+  const receiptBytes = source.indexOf('const receiptBytes = Buffer.from(');
+  const publication = source.indexOf('atomicallyCreate(receiptBinding, receiptBytes)', receiptBytes);
+  const finalK = source.indexOf('verifySourceArtifactsUnchanged(worktree, relativeContract)', publication);
+  const finalReceipt = source.indexOf('verifyPublishedReceipt(binding, receiptIdentity, receiptBytes)', finalK);
+  const verified = source.indexOf("process.stdout.write('WSU1_F26_ACTUAL_RUN_VERIFIED\\n')", finalReceipt);
+  assert.equal(receiptBytes >= 0 && receiptBytes < publication && publication < finalK
+    && finalK < finalReceipt && finalReceipt < verified, true);
+});
+
 test('STEP0-3 verifier rechecks the anchored run evidence before receipt publication', () => {
   const source = readFileSync(VERIFIER, 'utf8');
   const body = source.slice(
@@ -867,6 +983,7 @@ test('STEP0-3 verifier re-enumerates K after run evidence and immediately before
   assert.equal(initial >= 0 && initial < runReread && runReread < sourceReread && sourceReread < publication, true);
   assert.equal(source.slice(sourceReread, publication).trim(), [
     'verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION',
+    '  const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\\n`);',
     '  const receiptIdentity =',
   ].join('\n'));
 });
