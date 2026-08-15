@@ -170,6 +170,12 @@ node --test tests/<x>.test.mjs   # single file
 
 - `state.classifyPatch` is the patch whitelist (default-deny). The CLI trusts it —
   never reimplement the allowlist.
+- 런타임 의존 동작은 `DEEP_LOOP_ROOT/scripts/lib/runtime.mjs`의 `RUNTIME_CAPABILITIES`에서 조회한다.
+  `runtime === 'claude' ? A : B` 형태를 새로 쓰지 않는다 — 세 번째 런타임이 조용히 B를
+  상속한다. 정체성 검사가 정말 필요한 지점(fresh-loop 드리프트 fence, 불변식 6의 codex
+  결제)은 `DEEP_LOOP_ROOT/schemas/runtime-literal-allowlist.json`에 사유와 함께 등재한다.
+  `DEEP_LOOP_ROOT/tests/runtime-literals.test.mjs`가 미등재 리터럴을 잡지만 **강제 장치가 아니다** —
+  변수 경유 비교와 `??` 기본값은 잡지 못한다.
 - Every deep-loop artifact except `loop.json` — handoff, compaction-state,
   final-report — is wrapped in the M3 envelope (`producer:"deep-loop"`, ULID `run_id`,
   `parent_run_id` chain).
