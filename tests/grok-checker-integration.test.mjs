@@ -16,9 +16,11 @@ import { dispatchReview } from '../scripts/lib/review.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { listProcessUsageReceipts } from '../scripts/lib/preflight-receipt-journal.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { writeExactDualCapture } from './helpers/dual-capture.mjs';
 
 const CODEX_SESSION = '11111111-1111-4111-8111-111111111111';
 const GROK_SESSION = '22222222-2222-4222-8222-222222222222';
+const SESSION_PLACEHOLDER = 'provider-session-bound-by-host';
 
 test('synchronous dual worker starts both real transports before either result is observed', () => {
   const coordination = mkdtempSync(join(tmpdir(), 'deep-loop-dual-worker-'));
@@ -140,12 +142,14 @@ function dualHostFixture({ approvals = 'approved' } = {}) {
     state.autonomy.checker_executable_approvals = {
       codex: {
         checker: 'codex', reviewer_adapter: 'codex-checker', provider_id: 'openai-codex',
+        model_id: 'gpt-5.6-sol',
         canonical_path: '/opt/codex/bin/codex', sha256: 'c'.repeat(64), version: '0.144.1',
         platform: process.platform, arch: process.arch, source: 'human-explicit', authenticode: null,
         approved_by: 'human', approved_at: '2026-08-15T09:00:01.000Z',
       },
       grok: {
         checker: 'grok', reviewer_adapter: 'grok-checker', provider_id: 'xai-grok',
+        model_id: 'grok-4.6',
         canonical_path: '/opt/grok/bin/grok', sha256: 'd'.repeat(64), version: '1.0.4',
         platform: process.platform, arch: process.arch, source: 'human-explicit', authenticode: null,
         approved_by: 'human', approved_at: '2026-08-15T09:00:02.000Z',
@@ -184,29 +188,16 @@ function events(root, runId) {
 }
 
 function hostCaptureProof(fixture, attempt) {
-  const base = `.deep-loop/runs/${fixture.runId}/checker-captures/${attempt.attempt_id}`;
-  const recordPath = `${base}/capture.json`;
-  const manifestPath = `${base}/plugin.json`;
-  const skillPath = `${base}/SKILL.md`;
-  const record = Buffer.from(`capture:${attempt.attempt_id}`);
-  const manifest = Buffer.from('shared deep-review manifest');
-  const skill = Buffer.from('shared deep-review doctrine');
-  for (const [path, bytes] of [[recordPath, record], [manifestPath, manifest], [skillPath, skill]]) {
-    mkdirSync(dirname(join(fixture.root, path)), { recursive: true });
-    writeFileSync(join(fixture.root, path), bytes);
-  }
-  const binding = {
-    record_path: recordPath,
-    record_sha256: sha256(record),
-    manifest_path: manifestPath,
-    source_manifest_sha256: sha256(manifest),
-    skill_path: skillPath,
-    source_skill_sha256: sha256(skill),
-  };
-  return { capture_id: sha256(JSON.stringify(binding)), ...binding };
+  return writeExactDualCapture({
+    root: fixture.root,
+    runId: fixture.runId,
+    checkerEpisodeId: fixture.checkerId,
+    attemptId: attempt.attempt_id,
+    sourceClaimSha256: attempt.source_claim_sha256,
+  }).proof;
 }
 
-function dualImportBytes(claim, attempt, sessionId, verdict = 'APPROVE') {
+function dualImportBytes(claim, attempt, verdict = 'APPROVE') {
   return Buffer.from(JSON.stringify({
     schema_version: '2.0',
     aggregation_id: claim.aggregation_id,
@@ -214,7 +205,7 @@ function dualImportBytes(claim, attempt, sessionId, verdict = 'APPROVE') {
     reviewer_adapter: attempt.reviewer_adapter,
     provider_id: attempt.provider_id,
     model_id: attempt.model_id,
-    session_id: sessionId,
+    session_id: SESSION_PLACEHOLDER,
     checker_episode_id: claim.checker_episode_id,
     target_maker: claim.source_binding.target_maker,
     attempt_id: attempt.attempt_id,
@@ -237,7 +228,10 @@ function dualHostDependencies(f, transport) {
     now: Date.parse('2026-08-15T09:01:00.000Z'),
     clock: () => Date.parse('2026-08-15T09:01:00.000Z'),
     expect: { owner: f.runId, generation: 1 },
-    revalidateCheckerExecutable: identity => identity,
+    revalidateCheckerExecutable: (identity, options) => {
+      assert.equal(options?.expectedModelId, identity.model_id);
+      return identity;
+    },
     resolveCodexHome: () => ({
       canonical_path: '/home/test/.codex', device: '1', inode: '2',
       birthtime_ns: '3', platform: process.platform,
@@ -249,7 +243,7 @@ function dualHostDependencies(f, transport) {
     buildDualGrokEntryFn: options => ({ transport: 'grok', options }),
     dualRunFn: transport,
     dualIdFactory: () => idValues.shift(),
-    dualSessionIdFactory: () => GROK_SESSION,
+    dualSessionIdFactory: () => { throw new Error('host must not mint provider session identity'); },
     emitHandoffFn: () => ({ ok: true }),
   };
 }
@@ -261,6 +255,9 @@ test('headless dual route emits checker-complete only after both measured import
   const importStates = [];
   const deps = dualHostDependencies(f, entries => {
     assert.deepEqual(entries.map(entry => entry.transport), ['codex', 'grok']);
+    assert.equal(entries[0].options.contract.session_id, SESSION_PLACEHOLDER);
+    assert.equal(entries[1].options.contract.session_id, SESSION_PLACEHOLDER);
+    assert.equal(Object.hasOwn(entries[1].options, 'sessionId'), false);
     const state = readState(f.root, f.runId).data;
     const claim = state.episodes.find(episode => episode.id === f.checkerId).review_aggregation;
     return {
@@ -272,7 +269,7 @@ test('headless dual route emits checker-complete only after both measured import
           aggregation_id: claim.aggregation_id,
           checker_episode_id: f.checkerId,
           source_binding: claim.source_binding,
-        }, attempt, sessions[index]),
+        }, attempt),
         providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
         process_streams: {
           stdout: { sha256: sha256(`stdout:${attempt.attempt_id}`), byte_count: 1, truncated: false },
@@ -351,7 +348,7 @@ test('headless dual rejection emits no checker-complete and no continuation', ()
           aggregation_id: claim.aggregation_id,
           checker_episode_id: f.checkerId,
           source_binding: claim.source_binding,
-        }, attempt, sessions[index], index === 0 ? 'APPROVE' : 'CONCERN'),
+        }, attempt, index === 0 ? 'APPROVE' : 'CONCERN'),
         providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
         process_streams: {
           stdout: { sha256: sha256(`reject-out-${index}`), byte_count: 1, truncated: false },
@@ -391,7 +388,7 @@ test('headless dual route recovers either exact committed import after acknowled
             aggregation_id: claim.aggregation_id,
             checker_episode_id: f.checkerId,
             source_binding: claim.source_binding,
-          }, attempt, sessions[index]),
+          }, attempt),
           providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
           process_streams: {
             stdout: { sha256: sha256(`ack-out-${index}`), byte_count: 1, truncated: false },
@@ -441,7 +438,7 @@ test('headless partial transport failure preserves each measurable successful at
             aggregation_id: claim.aggregation_id,
             checker_episode_id: f.checkerId,
             source_binding: claim.source_binding,
-          }, attempt, CODEX_SESSION),
+          }, attempt),
           providerIdentity: { session_id: CODEX_SESSION, model_id: attempt.model_id },
           process_streams: {
             stdout: { sha256: sha256('partial-stdout'), byte_count: 1, truncated: false },
@@ -479,7 +476,7 @@ test('headless provider session collision charges both measured transports but i
           aggregation_id: claim.aggregation_id,
           checker_episode_id: f.checkerId,
           source_binding: claim.source_binding,
-        }, attempt, CODEX_SESSION),
+        }, attempt),
         providerIdentity: { session_id: CODEX_SESSION, model_id: attempt.model_id },
         process_streams: {
           stdout: { sha256: sha256(`collision-out-${index}`), byte_count: 1, truncated: false },
@@ -517,7 +514,7 @@ test('headless actual-model mismatch is charged as failed process evidence and n
           aggregation_id: claim.aggregation_id,
           checker_episode_id: f.checkerId,
           source_binding: claim.source_binding,
-        }, attempt, sessions[index]),
+        }, attempt),
         providerIdentity: {
           session_id: sessions[index],
           model_id: index === 0 ? attempt.model_id : 'grok-untrusted-alias',
@@ -556,7 +553,7 @@ test('headless post-process capture drift charges both measured attempts and blo
           aggregation_id: claim.aggregation_id,
           checker_episode_id: f.checkerId,
           source_binding: claim.source_binding,
-        }, attempt, sessions[index]),
+        }, attempt),
         providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
         process_streams: {
           stdout: { sha256: sha256(`drift-out-${index}`), byte_count: 1, truncated: false },

@@ -11,8 +11,9 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { dispatchReview } from '../scripts/lib/review.mjs';
 import { baselineNode20RegularFiles } from './helpers/baseline-node20-walk.mjs';
+import { settleExactDualReview } from './helpers/dual-capture.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -79,10 +80,8 @@ function seedBoundaryCli() {
   const checker = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected: {}, fence,
   }).checkerEpisodeId;
-  const report = `${worktree}/review.md`;
-  writeFileSync(join(root, report), '# review');
-  recordReviewOutcome(root, runId, {
-    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence,
+  settleExactDualReview({
+    root, runId, checkerEpisodeId: checker, targetMaker: maker, fence,
   });
   return { root, runId, owner: runId, gen: 1, ws };
 }

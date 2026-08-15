@@ -646,6 +646,7 @@ function routeCompletedChecker({
 }
 
 const DUAL_PROVIDER_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DUAL_REVIEW_SESSION_PLACEHOLDER = 'provider-session-bound-by-host';
 
 function dualCheckerRequested(loop) {
   return loop.autonomy != null && typeof loop.autonomy === 'object'
@@ -668,6 +669,7 @@ function captureProofPath(projectRoot, path) {
 
 function dualCaptureProofFromDescriptor(projectRoot, descriptor) {
   const binding = {
+    ...descriptor?.binding,
     record_path: captureProofPath(projectRoot, descriptor?.record?.canonical_path),
     record_sha256: descriptor?.record?.sha256,
     manifest_path: captureProofPath(projectRoot, descriptor?.manifest?.canonical_path),
@@ -686,6 +688,7 @@ function captureDualCheckerProof({
     runId,
     checkerEpisodeId,
     attemptId: attempt.attempt_id,
+    sourceClaimSha256: attempt.source_claim_sha256,
     source,
   });
   return dualCaptureProofFromDescriptor(root, descriptor);
@@ -700,21 +703,19 @@ function buildDualGrokCheckerEntry({
   env,
   model,
   effort,
-  sessionId,
 }) {
   return buildGrokHeadlessEntry({
     executable,
     projectRoot,
     prompt: buildGrokCheckerPrompt({ ...contract, checker_skill_path: checkerSkillPath }),
     schema: outputSchema,
-    sessionId,
     model,
     effort,
     env,
   });
 }
 
-function dualReviewContract(claim, attempt, sessionId) {
+function dualReviewContract(claim, attempt) {
   return {
     schema_version: '2.0',
     aggregation_id: claim.aggregation_id,
@@ -722,7 +723,7 @@ function dualReviewContract(claim, attempt, sessionId) {
     reviewer_adapter: attempt.reviewer_adapter,
     provider_id: attempt.provider_id,
     model_id: attempt.model_id,
-    session_id: sessionId,
+    session_id: DUAL_REVIEW_SESSION_PLACEHOLDER,
     checker_episode_id: claim.checker_episode_id,
     target_maker: claim.source_binding.target_maker,
     attempt_id: attempt.attempt_id,
@@ -747,7 +748,8 @@ function bindTrustedProviderSession(raw, sessionId) {
   try { value = JSON.parse(raw.toString('utf8')); }
   catch { throw new Error('DUAL_CHECKER_FINAL_MESSAGE_INVALID'); }
   if (value == null || typeof value !== 'object' || Array.isArray(value)
-    || value.schema_version !== '2.0' || typeof value.session_id !== 'string') {
+    || value.schema_version !== '2.0'
+    || value.session_id !== DUAL_REVIEW_SESSION_PLACEHOLDER) {
     throw new Error('DUAL_CHECKER_FINAL_MESSAGE_INVALID');
   }
   value.session_id = sessionId;
@@ -824,7 +826,6 @@ function driveDualIndependentChecker({
   importDualReviewFn,
   verifyDualCaptureFn,
   dualIdFactory,
-  dualSessionIdFactory,
 }) {
   const active = inProgressDualChecker(initialLoop);
   const pending = findPendingIndependentChecker(initialLoop);
@@ -915,8 +916,12 @@ function driveDualIndependentChecker({
   let outputSchemaSnapshot;
   try {
     executableApprovals = [
-      revalidateCheckerExecutable(approvals.codex),
-      revalidateCheckerExecutable(approvals.grok),
+      revalidateCheckerExecutable(approvals.codex, {
+        expectedModelId: claim.attempts[0].model_id,
+      }),
+      revalidateCheckerExecutable(approvals.grok, {
+        expectedModelId: claim.attempts[1].model_id,
+      }),
     ];
     if (!sameValue(executableApprovals[0], approvals.codex)
       || !sameValue(executableApprovals[1], approvals.grok)
@@ -952,7 +957,11 @@ function driveDualIndependentChecker({
         attempt,
         source: checkerSource,
       });
-      verifyDualCaptureFn(projectRoot, runId, proof);
+      verifyDualCaptureFn(projectRoot, runId, proof, {
+        checkerEpisodeId: pending.id,
+        attemptId: attempt.attempt_id,
+        sourceClaimSha256: attempt.source_claim_sha256,
+      });
       captures.push(proof);
     }
     if (captures[0].capture_id === captures[1].capture_id
@@ -965,11 +974,9 @@ function driveDualIndependentChecker({
     return block('dual-checker-capture-invalid');
   }
 
-  const grokSessionId = dualSessionIdFactory();
-  if (!DUAL_PROVIDER_SESSION.test(grokSessionId || '')) return block('dual-checker-session-invalid');
   const contracts = [
-    dualReviewContract(claim, claim.attempts[0], 'provider-session-bound-by-host'),
-    dualReviewContract(claim, claim.attempts[1], grokSessionId),
+    dualReviewContract(claim, claim.attempts[0]),
+    dualReviewContract(claim, claim.attempts[1]),
   ];
   let entries;
   try {
@@ -994,7 +1001,6 @@ function driveDualIndependentChecker({
         env: {},
         model: claim.attempts[1].model_id,
         effort: 'xhigh',
-        sessionId: grokSessionId,
       }),
     ];
   } catch {
@@ -1013,11 +1019,19 @@ function driveDualIndependentChecker({
         || checker?.status !== 'in_progress'
         || checker.review_aggregation?.aggregation_id !== claim.aggregation_id
         || !sameValue(freshApprovals, approvals)
-        || !sameValue(revalidateCheckerExecutable(freshApprovals.codex), executableApprovals[0])
-        || !sameValue(revalidateCheckerExecutable(freshApprovals.grok), executableApprovals[1])
+        || !sameValue(revalidateCheckerExecutable(freshApprovals.codex, {
+          expectedModelId: claim.attempts[0].model_id,
+        }), executableApprovals[0])
+        || !sameValue(revalidateCheckerExecutable(freshApprovals.grok, {
+          expectedModelId: claim.attempts[1].model_id,
+        }), executableApprovals[1])
         || !sameValue(checkerSourceSemantics(freshSource), checkerSourceSemantics(checkerSource))
         || !sameValue(inspectResumeSkill(schemaPath), outputSchemaSnapshot)) return false;
-      captures.forEach(capture => verifyDualCaptureFn(projectRoot, runId, capture));
+      captures.forEach((capture, index) => verifyDualCaptureFn(projectRoot, runId, capture, {
+        checkerEpisodeId: pending.id,
+        attemptId: claim.attempts[index].attempt_id,
+        sourceClaimSha256: claim.attempts[index].source_claim_sha256,
+      }));
       return true;
     } catch {
       return false;
@@ -1088,8 +1102,7 @@ function driveDualIndependentChecker({
     }
     return { ...block('dual-checker-process-failed'), recorded: settled > 0 };
   }
-  if (results[0].providerIdentity.session_id === results[1].providerIdentity.session_id
-    || results[1].providerIdentity.session_id !== grokSessionId) {
+  if (results[0].providerIdentity.session_id === results[1].providerIdentity.session_id) {
     let settled = 0;
     try {
       settleAttemptAt(0);
@@ -2022,7 +2035,6 @@ function driveHeadlessRunLocked({
   importDualReviewFn = importDualReviewOutcome,
   verifyDualCaptureFn = verifyDualCaptureProof,
   dualIdFactory = randomUUID,
-  dualSessionIdFactory = randomUUID,
   attemptIdFactory,
 } = {}) {
   const sampleNow = typeof clock === 'function' ? clock : (now === undefined ? Date.now : () => now);
@@ -2214,7 +2226,6 @@ function driveHeadlessRunLocked({
     importDualReviewFn,
     verifyDualCaptureFn,
     dualIdFactory,
-    dualSessionIdFactory,
   });
   if (dualCheckerResult) return dualCheckerResult;
   const checkerResult = driveIndependentChecker({

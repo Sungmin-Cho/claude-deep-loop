@@ -5,6 +5,8 @@ import { buildGrokHeadlessEntry } from './grok-runtime.mjs';
 import { runStreamingProcessSync } from './streaming-process.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 
+const PROVIDER_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 function absolutePath(value, code) {
   if (typeof value !== 'string' || value.length === 0 || !isAbsolute(value)) {
     throw new Error(`${code}: absolute path required`);
@@ -48,7 +50,6 @@ export function runIndependentGrokChecker({
   env,
   model = 'grok-4.6',
   effort = 'xhigh',
-  sessionId,
   timeoutMs,
   runProcess = runStreamingProcessSync,
 } = {}) {
@@ -60,7 +61,6 @@ export function runIndependentGrokChecker({
     projectRoot: root,
     prompt,
     schema: outputSchema,
-    sessionId,
     model,
     effort,
     env,
@@ -76,7 +76,7 @@ export function runIndependentGrokChecker({
   }
   const identity = result.providerIdentity;
   if (identity == null || typeof identity !== 'object' || Array.isArray(identity)
-    || identity.session_id !== sessionId || identity.model_id !== model) {
+    || !PROVIDER_SESSION.test(identity.session_id || '') || identity.model_id !== model) {
     return { ok: false, reason: 'checker-provider-identity-mismatch', usage: result.usage };
   }
   return {

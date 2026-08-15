@@ -30,6 +30,7 @@ import {
   importReviewOutcome,
   recordReviewOutcome,
 } from './lib/review.mjs';
+import { importDualReviewOutcome } from './lib/dual-checker.mjs';
 import { readBoundedText } from './lib/bounded-input.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
@@ -755,16 +756,18 @@ const handlers = {
       error(`unknown checker-executable verb: ${verb ?? '<none>'}`);
       return 2;
     }
-    if (flagOccurrences(rest, 'path') > 1) {
-      throw new Error('CHECKER_EXECUTABLE_AMBIGUOUS: exactly one explicit candidate path is required');
+    if (flagOccurrences(rest, 'path') > 1 || flagOccurrences(rest, 'model-id') > 1) {
+      throw new Error('CHECKER_EXECUTABLE_AMBIGUOUS: exactly one explicit path and model_id are required');
     }
     const checker = reqStr(f, 'checker');
     if (!checker) { error('USAGE: --checker <codex|grok> is required'); return 2; }
+    const modelId = reqStr(f, 'model-id');
+    if (!modelId) { error('USAGE: --model-id EXACT_ROUTE_MODEL is required'); return 2; }
     const candidatePath = reqStr(f, 'path');
     if (!candidatePath) { error('USAGE: --path ABSOLUTE_NATIVE_CHECKER is required'); return 2; }
 
     if (verb === 'diagnose') {
-      json(diagnoseCheckerExecutable(checker, { explicitPath: candidatePath }));
+      json(diagnoseCheckerExecutable(checker, { explicitPath: candidatePath, modelId }));
       return 0;
     }
 
@@ -793,6 +796,7 @@ const handlers = {
     if (!runId) { error('USAGE: --run-id RUN_ID is required'); return 2; }
     const result = approveCheckerExecutable(root, runId, {
       checker,
+      modelId,
       candidatePath,
       expectedCanonicalPath,
       expectedSha256,
@@ -1667,7 +1671,12 @@ const handlers = {
       if (f.stdin !== true) { error('STDIN_REQUIRED: review import requires --stdin'); return 2; }
       try {
         const raw = await readBoundedText(process.stdin);
-        json(importReviewOutcome(root, runId, { raw, fence, now: parseNow(f) }));
+        const snapshot = captureReconciledRunSnapshot(root, runId).data;
+        const dualRequired = snapshot.autonomy != null && typeof snapshot.autonomy === 'object'
+          && Object.hasOwn(snapshot.autonomy, 'checker_executable_approvals');
+        json((dualRequired ? importDualReviewOutcome : importReviewOutcome)(root, runId, {
+          raw, fence, now: parseNow(f),
+        }));
         return 0;
       } catch (e) {
         const classified = classifyKernelError(e);

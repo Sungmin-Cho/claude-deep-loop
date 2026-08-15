@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { dispatchReview } from '../scripts/lib/review.mjs';
 import {
   captureReconciledRunSnapshot, pauseRun, readState, readStateForRootRecovery, runDir, writeState,
 } from '../scripts/lib/state.mjs';
@@ -33,6 +33,7 @@ import {
   waitForDurableAcquireMarker,
   writeDurableAcquireMarker,
 } from './helpers/acquire-then-wait.mjs';
+import { settleExactDualReview } from './helpers/dual-capture.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -121,10 +122,8 @@ function seedReviewed(runtime = 'claude') {
   const checker = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected: {}, fence: f,
   }).checkerEpisodeId;
-  const report = `${worktree}/impl-review.md`;
-  writeFileSync(join(root, report), '# review\nAPPROVE\n');
-  recordReviewOutcome(root, runId, {
-    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence: f,
+  settleExactDualReview({
+    root, runId, checkerEpisodeId: checker, targetMaker: maker, fence: f,
   });
   return { root, runId, f, ws, worktree };
 }
@@ -1381,6 +1380,17 @@ function replayFixtureStep(step, bindings, counters) {
     writeFileSync(target, substitute(step.content, bindings));
     return;
   }
+  if (step.op === 'dual-review') {
+    settleExactDualReview({
+      root: bindings.$ROOT,
+      runId: bindings.$RUN,
+      checkerEpisodeId: bindings.$CHECKER,
+      targetMaker: bindings.$MAKER,
+      fence: fence(bindings.$RUN),
+      now: substitute(step.now, bindings),
+    });
+    return;
+  }
   assert.equal(step.op, 'cli', 'unknown fixture op');
   const argv = step.argv.map(item => substitute(item, bindings));
   const implicit = argv[0] === 'init-run'
@@ -1513,10 +1523,12 @@ function closeSiblingForSecondBoundary(f, owner, generation) {
   const checker = dispatchReview(f.root, f.runId, {
     point: 'implementation', workstreamId: sibling, detected: {}, fence: fenceForOwner,
   }).checkerEpisodeId;
-  const report = `${worktree}/impl2-review.md`;
-  writeFileSync(join(f.root, report), '# review\nAPPROVE\n');
-  recordReviewOutcome(f.root, f.runId, {
-    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence: fenceForOwner,
+  settleExactDualReview({
+    root: f.root,
+    runId: f.runId,
+    checkerEpisodeId: checker,
+    targetMaker: maker,
+    fence: fenceForOwner,
   });
   const closed = runCli(f.root, f.runId, [
     'workstream', 'terminal', '--id', sibling, '--status', 'ready', '--proof', '{}', '--now', T2,

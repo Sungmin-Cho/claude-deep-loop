@@ -62,6 +62,10 @@ function dualAggregationLoop({ approved = false } = {}) {
     for (const [index, attempt] of attempts.entries()) {
       const suffix = String(index + 1);
       const captureBinding = {
+        run_id: 'R',
+        checker_episode_id: 'checker',
+        attempt_id: attempt.attempt_id,
+        source_claim_sha256: sourceClaimSha256,
         record_path: `.deep-loop/runs/R/checker-captures/${suffix}/capture.json`,
         record_sha256: suffix.repeat(64),
         manifest_path: `.deep-loop/runs/R/checker-captures/${suffix}/plugin.json`,
@@ -998,6 +1002,7 @@ function validCheckerApproval(checker = 'codex') {
     checker,
     reviewer_adapter: checker === 'codex' ? 'codex-checker' : 'grok-checker',
     provider_id: checker === 'codex' ? 'openai-codex' : 'xai-grok',
+    model_id: checker === 'codex' ? 'gpt-5.6-sol' : 'grok-4.6',
     canonical_path: checker === 'codex' ? '/opt/codex/bin/codex' : '/opt/grok/bin/grok',
     sha256: (checker === 'codex' ? 'c' : 'd').repeat(64),
     version: checker === 'codex' ? '0.144.1' : '1.0.4',
@@ -1069,6 +1074,12 @@ test('checker executable approval schema rejects malformed routes, fields, and c
     ['checker mismatch', map => ({ ...map, grok: { ...map.grok, checker: 'codex' } })],
     ['adapter mismatch', map => ({ ...map, grok: { ...map.grok, reviewer_adapter: 'codex-checker' } })],
     ['provider mismatch', map => ({ ...map, grok: { ...map.grok, provider_id: 'openai-codex' } })],
+    ['model missing', map => {
+      const grok = { ...map.grok };
+      delete grok.model_id;
+      return { ...map, grok };
+    }],
+    ['model mismatch', map => ({ ...map, grok: { ...map.grok, model_id: 'gpt-5.6-sol' } })],
     ['wrong basename', map => ({ ...map, grok: { ...map.grok, canonical_path: '/opt/grok/bin/not-grok' } })],
     ['script path', map => ({ ...map, grok: { ...map.grok, canonical_path: '/opt/grok/bin/grok.js' } })],
     ['uppercase hash', map => ({ ...map, grok: { ...map.grok, sha256: 'D'.repeat(64) } })],

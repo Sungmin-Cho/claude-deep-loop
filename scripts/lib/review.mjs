@@ -596,6 +596,10 @@ function checkedContext(loop, episodeId, { reviewSource } = {}) {
     const code = reviewSource === 'imported-stdin' ? 'REVIEW_IMPORT_REVIEWER_INVALID' : 'REVIEW_CHECKER_IDENTITY_UNSUPPORTED';
     throw new Error(`${code}: unsupported checker plugin ${String(checker.plugin)}`);
   }
+  if (loop.autonomy != null && typeof loop.autonomy === 'object'
+    && Object.hasOwn(loop.autonomy, 'checker_executable_approvals')) {
+    throw new Error('DUAL_REVIEW_REQUIRED: explicit checker approval state requires two-attempt aggregation');
+  }
   if (reviewSource === 'imported-stdin' && (checker.status !== 'in_progress' || !checker.review_claim)) {
     throw new Error('REVIEW_IMPORT_CHECKER_NOT_CLAIMED: checker must carry an in-progress host claim');
   }

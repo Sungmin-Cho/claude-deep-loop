@@ -285,6 +285,7 @@ test('trusted checker capture publishes exact run-owned bytes and tolerates sour
   const { captureTrustedCheckerSkill, resolveTrustedCheckerSkill } = await checkerModule();
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-capture-')));
   const runId = 'RUN-1';
+  const sourceClaimSha256 = 'a'.repeat(64);
   mkdirSync(join(root, '.deep-loop', 'runs', runId), { recursive: true });
   const home = join(root, 'codex-home');
   const plugin = join(home, 'plugins', 'cache', 'market', 'deep-review', '1.0.0');
@@ -298,7 +299,8 @@ test('trusted checker capture publishes exact run-owned bytes and tolerates sour
   writeFileSync(skillPath, skillBytes);
   const source = resolveTrustedCheckerSkill({ codexHome: home });
   const captured = captureTrustedCheckerSkill({
-    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01', source,
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
+    sourceClaimSha256, source,
   });
   assert.deepEqual(readdirSync(captured.directory.canonical_path).sort(), ['SKILL.md', 'capture.json', 'plugin.json']);
   assert.equal(readFileSync(captured.manifest.canonical_path).equals(manifestBytes), true);
@@ -309,6 +311,7 @@ test('trusted checker capture publishes exact run-owned bytes and tolerates sour
   assert.deepEqual(Object.keys(record), ['schema_version', 'binding', 'source', 'captured']);
   assert.deepEqual(record.binding, {
     run_id: runId, checker_episode_id: '002-deep-review', attempt_id: 'attempt-01',
+    source_claim_sha256: sourceClaimSha256,
   });
   assert.equal(record.source.plugin_version, '1.0.0');
   assert.deepEqual(record.captured, {
@@ -333,7 +336,7 @@ test('trusted checker capture publishes exact run-owned bytes and tolerates sour
   assert.equal(replaced.skill.sha256, source.skill.sha256);
   assert.deepEqual(captureTrustedCheckerSkill({
     root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
-    source: replaced, expected: captured,
+    sourceClaimSha256, source: replaced, expected: captured,
   }), captured);
   assert.equal(readFileSync(captured.manifest.canonical_path).equals(capturedBytes.manifest), true);
   assert.equal(readFileSync(captured.skill.canonical_path).equals(capturedBytes.skill), true);
@@ -344,7 +347,7 @@ test('trusted checker capture publishes exact run-owned bytes and tolerates sour
   const changed = resolveTrustedCheckerSkill({ codexHome: home });
   assert.throws(() => captureTrustedCheckerSkill({
     root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
-    source: changed, expected: captured,
+    sourceClaimSha256, source: changed, expected: captured,
   }), /checker-source-skill-content-drift/);
 });
 
@@ -352,6 +355,7 @@ test('trusted checker capture rejects byte-identical capture replacement', async
   const { captureTrustedCheckerSkill, resolveTrustedCheckerSkill } = await checkerModule();
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-capture-drift-')));
   const runId = 'RUN-1';
+  const sourceClaimSha256 = 'b'.repeat(64);
   mkdirSync(join(root, '.deep-loop', 'runs', runId), { recursive: true });
   const home = join(root, 'codex-home');
   const plugin = join(home, 'plugins', 'cache', 'market', 'deep-review', '1.0.0');
@@ -363,12 +367,14 @@ test('trusted checker capture rejects byte-identical capture replacement', async
   writeFileSync(join(plugin, 'skills', 'deep-review-loop', 'SKILL.md'), '---\nname: deep-review-loop\n---\n');
   const source = resolveTrustedCheckerSkill({ codexHome: home });
   const captured = captureTrustedCheckerSkill({
-    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01', source,
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
+    sourceClaimSha256, source,
   });
   const bytes = readFileSync(captured.skill.canonical_path);
   unlinkSync(captured.skill.canonical_path);
   writeFileSync(captured.skill.canonical_path, bytes, { mode: 0o400 });
   assert.throws(() => captureTrustedCheckerSkill({
-    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01', source, expected: captured,
+    root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
+    sourceClaimSha256, source, expected: captured,
   }), /checker-capture-integrity-drift:skill/);
 });

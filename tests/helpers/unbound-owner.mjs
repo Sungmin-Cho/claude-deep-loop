@@ -7,10 +7,16 @@ import { join } from 'node:path';
 import { initRun } from '../../scripts/lib/initrun.mjs';
 import { newWorkstream, recordWorkstreamTerminal } from '../../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../../scripts/lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from '../../scripts/lib/review.mjs';
+import { dispatchReview } from '../../scripts/lib/review.mjs';
+import {
+  claimDualIndependentReview,
+  importDualReviewOutcome,
+  settleDualAttemptProcess,
+} from '../../scripts/lib/dual-checker.mjs';
 import { emitHandoff } from '../../scripts/lib/handoff.mjs';
 import { acquireLease } from './acquire-and-activate.mjs';
 import { readState } from '../../scripts/lib/state.mjs';
+import { writeExactDualCapture } from './dual-capture.mjs';
 
 const NOW = Date.parse('2026-07-25T00:00:00.000Z');
 
@@ -43,11 +49,65 @@ export function reviewedMakerThenHandoff({ runtime = 'claude' } = {}) {
   const checkerId = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected: {}, fence: parentFence,
   }).checkerEpisodeId;
-  const report = `${worktree}/review.md`;
-  writeFileSync(join(root, report), '# review\n\nAPPROVE\n');
-  recordReviewOutcome(root, runId, {
-    episodeId: checkerId, verdict: 'APPROVE', proof: { report }, fence: parentFence,
+  const ids = [
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  ];
+  const claim = claimDualIndependentReview(root, runId, {
+    episodeId: checkerId,
+    fence: parentFence,
+    idFactory: () => ids.shift(),
+    now: NOW,
   });
+  const sessions = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+  ];
+  for (const [index, attempt] of claim.attempts.entries()) {
+    const capture = writeExactDualCapture({
+      root,
+      runId,
+      checkerEpisodeId: checkerId,
+      attemptId: attempt.attempt_id,
+      sourceClaimSha256: attempt.source_claim_sha256,
+    }).proof;
+    settleDualAttemptProcess(root, runId, {
+      episodeId: checkerId,
+      attemptId: attempt.attempt_id,
+      capture,
+      process: {
+        provider_id: attempt.provider_id,
+        model_id: attempt.model_id,
+        session_id: sessions[index],
+        usage: { num_turns: 1, input_tokens: 4 + index, output_tokens: 2, tokens: 6 + index },
+        stdout_sha256: `${index + 3}`.repeat(64),
+        stderr_sha256: `${index + 5}`.repeat(64),
+      },
+      fence: parentFence,
+      now: NOW + index + 1,
+    });
+    importDualReviewOutcome(root, runId, {
+      raw: JSON.stringify({
+        schema_version: '2.0',
+        aggregation_id: claim.aggregation_id,
+        reviewer_id: attempt.reviewer_id,
+        reviewer_adapter: attempt.reviewer_adapter,
+        provider_id: attempt.provider_id,
+        model_id: attempt.model_id,
+        session_id: sessions[index],
+        checker_episode_id: checkerId,
+        target_maker: makerId,
+        attempt_id: attempt.attempt_id,
+        source_claim_sha256: attempt.source_claim_sha256,
+        verdict: 'APPROVE',
+        report_body: `# ${attempt.reviewer_id}\n\nAPPROVE`,
+        artifacts: claim.source_binding.artifacts,
+      }),
+      fence: parentFence,
+      now: NOW + index + 3,
+    });
+  }
   recordWorkstreamTerminal(root, runId, ws, {
     status: 'ready', proof: {}, fence: parentFence, now: NOW + 1,
   });

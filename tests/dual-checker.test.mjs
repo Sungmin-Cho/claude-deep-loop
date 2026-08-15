@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview } from '../scripts/lib/review.mjs';
+import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import {
   claimDualIndependentReview,
@@ -16,6 +17,7 @@ import {
   settleDualAttemptProcess,
 } from '../scripts/lib/dual-checker.mjs';
 import { parseDualReviewImport } from '../scripts/lib/review-import.mjs';
+import { writeExactDualCapture } from './helpers/dual-capture.mjs';
 
 function events(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8')
@@ -50,7 +52,7 @@ function fixture() {
     point: 'implementation', workstreamId: ws,
     detected: { 'deep-review': true }, fence,
   });
-  return { root, runId, fence, makerId, checkerEpisodeId };
+  return { root, runId, fence, makerId, checkerEpisodeId, worktree };
 }
 
 test('dual claim atomically fixes exactly two independent reviewer transports without approving the outer checker', () => {
@@ -119,29 +121,21 @@ function captureFixture(f, attempt, {
   sourceManifest = 'manifest:shared-source',
   sourceSkill = 'skill:shared-review-doctrine',
 } = {}) {
-  const base = `.deep-loop/runs/${f.runId}/checker-captures/${attempt.attempt_id}`;
-  const files = {
-    record_path: `${base}/capture.json`,
-    manifest_path: `${base}/plugin.json`,
-    skill_path: `${base}/SKILL.md`,
-  };
-  const bytes = {
-    record_path: Buffer.from(`capture:${attempt.attempt_id}`),
-    manifest_path: Buffer.from(sourceManifest),
-    skill_path: Buffer.from(sourceSkill),
-  };
-  for (const key of Object.keys(files)) {
-    mkdirSync(dirname(join(f.root, files[key])), { recursive: true });
-    writeFileSync(join(f.root, files[key]), bytes[key]);
-  }
-  const binding = {
-    record_path: files.record_path,
-    record_sha256: sha256(bytes.record_path),
-    manifest_path: files.manifest_path,
-    source_manifest_sha256: sha256(bytes.manifest_path),
-    skill_path: files.skill_path,
-    source_skill_sha256: sha256(bytes.skill_path),
-  };
+  return writeExactDualCapture({
+    root: f.root,
+    runId: f.runId,
+    checkerEpisodeId: f.checkerEpisodeId,
+    attemptId: attempt.attempt_id,
+    sourceClaimSha256: attempt.source_claim_sha256,
+    manifest: Buffer.from(sourceManifest),
+    skill: Buffer.from(sourceSkill),
+  }).proof;
+}
+
+function withRewrittenRecord(root, proof, bytes) {
+  writeFileSync(join(root, proof.record_path), bytes);
+  const { capture_id: _captureId, ...binding } = proof;
+  binding.record_sha256 = sha256(bytes);
   return { capture_id: sha256(JSON.stringify(binding)), ...binding };
 }
 
@@ -313,6 +307,137 @@ test('byte-different source captures cannot be aggregated as independent reviews
   assert.equal(events(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 0);
 });
 
+test('capture settlement rejects arbitrary records and cross-attempt, cross-run, and stale-source swaps', () => {
+  {
+    const f = fixture();
+    const claim = claimDualIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId, fence: f.fence,
+    });
+    const arbitrary = withRewrittenRecord(
+      f.root,
+      captureFixture(f, claim.attempts[0]),
+      Buffer.from('caller-authored arbitrary capture bytes'),
+    );
+    assert.throws(() => settleDualAttemptProcess(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId,
+      attemptId: claim.attempts[0].attempt_id,
+      capture: arbitrary,
+      process: {
+        provider_id: claim.attempts[0].provider_id,
+        model_id: claim.attempts[0].model_id,
+        session_id: '11111111-1111-4111-8111-111111111111',
+        usage: { num_turns: 1, input_tokens: 1, output_tokens: 1, tokens: 2 },
+        stdout_sha256: '1'.repeat(64), stderr_sha256: '2'.repeat(64),
+      },
+      fence: f.fence,
+    }), /DUAL_REVIEW_CAPTURE_MISMATCH/);
+  }
+  {
+    const f = fixture();
+    const claim = claimDualIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId, fence: f.fence,
+    });
+    const firstCapture = captureFixture(f, claim.attempts[0]);
+    assert.throws(() => settleDualAttemptProcess(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId,
+      attemptId: claim.attempts[1].attempt_id,
+      capture: firstCapture,
+      process: {
+        provider_id: claim.attempts[1].provider_id,
+        model_id: claim.attempts[1].model_id,
+        session_id: '22222222-2222-4222-8222-222222222222',
+        usage: { num_turns: 1, input_tokens: 1, output_tokens: 1, tokens: 2 },
+        stdout_sha256: '3'.repeat(64), stderr_sha256: '4'.repeat(64),
+      },
+      fence: f.fence,
+    }), /DUAL_REVIEW_CAPTURE_INVALID/);
+  }
+  {
+    const left = fixture();
+    const leftClaim = claimDualIndependentReview(left.root, left.runId, {
+      episodeId: left.checkerEpisodeId, fence: left.fence,
+    });
+    const leftCapture = captureFixture(left, leftClaim.attempts[0]);
+    const right = fixture();
+    const rightClaim = claimDualIndependentReview(right.root, right.runId, {
+      episodeId: right.checkerEpisodeId, fence: right.fence,
+    });
+    assert.throws(() => settleDualAttemptProcess(right.root, right.runId, {
+      episodeId: right.checkerEpisodeId,
+      attemptId: rightClaim.attempts[0].attempt_id,
+      capture: leftCapture,
+      process: {
+        provider_id: rightClaim.attempts[0].provider_id,
+        model_id: rightClaim.attempts[0].model_id,
+        session_id: '11111111-1111-4111-8111-111111111111',
+        usage: { num_turns: 1, input_tokens: 1, output_tokens: 1, tokens: 2 },
+        stdout_sha256: '5'.repeat(64), stderr_sha256: '6'.repeat(64),
+      },
+      fence: right.fence,
+    }), /DUAL_REVIEW_CAPTURE_INVALID/);
+  }
+  {
+    const f = fixture();
+    const claim = claimDualIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId, fence: f.fence,
+    });
+    const capture = captureFixture(f, claim.attempts[0]);
+    const stale = 'f'.repeat(64);
+    const record = JSON.parse(readFileSync(join(f.root, capture.record_path), 'utf8'));
+    record.binding.source_claim_sha256 = stale;
+    const staleProof = withRewrittenRecord(
+      f.root, { ...capture, source_claim_sha256: stale }, Buffer.from(`${JSON.stringify(record)}\n`),
+    );
+    assert.throws(() => settleDualAttemptProcess(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId,
+      attemptId: claim.attempts[0].attempt_id,
+      capture: staleProof,
+      process: {
+        provider_id: claim.attempts[0].provider_id,
+        model_id: claim.attempts[0].model_id,
+        session_id: '11111111-1111-4111-8111-111111111111',
+        usage: { num_turns: 1, input_tokens: 1, output_tokens: 1, tokens: 2 },
+        stdout_sha256: '7'.repeat(64), stderr_sha256: '8'.repeat(64),
+      },
+      fence: f.fence,
+    }), /DUAL_REVIEW_CAPTURE_INVALID/);
+  }
+});
+
+test('capture directory extras and post-settlement replacement block import without aggregate credit', () => {
+  const extra = fixture();
+  const extraClaim = claimDualIndependentReview(extra.root, extra.runId, {
+    episodeId: extra.checkerEpisodeId, fence: extra.fence,
+  });
+  const extraCapture = captureFixture(extra, extraClaim.attempts[0]);
+  writeFileSync(join(dirname(join(extra.root, extraCapture.record_path)), 'unexpected.txt'), 'extra');
+  assert.throws(() => settleAttempt(
+    extra, extraClaim, extraClaim.attempts[0], '11111111-1111-4111-8111-111111111111',
+  ), /DUAL_REVIEW_CAPTURE_MISMATCH/);
+
+  const replaced = fixture();
+  const claim = claimDualIndependentReview(replaced.root, replaced.runId, {
+    episodeId: replaced.checkerEpisodeId, fence: replaced.fence,
+  });
+  const sessions = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+  ];
+  claim.attempts.forEach((attempt, index) => settleAttempt(replaced, claim, attempt, sessions[index]));
+  importDualReviewOutcome(replaced.root, replaced.runId, {
+    raw: JSON.stringify(dualInput(claim, claim.attempts[0], { session_id: sessions[0] })),
+    fence: replaced.fence,
+  });
+  const firstCapture = readState(replaced.root, replaced.runId).data.episodes
+    .find(episode => episode.id === replaced.checkerEpisodeId).review_aggregation.attempts[0].capture_proof;
+  writeFileSync(join(replaced.root, firstCapture.record_path), 'replacement');
+  assert.throws(() => importDualReviewOutcome(replaced.root, replaced.runId, {
+    raw: JSON.stringify(dualInput(claim, claim.attempts[1], { session_id: sessions[1] })),
+    fence: replaced.fence,
+  }), /DUAL_REVIEW_CAPTURE_MISMATCH/);
+  assert.equal(events(replaced.root, replaced.runId).filter(event => event.type === 'review-outcome').length, 0);
+});
+
 test('CONCERN or REQUEST_CHANGES never receives approval credit and rejects only after both proofed imports', () => {
   for (const verdict of ['CONCERN', 'REQUEST_CHANGES']) {
     const f = fixture();
@@ -348,4 +473,45 @@ test('CONCERN or REQUEST_CHANGES never receives approval credit and rejects only
     assert.equal(state.episodes.find(episode => episode.id === f.makerId).agent_reviewed, undefined);
     assert.equal(events(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 1);
   }
+});
+
+test('public review import routes persisted dual state to v2 and rejects scalar version crossing', () => {
+  const f = fixture();
+  const claim = claimDualIndependentReview(f.root, f.runId, {
+    episodeId: f.checkerEpisodeId, fence: f.fence,
+  });
+  const sessions = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+  ];
+  claim.attempts.forEach((attempt, index) => settleAttempt(f, claim, attempt, sessions[index]));
+
+  const v1 = {
+    schema_version: '1.0', reviewer_id: 'deep-review', checker_episode_id: f.checkerEpisodeId,
+    target_maker: f.makerId, attempt_id: claim.attempts[0].attempt_id,
+    verdict: 'APPROVE', report_body: 'scalar bypass', artifacts: claim.source_binding.artifacts,
+  };
+  assert.throws(() => importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(v1), fence: f.fence,
+  }), /DUAL_REVIEW_REQUIRED/);
+  const report = `${f.worktree}/scalar-bypass.md`;
+  writeFileSync(join(f.root, report), '# scalar bypass');
+  assert.throws(() => recordReviewOutcome(f.root, f.runId, {
+    episodeId: f.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f.fence,
+  }), /DUAL_REVIEW_REQUIRED/);
+
+  const cli = join(process.cwd(), 'scripts', 'deep-loop.mjs');
+  const invoke = raw => spawnSync(process.execPath, [
+    cli, 'review', 'import', '--stdin', '--owner', f.runId, '--generation', '1',
+    '--project-root', f.root, '--run-id', f.runId,
+  ], { input: raw, encoding: 'utf8', shell: false });
+  const first = invoke(JSON.stringify(dualInput(claim, claim.attempts[0], { session_id: sessions[0] })));
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).status, 'awaiting-second-attempt');
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 0);
+
+  const second = invoke(JSON.stringify(dualInput(claim, claim.attempts[1], { session_id: sessions[1] })));
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(JSON.parse(second.stdout).terminal, 'approved');
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 1);
 });

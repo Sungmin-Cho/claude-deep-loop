@@ -11,7 +11,7 @@ import { captureReconciledRunSnapshot, readState, writeState } from '../scripts/
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { dispatchReview } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import * as finishModule from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -23,6 +23,7 @@ import { respawn } from '../scripts/lib/respawn.mjs';
 import { appendAnchored, captureVerifiedRunSnapshot } from '../scripts/lib/integrity.mjs';
 import { makeCodexProcessReceipt, settleCodexProcessCost } from '../scripts/lib/budget.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
+import { settleExactDualReview } from './helpers/dual-capture.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const NOW = '2026-07-23T04:05:06.789Z';
@@ -83,10 +84,8 @@ function seedReviewed(runtime = 'claude') {
   const checker = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected: {}, fence: f,
   }).checkerEpisodeId;
-  const report = `${worktree}/baseline-review.md`;
-  writeFileSync(join(root, report), '# baseline review\nAPPROVE\n');
-  recordReviewOutcome(root, runId, {
-    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence: f,
+  settleExactDualReview({
+    root, runId, checkerEpisodeId: checker, targetMaker: baseline, fence: f,
   });
   return { root, runId, f, ws, worktree, baseline, checker };
 }
@@ -115,10 +114,12 @@ function addApprovedReview(f, makerId, name) {
   const checkerId = dispatchReview(f.root, f.runId, {
     point: 'implementation', workstreamId: f.ws, detected: {}, fence: f.f,
   }).checkerEpisodeId;
-  const report = `${f.worktree}/${name}-review.md`;
-  writeFileSync(join(f.root, report), `# ${name} review\nAPPROVE\n`);
-  recordReviewOutcome(f.root, f.runId, {
-    episodeId: checkerId, verdict: 'APPROVE', proof: { report }, fence: f.f,
+  settleExactDualReview({
+    root: f.root,
+    runId: f.runId,
+    checkerEpisodeId: checkerId,
+    targetMaker: makerId,
+    fence: f.f,
   });
   return { makerId, checkerId };
 }
@@ -152,8 +153,13 @@ function prepareDefect(kind) {
     const checkerId = dispatchReview(f.root, f.runId, {
       point: 'implementation', workstreamId: f.ws, detected: {}, fence: f.f,
     }).checkerEpisodeId;
-    recordReviewOutcome(f.root, f.runId, {
-      episodeId: checkerId, verdict: 'REQUEST_CHANGES', fence: f.f,
+    settleExactDualReview({
+      root: f.root,
+      runId: f.runId,
+      checkerEpisodeId: checkerId,
+      targetMaker: readState(f.root, f.runId).data.episodes.find(ep => ep.id === checkerId).target_maker,
+      fence: f.f,
+      verdict: 'REQUEST_CHANGES',
     });
   } else if (kind === 'latest-checker-rejected') {
     const makerId = addDoneMaker(f, 'latest-checker-rejected');
@@ -300,8 +306,13 @@ test('public terminal accepts a rejection resolved by a later done and approved 
     const rejectedChecker = dispatchReview(f.root, f.runId, {
       point: 'implementation', workstreamId: f.ws, detected: {}, fence: f.f,
     }).checkerEpisodeId;
-    recordReviewOutcome(f.root, f.runId, {
-      episodeId: rejectedChecker, verdict: 'REQUEST_CHANGES', fence: f.f,
+    settleExactDualReview({
+      root: f.root,
+      runId: f.runId,
+      checkerEpisodeId: rejectedChecker,
+      targetMaker: rejectedMaker,
+      fence: f.f,
+      verdict: 'REQUEST_CHANGES',
     });
     const resolvedMaker = addDoneMaker(f, `${status}-resolved`);
     addApprovedReview(f, resolvedMaker, `${status}-resolved`);
@@ -693,11 +704,15 @@ test('new-policy Codex boundary key constructs and settles a real terminal maker
     fence: { owner: emitted.childRunId, generation: 2, intent: 'business' },
     now: Date.parse(NOW) + 2,
   });
+  const tokensBeforeMakerSettlement = readState(f.root, f.runId).data.budget.tokens_spent;
   assert.deepEqual(settleCodexProcessCost(f.root, f.runId, {
     receipt,
     fence: { owner: emitted.childRunId, generation: 2, intent: 'accounting' },
   }), { ok: true, recorded: true, reason: 'recorded' });
-  assert.equal(readState(f.root, f.runId).data.budget.tokens_spent, 12);
+  assert.equal(
+    readState(f.root, f.runId).data.budget.tokens_spent,
+    tokensBeforeMakerSettlement + usage.tokens,
+  );
 });
 
 test('resume-command trusts exact boundary launch metadata and falls back after retired-journal metadata drift', () => {

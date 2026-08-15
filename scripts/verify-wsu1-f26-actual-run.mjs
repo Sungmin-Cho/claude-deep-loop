@@ -6,28 +6,29 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { flushDirectory } from './lib/atomic-write.mjs';
+import { verifyDualCaptureProof } from './lib/dual-checker.mjs';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const FLAGS = Object.freeze([
   '--project-root', '--run-id', '--worktree', '--point',
   '--import-input-a', '--import-input-b',
-  '--external-observation-a', '--external-observation-b', '--receipt',
+  '--host-observation', '--receipt',
 ]);
 const INPUT_KEYS = Object.freeze([
   'schema_version', 'aggregation_id', 'reviewer_id', 'reviewer_adapter',
   'provider_id', 'model_id', 'session_id', 'checker_episode_id', 'target_maker',
   'attempt_id', 'source_claim_sha256', 'verdict', 'report_body', 'artifacts',
 ]);
-const OBSERVATION_KEYS = Object.freeze([
+const HOST_OBSERVATION_KEYS = Object.freeze([
   'schema_version', 'observer_role', 'observer_session_id', 'observed_at', 'project_root', 'worktree',
   'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id',
-  'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'provider_session_id',
-  'process_receipt_id', 'cwd', 'argv', 'env', 'started_at', 'finished_at', 'exit_code',
+  'cwd', 'argv', 'env', 'started_at', 'finished_at', 'exit_code',
   'stdout', 'stderr', 'checker_terminal_status',
 ]);
 const CAPTURE_KEYS = Object.freeze([
-  'capture_id', 'record_path', 'record_sha256', 'manifest_path',
+  'capture_id', 'run_id', 'checker_episode_id', 'attempt_id', 'source_claim_sha256',
+  'record_path', 'record_sha256', 'manifest_path',
   'source_manifest_sha256', 'skill_path', 'source_skill_sha256',
 ]);
 const PROCESS_PROOF_KEYS = Object.freeze([
@@ -353,35 +354,23 @@ function attemptIdentity(aggregation, attempt) {
   };
 }
 
-function validateCapture(projectRoot, runId, capture) {
-  if (!exactKeys(capture, CAPTURE_KEYS) || !SHA256.test(capture.capture_id || '')) {
+function validateCapture(projectRoot, runId, capture, attempt, aggregation) {
+  if (!exactKeys(capture, CAPTURE_KEYS)) fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  try {
+    verifyDualCaptureProof(projectRoot, runId, capture, {
+      checkerEpisodeId: aggregation.source_binding.checker_episode_id,
+      attemptId: attempt.attempt_id,
+      sourceClaimSha256: attempt.source_claim_sha256,
+    });
+  } catch {
     fail('WSU1_F26_DUAL_PROCESS_PROOF');
-  }
-  const { capture_id: captureId, ...binding } = capture;
-  if (captureId !== sha256(Buffer.from(JSON.stringify(binding)))) fail('WSU1_F26_DUAL_PROCESS_PROOF');
-  const prefix = `.deep-loop/runs/${runId}/checker-captures/`;
-  const pairs = [
-    ['record_path', 'record_sha256'],
-    ['manifest_path', 'source_manifest_sha256'],
-    ['skill_path', 'source_skill_sha256'],
-  ];
-  if (new Set(pairs.map(([pathKey]) => capture[pathKey])).size !== pairs.length) {
-    fail('WSU1_F26_DUAL_PROCESS_PROOF');
-  }
-  for (const [pathKey, hashKey] of pairs) {
-    const portable = portableRelative(capture[pathKey]);
-    if (!portable || !portable.startsWith(prefix) || !SHA256.test(capture[hashKey] || '')) {
-      fail('WSU1_F26_DUAL_PROCESS_PROOF');
-    }
-    const bytes = regularBytes(resolve(projectRoot, ...portable.split('/')), 'WSU1_F26_DUAL_PROCESS_PROOF');
-    if (sha256(bytes) !== capture[hashKey]) fail('WSU1_F26_DUAL_PROCESS_PROOF');
   }
 }
 
 function validateProcessProof(projectRoot, runId, aggregation, attempt) {
   const process = attempt.process_proof;
   const cost = attempt.cost_proof;
-  validateCapture(projectRoot, runId, attempt.capture_proof);
+  validateCapture(projectRoot, runId, attempt.capture_proof, attempt, aggregation);
   if (!exactKeys(process, PROCESS_PROOF_KEYS) || !exactKeys(cost, COST_PROOF_KEYS)
     || !measuredUsage(cost.usage) || process.receipt_id !== cost.receipt_id
     || process.provider_id !== attempt.provider_id || process.model_id !== attempt.model_id
@@ -410,7 +399,11 @@ function validateProcessProof(projectRoot, runId, aggregation, attempt) {
     || process.receipt_id !== expected.receipt_id || process.claim_hash !== expected.claim_hash) {
     fail('WSU1_F26_DUAL_PROCESS_PROOF');
   }
-  return receipt;
+  return {
+    receipt,
+    path: receiptPath,
+    sha256: sha256(bytes),
+  };
 }
 
 function validateReport(projectRoot, runId, aggregation, attempt, input) {
@@ -454,11 +447,11 @@ function validateReport(projectRoot, runId, aggregation, attempt, input) {
   return { report, bytes };
 }
 
-function validateObservation(observation, context, attempt) {
+function validateHostObservation(observation, context) {
   const observedAt = Date.parse(observation?.observed_at);
   const startedAt = Date.parse(observation?.started_at);
   const finishedAt = Date.parse(observation?.finished_at);
-  if (!exactKeys(observation, OBSERVATION_KEYS) || observation.schema_version !== 1
+  if (!exactKeys(observation, HOST_OBSERVATION_KEYS) || observation.schema_version !== 1
     || observation.observer_role !== 'orchestrator'
     || !safeIdentity(observation.observer_session_id)
     || !Number.isFinite(observedAt) || !Number.isFinite(startedAt) || !Number.isFinite(finishedAt)
@@ -466,12 +459,7 @@ function validateObservation(observation, context, attempt) {
   if (observation.project_root !== context.projectRoot || observation.worktree !== context.worktreePrefix
     || observation.run_id !== context.runId || observation.workstream_id !== context.workstream.id
     || observation.point !== context.point || observation.maker_episode_id !== context.maker.id
-    || observation.checker_episode_id !== context.checker.id
-    || observation.attempt_id !== attempt.attempt_id || observation.reviewer_id !== attempt.reviewer_id
-    || observation.reviewer_adapter !== attempt.reviewer_adapter
-    || observation.provider_id !== attempt.provider_id || observation.model_id !== attempt.model_id
-    || observation.provider_session_id !== attempt.session_id
-    || observation.process_receipt_id !== attempt.process_proof.receipt_id) {
+    || observation.checker_episode_id !== context.checker.id) {
     fail('WSU1_F26_DUAL_OBSERVATION');
   }
   const expectedArgv = [
@@ -607,10 +595,8 @@ function main() {
   if (loop.session_chain?.lease?.resume_policy === 'human') fail('WSU1_F26_HUMAN_POLICY');
 
   const inputPaths = [resolve(args['--import-input-a']), resolve(args['--import-input-b'])];
-  const observationPaths = [
-    resolve(args['--external-observation-a']), resolve(args['--external-observation-b']),
-  ];
-  if (new Set(inputPaths).size !== 2 || new Set(observationPaths).size !== 2) {
+  const hostObservationPath = resolve(args['--host-observation']);
+  if (new Set(inputPaths).size !== 2) {
     fail('WSU1_F26_DUAL_INPUT_COUNT');
   }
   const inputs = inputPaths.map(path => regularJson(path, 'WSU1_F26_DUAL_INPUT_COUNT').value);
@@ -824,25 +810,28 @@ function main() {
     fail('WSU1_F26_SYNTHETIC_AGGREGATE');
   }
 
-  const observations = observationPaths.map((observationPath, index) => {
-    const { bytes, value } = regularJson(
-      observationPath, 'WSU1_F26_DUAL_OBSERVATION', 'WSU1_F26_DUAL_OBSERVATION',
-      'WSU1_F26_DUAL_OBSERVATION',
-    );
-    validateObservation(value, {
-      projectRoot, worktreePrefix, worktree, runId, workstream, maker, checker, aggregation, point,
-    }, attempts[index]);
-    const digest = sha256(bytes);
-    const expected = process.env[`WSU1_F26_EXPECT_OBSERVATION_${index === 0 ? 'A' : 'B'}_SHA256`];
-    if (expected !== undefined && expected !== digest) fail('WSU1_F26_DUAL_OBSERVATION');
-    const reread = regularBytes(observationPath, 'WSU1_F26_DUAL_OBSERVATION');
-    if (!reread.equals(bytes) || sha256(reread) !== digest) fail('WSU1_F26_DUAL_OBSERVATION');
-    return { path: observationPath, bytes, value, sha256: digest };
+  const { bytes: hostObservationBytes, value: hostObservationValue } = regularJson(
+    hostObservationPath, 'WSU1_F26_DUAL_OBSERVATION', 'WSU1_F26_DUAL_OBSERVATION',
+    'WSU1_F26_DUAL_OBSERVATION',
+  );
+  validateHostObservation(hostObservationValue, {
+    projectRoot, worktreePrefix, worktree, runId, workstream, maker, checker, aggregation, point,
   });
-  if (new Set(observations.map(item => item.sha256)).size !== 2
-    || new Set(observations.map(item => item.value.observer_session_id)).size !== 2
-    || observations[0].value.stdout !== observations[1].value.stdout) {
+  const hostObservationSha256 = sha256(hostObservationBytes);
+  const expectedHostObservationSha256 = process.env.WSU1_F26_EXPECT_HOST_OBSERVATION_SHA256;
+  if (!SHA256.test(expectedHostObservationSha256 || '')
+    || expectedHostObservationSha256 !== hostObservationSha256) {
     fail('WSU1_F26_DUAL_OBSERVATION');
+  }
+  const hostObservationReread = regularBytes(hostObservationPath, 'WSU1_F26_DUAL_OBSERVATION');
+  if (!hostObservationReread.equals(hostObservationBytes)
+    || sha256(hostObservationReread) !== hostObservationSha256) {
+    fail('WSU1_F26_DUAL_OBSERVATION');
+  }
+  if (new Set(receipts.map(item => item.path)).size !== 2
+    || new Set(receipts.map(item => item.sha256)).size !== 2
+    || new Set(receipts.map(item => item.receipt.receipt_id)).size !== 2) {
+    fail('WSU1_F26_DUAL_PROCESS_PROOF');
   }
 
   const evidence = JSON.parse(sources.find(({ path }) =>
@@ -858,7 +847,7 @@ function main() {
       path === 'tests/fixtures/activation-pending-classification.md').sha256,
     evidence_rows_sha256: sha256(Buffer.from(`${JSON.stringify(evidence.rows)}\n`)),
     source_claim_sha256: sourceClaimSha256,
-    attempts: attempts.map((attempt, index) => ({
+    attempts: attempts.map(attempt => ({
       slot: attempt.slot,
       attempt_id: attempt.attempt_id,
       reviewer_id: attempt.reviewer_id,
@@ -877,18 +866,28 @@ function main() {
       report_sha256: attempt.report_proof.report_sha256,
       attempt_outcome_seq: attempt.report_proof.event_seq,
       attempt_outcome_checksum: attempt.report_proof.event_checksum,
-      external_observation: {
-        path: relative(projectRoot, observations[index].path).split(sep).join('/'),
-        sha256: observations[index].sha256,
-        observer_session_id: observations[index].value.observer_session_id,
-      },
     })),
+    provider_process_proofs: receipts.map(({ receipt, path, sha256: receiptSha256 }) => ({
+      receipt: path,
+      receipt_id: receipt.receipt_id,
+      receipt_sha256: receiptSha256,
+      provider_id: receipt.provider_id,
+      model_id: receipt.model_id,
+      session_id: receipt.session_id,
+      stdout_sha256: receipt.stdout_sha256,
+      stderr_sha256: receipt.stderr_sha256,
+    })),
+    host_observation: {
+      path: relative(projectRoot, hostObservationPath).split(sep).join('/'),
+      sha256: hostObservationSha256,
+      observer_session_id: hostObservationValue.observer_session_id,
+    },
     aggregate_event: {
       seq: aggregateEvents[0].seq,
       checksum: aggregateEvents[0].checksum,
       source_claim_sha256: sourceClaimSha256,
     },
-    host_result_sha256: sha256(Buffer.from(observations[0].value.stdout)),
+    host_result_sha256: sha256(Buffer.from(hostObservationValue.stdout)),
   };
   verifyRunEvidenceUnchanged(runEvidence);
   verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION

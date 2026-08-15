@@ -59,6 +59,7 @@ import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
+import { writeExactDualCapture } from './helpers/dual-capture.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -267,36 +268,19 @@ function movedRunWithDualReceipts() {
     '22222222-2222-4222-8222-222222222222',
   ];
   for (const [index, attempt] of claim.attempts.entries()) {
-    const base = `.deep-loop/runs/${runId}/checker-captures/${attempt.attempt_id}`;
-    const captureBinding = {
-      record_path: `${base}/capture.json`,
-      manifest_path: `${base}/plugin.json`,
-      skill_path: `${base}/SKILL.md`,
-    };
-    const captured = {
-      record_path: Buffer.from(`capture-${index}`),
-      manifest_path: Buffer.from('shared-manifest'),
-      skill_path: Buffer.from('shared-skill'),
-    };
-    for (const key of Object.keys(captureBinding)) {
-      mkdirSync(dirname(join(originalRoot, captureBinding[key])), { recursive: true });
-      writeFileSync(join(originalRoot, captureBinding[key]), captured[key]);
-    }
-    const proofBinding = {
-      record_path: captureBinding.record_path,
-      record_sha256: createHash('sha256').update(captured.record_path).digest('hex'),
-      manifest_path: captureBinding.manifest_path,
-      source_manifest_sha256: createHash('sha256').update(captured.manifest_path).digest('hex'),
-      skill_path: captureBinding.skill_path,
-      source_skill_sha256: createHash('sha256').update(captured.skill_path).digest('hex'),
-    };
+    const capture = writeExactDualCapture({
+      root: originalRoot,
+      runId,
+      checkerEpisodeId: checkerId,
+      attemptId: attempt.attempt_id,
+      sourceClaimSha256: attempt.source_claim_sha256,
+      manifest: Buffer.from('shared-manifest'),
+      skill: Buffer.from('shared-skill'),
+    }).proof;
     settleDualAttemptProcess(originalRoot, runId, {
       episodeId: checkerId,
       attemptId: attempt.attempt_id,
-      capture: {
-        capture_id: contentHash(JSON.stringify(proofBinding)),
-        ...proofBinding,
-      },
+      capture,
       process: {
         provider_id: attempt.provider_id,
         model_id: attempt.model_id,

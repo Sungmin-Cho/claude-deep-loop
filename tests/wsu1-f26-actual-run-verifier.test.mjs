@@ -8,8 +8,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tokenize } from './helpers/wsu1-f26-static-analyzer.mjs';
+import { writeExactDualCapture } from './helpers/dual-capture.mjs';
 import {
   createDirectoryJunction, createFileSymlink, createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
@@ -18,6 +19,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const VERIFIER = join(ROOT, 'scripts', 'verify-wsu1-f26-actual-run.mjs');
 const ATOMIC_WRITE = join(ROOT, 'scripts', 'lib', 'atomic-write.mjs');
+const DUAL_CHECKER = join(ROOT, 'scripts', 'lib', 'dual-checker.mjs');
 const NODE20_TRAVERSAL_SOURCES = [
   VERIFIER,
   join(HERE, 'helpers', 'baseline-node20-walk.mjs'),
@@ -28,13 +30,15 @@ const NODE20_TRAVERSAL_SOURCES = [
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const exactKeys = (value, keys) => Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
 
-test('P7 verifier exposes exactly two import and observation inputs with dual fail-closed diagnostics', () => {
+test('P7 verifier exposes two imports, one authenticated host observation, and two provider process proofs', () => {
   const source = readFileSync(VERIFIER, 'utf8');
   for (const flag of [
     '--import-input-a', '--import-input-b',
-    '--external-observation-a', '--external-observation-b',
+    '--host-observation',
   ]) assert.match(source, new RegExp(flag));
-  assert.doesNotMatch(source, /'--import-input',|'--external-observation',/u);
+  assert.doesNotMatch(source, /'--import-input',|'--external-observation(?:-a|-b)?',/u);
+  assert.match(source, /WSU1_F26_EXPECT_HOST_OBSERVATION_SHA256/u);
+  assert.match(source, /provider_process_proofs/u);
   for (const diagnostic of [
     'WSU1_F26_DUAL_INPUT_COUNT', 'WSU1_F26_DUAL_IDENTITY_COLLISION',
     'WSU1_F26_DUAL_SOURCE_MISMATCH', 'WSU1_F26_DUAL_REPORT_PROOF',
@@ -178,33 +182,15 @@ function fixture({
   const reportPaths = [];
   const receiptObjects = [];
   for (const route of routes) {
-    const base = `.deep-loop/runs/${runId}/checker-captures/${route.attempt_id}`;
-    const captureFiles = {
-      record_path: `${base}/capture.json`,
-      manifest_path: `${base}/plugin.json`,
-      skill_path: `${base}/SKILL.md`,
-    };
-    const captureBytes = {
-      record_path: Buffer.from(`capture:${route.attempt_id}`),
-      manifest_path: Buffer.from(`manifest:${route.reviewer_id}`),
-      skill_path: Buffer.from(`skill:${route.reviewer_adapter}`),
-    };
-    for (const key of Object.keys(captureFiles)) {
-      const path = join(projectRoot, ...captureFiles[key].split('/'));
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, captureBytes[key]);
-    }
-    const captureBinding = {
-      record_path: captureFiles.record_path,
-      record_sha256: sha256(captureBytes.record_path),
-      manifest_path: captureFiles.manifest_path,
-      source_manifest_sha256: sha256(captureBytes.manifest_path),
-      skill_path: captureFiles.skill_path,
-      source_skill_sha256: sha256(captureBytes.skill_path),
-    };
-    const captureProof = {
-      capture_id: sha256(Buffer.from(JSON.stringify(captureBinding))), ...captureBinding,
-    };
+    const { proof: captureProof } = writeExactDualCapture({
+      root: projectRoot,
+      runId,
+      checkerEpisodeId: checkerId,
+      attemptId: route.attempt_id,
+      sourceClaimSha256,
+      manifest: Buffer.from(`manifest:${route.reviewer_id}`),
+      skill: Buffer.from(`skill:${route.reviewer_adapter}`),
+    });
     const identity = {
       aggregation_id: aggregationId,
       slot: route.slot,
@@ -460,10 +446,10 @@ function fixture({
     checkerEpisodeId: checkerId,
     attemptId: attempts[1].attempt_id,
   })}\n`;
-  const observations = attempts.map((attempt, index) => ({
+  const observation = {
     schema_version: 1,
     observer_role: 'orchestrator',
-    observer_session_id: `orchestrator-session-010-${index}`,
+    observer_session_id: 'orchestrator-session-010',
     observed_at: '2026-08-10T00:01:00.000Z',
     project_root: projectRoot,
     worktree: worktreePrefix,
@@ -472,13 +458,6 @@ function fixture({
     point,
     maker_episode_id: makerId,
     checker_episode_id: checkerId,
-    attempt_id: attempt.attempt_id,
-    reviewer_id: attempt.reviewer_id,
-    reviewer_adapter: attempt.reviewer_adapter,
-    provider_id: attempt.provider_id,
-    model_id: attempt.model_id,
-    provider_session_id: attempt.session_id,
-    process_receipt_id: attempt.process_proof.receipt_id,
     cwd: projectRoot,
     argv: [
       process.execPath,
@@ -492,14 +471,12 @@ function fixture({
     stdout: hostResult,
     stderr: '',
     checker_terminal_status: 'approved',
-  }));
+  };
   const loopPath = join(runDir, 'loop.json');
   const loopHashPath = join(runDir, '.loop.hash');
   const eventPath = join(runDir, 'event-log.jsonl');
   const inputPaths = [join(projectRoot, 'manual-review-a.json'), join(projectRoot, 'manual-review-b.json')];
-  const observationPaths = [
-    join(projectRoot, 'external-observation-a.json'), join(projectRoot, 'external-observation-b.json'),
-  ];
+  const observationPath = join(projectRoot, 'host-observation.json');
   const receiptPath = join(projectRoot, 'receipt.json');
   const writeLoop = () => {
     const bytes = Buffer.from(`${JSON.stringify(loop, null, 2)}\n`);
@@ -509,14 +486,15 @@ function fixture({
   writeLoop();
   writeFileSync(eventPath, `${events.map(event => JSON.stringify(event)).join('\n')}\n`);
   inputPaths.forEach((path, index) => writeFileSync(path, `${JSON.stringify(inputs[index], null, 2)}\n`));
-  observationPaths.forEach((path, index) => writeFileSync(path, `${JSON.stringify(observations[index], null, 2)}\n`));
+  writeFileSync(observationPath, `${JSON.stringify(observation, null, 2)}\n`);
   writeFileSync(receiptPath, 'sentinel-receipt-bytes\n');
   return {
     projectRoot, runId, worktreePrefix, worktree, runDir,
     reportPath: reportPaths[0], reportPaths, loopPath, loopHashPath, eventPath,
-    inputPath: inputPaths[0], inputPaths, observationPath: observationPaths[0], observationPaths,
+    inputPath: inputPaths[0], inputPaths, observationPath,
     receiptPath, loop, event: events[0], events, input: inputs[0], inputs,
-    observation: observations[0], observations, envelope: envelopes[0], envelopes,
+    observation, envelope: envelopes[0], envelopes,
+    expectedHostObservationSha256: sha256(readFileSync(observationPath)),
     writeLoop,
     writeEvents: (events) => {
       let prev = 'GENESIS';
@@ -531,8 +509,8 @@ function fixture({
       writeFileSync(eventPath, events.map((item) => JSON.stringify(item)).join('\n') + (events.length ? '\n' : ''));
       writeLoop();
     },
-    writeObservation: (index = 0) => writeFileSync(
-      observationPaths[index], `${JSON.stringify(observations[index], null, 2)}\n`,
+    writeObservation: () => writeFileSync(
+      observationPath, `${JSON.stringify(observation, null, 2)}\n`,
     ),
     writeInput: (index = 0) => writeFileSync(
       inputPaths[index], `${JSON.stringify(inputs[index], null, 2)}\n`,
@@ -543,7 +521,7 @@ function fixture({
 function invoke(fx, extraEnv = {}) {
   const sentinel = readFileSync(fx.receiptPath);
   const result = spawnSync(process.execPath, verifierArgs(fx), {
-    encoding: 'utf8', env: { ...process.env, ...extraEnv },
+    encoding: 'utf8', env: verifierEnv(fx, extraEnv),
   });
   assert.notEqual(result.status, 0, 'negative verifier fixture unexpectedly passed');
   assert.equal(result.stdout, '');
@@ -554,7 +532,7 @@ function invoke(fx, extraEnv = {}) {
 function invokeWithoutReceipt(fx, extraEnv = {}) {
   unlinkSync(fx.receiptPath);
   const result = spawnSync(process.execPath, verifierArgs(fx), {
-    encoding: 'utf8', env: { ...process.env, ...extraEnv },
+    encoding: 'utf8', env: verifierEnv(fx, extraEnv),
   });
   assert.notEqual(result.status, 0, 'negative verifier fixture unexpectedly passed');
   assert.equal(result.stdout, '');
@@ -578,10 +556,26 @@ function verifierArgs(fx) {
     '--point', 'wsu1-f26-independent-review',
     '--import-input-a', fx.inputPaths[0],
     '--import-input-b', fx.inputPaths[1],
-    '--external-observation-a', fx.observationPaths[0],
-    '--external-observation-b', fx.observationPaths[1],
+    '--host-observation', fx.observationPath,
     '--receipt', fx.receiptPath,
   ];
+}
+
+function verifierEnv(fx, extraEnv = {}) {
+  let digest = fx.expectedHostObservationSha256;
+  try { digest = sha256(readFileSync(fx.observationPath)); } catch { /* missing is verifier-owned */ }
+  return {
+    ...process.env,
+    WSU1_F26_EXPECT_HOST_OBSERVATION_SHA256: digest,
+    ...extraEnv,
+  };
+}
+
+function runnerVerifierSource() {
+  return readFileSync(VERIFIER, 'utf8').replace(
+    "'./lib/dual-checker.mjs'",
+    JSON.stringify(pathToFileURL(DUAL_CHECKER).href),
+  );
 }
 
 function invokeReceiptTarget(fx, receiptTarget, { cwd = ROOT } = {}) {
@@ -590,7 +584,7 @@ function invokeReceiptTarget(fx, receiptTarget, { cwd = ROOT } = {}) {
   args[args.indexOf('--receipt') + 1] = receiptTarget;
   const absoluteTarget = resolve(cwd, receiptTarget);
   const before = lstatOrNull(absoluteTarget);
-  const result = spawnSync(process.execPath, args, { encoding: 'utf8', cwd });
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8', cwd, env: verifierEnv(fx) });
   assert.notEqual(result.status, 0, 'protected receipt target unexpectedly passed');
   assert.equal(result.stdout, '');
   const after = lstatOrNull(absoluteTarget);
@@ -608,14 +602,14 @@ function invokeWithSourceRace(fx, mutationSource) {
   const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-race-runner-'));
   const runnerScripts = join(runnerRoot, 'scripts');
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
-  const source = readFileSync(VERIFIER, 'utf8');
+  const source = runnerVerifierSource();
   const seam = '  verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION';
   assert.equal(source.split(seam).length, 2, 'pre-publication source recheck must have one unambiguous seam');
   writeFileSync(join(runnerScripts, 'verify.mjs'), source.replace(seam, `  ${mutationSource}\n${seam}`));
   writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
   unlinkSync(fx.receiptPath);
   const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: verifierEnv(fx),
   });
   assert.notEqual(result.status, 0, 'source race unexpectedly minted a receipt');
   assert.equal(result.stdout, '');
@@ -636,7 +630,7 @@ function invokeWithReceiptParentRace(fx, boundary, { preexistingBytes = null } =
     `process.getBuiltinModule('node:fs').mkdirSync(${JSON.stringify(dirname(target))});`,
   ].join('\n');
   const marker = `// RECEIPT_BOUNDARY_${boundary}`;
-  const source = readFileSync(VERIFIER, 'utf8');
+  const source = runnerVerifierSource();
   assert.equal(source.split(marker).length, 2, `${boundary} boundary must be unique`);
   const markerIndex = source.indexOf(marker);
   const markerLine = source.lastIndexOf('\n', markerIndex) + 1;
@@ -651,7 +645,7 @@ function invokeWithReceiptParentRace(fx, boundary, { preexistingBytes = null } =
   const args = verifierArgs(fx);
   args[args.indexOf('--receipt') + 1] = target;
   const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...args.slice(1)], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: verifierEnv(fx),
   });
   assert.notEqual(result.status, 0, `${boundary} parent race unexpectedly passed`);
   assert.equal(lstatOrNull(crossed), null, `${boundary} guard allowed control to cross the drift boundary`);
@@ -680,7 +674,7 @@ function invokeWithReachablePostPublicationFailure(fx, { competingReceiptBytes =
   const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-cleanup-race-'));
   const runnerScripts = join(runnerRoot, 'scripts');
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
-  const source = readFileSync(VERIFIER, 'utf8');
+  const source = runnerVerifierSource();
   const marker = '  verifyReceiptParent(binding); // RECEIPT_BOUNDARY_POST_PUBLICATION';
   assert.equal(source.split(marker).length, 2, 'post-publication boundary must be unique');
   const receiptReplacement = competingReceiptBytes === null ? '' : [
@@ -696,7 +690,7 @@ function invokeWithReachablePostPublicationFailure(fx, { competingReceiptBytes =
   writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
   unlinkSync(fx.receiptPath);
   const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: verifierEnv(fx),
   });
   assert.notEqual(result.status, 0, 'post-publication K drift unexpectedly passed');
   assert.equal(result.stdout, '');
@@ -715,7 +709,7 @@ function invokeWithLinkObservationReplacement(fx) {
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
   const target = join(fx.projectRoot, 'link-observe-race', 'verified.json');
   const competitor = Buffer.from('competing receipt before lstat must survive\n');
-  const source = readFileSync(VERIFIER, 'utf8');
+  const source = runnerVerifierSource();
   const seam = '    linkSync(temporary, path);';
   assert.equal(source.split(seam).length, 2, 'link publication seam must be unique');
   const replacement = [
@@ -730,7 +724,7 @@ function invokeWithLinkObservationReplacement(fx) {
   const args = verifierArgs(fx);
   args[args.indexOf('--receipt') + 1] = target;
   const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...args.slice(1)], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: verifierEnv(fx),
   });
   assert.notEqual(result.status, 0, 'link-to-lstat replacement unexpectedly passed');
   assert.equal(result.stdout, '');
@@ -745,7 +739,7 @@ function invokeWithFinalReceiptDrift(fx, kind) {
   const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-final-receipt-race-'));
   const runnerScripts = join(runnerRoot, 'scripts');
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
-  const source = readFileSync(VERIFIER, 'utf8');
+  const source = runnerVerifierSource();
   const seam = '    verifySourceArtifactsUnchanged(worktree, relativeContract);';
   assert.equal(source.split(seam).length, 2, 'final K boundary must have one unambiguous seam');
   const competitor = Buffer.from('foreign receipt installed after the final K check\n');
@@ -762,7 +756,7 @@ function invokeWithFinalReceiptDrift(fx, kind) {
   writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
   unlinkSync(fx.receiptPath);
   const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: verifierEnv(fx),
   });
   assert.notEqual(result.status, 0, `final receipt ${kind} drift unexpectedly passed`);
   assert.equal(result.stdout, '');
@@ -781,7 +775,7 @@ function invokeWithinFinalReceiptVerification(fx, boundary) {
   const runnerRoot = mkdtempSync(join(tmpdir(), 'wsu1-f26-final-receipt-read-race-'));
   const runnerScripts = join(runnerRoot, 'scripts');
   mkdirSync(join(runnerScripts, 'lib'), { recursive: true });
-  const source = readFileSync(VERIFIER, 'utf8');
+  const source = runnerVerifierSource();
   const marker = `// RECEIPT_VERIFICATION_${boundary}`;
   assert.equal(source.split(marker).length, 2, `${boundary} receipt verification boundary must be unique`);
   const competitor = Buffer.from(`foreign receipt at ${boundary}\n`);
@@ -798,7 +792,7 @@ function invokeWithinFinalReceiptVerification(fx, boundary) {
   writeFileSync(join(runnerScripts, 'lib', 'atomic-write.mjs'), readFileSync(ATOMIC_WRITE));
   unlinkSync(fx.receiptPath);
   const result = spawnSync(process.execPath, [join(runnerScripts, 'verify.mjs'), ...verifierArgs(fx).slice(1)], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: verifierEnv(fx),
   });
   assert.notEqual(result.status, 0, `${boundary} receipt verification race unexpectedly passed`);
   assert.equal(result.stdout, '');
@@ -877,6 +871,25 @@ negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects a missing independent proces
     const attempt = fx.loop.episodes[1].review_aggregation.attempts[1];
     unlinkSync(join(fx.projectRoot, ...attempt.process_proof.receipt.split('/')));
   });
+negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects caller substitution of one provider receipt',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    const attempts = fx.loop.episodes[1].review_aggregation.attempts;
+    const first = join(fx.projectRoot, ...attempts[0].process_proof.receipt.split('/'));
+    const second = join(fx.projectRoot, ...attempts[1].process_proof.receipt.split('/'));
+    writeFileSync(second, readFileSync(first));
+  });
+negative('F26-ACTUAL-NEG-DUAL-CAPTURE rejects arbitrary capture record bytes',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    const capture = fx.loop.episodes[1].review_aggregation.attempts[0].capture_proof;
+    writeFileSync(join(fx.projectRoot, ...capture.record_path.split('/')), '{}');
+  });
+negative('F26-ACTUAL-NEG-DUAL-CAPTURE rejects a proof copied across attempts',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    const attempts = fx.loop.episodes[1].review_aggregation.attempts;
+    [attempts[0].capture_proof, attempts[1].capture_proof]
+      = [attempts[1].capture_proof, attempts[0].capture_proof];
+    fx.writeLoop();
+  });
 negative('F26-ACTUAL-NEG-SYNTHETIC-AGGREGATE rejects any third review artifact',
   'WSU1_F26_SYNTHETIC_AGGREGATE', (fx) => {
     writeFileSync(join(fx.runDir, 'reviews', `${'f'.repeat(64)}.json`), '{}');
@@ -933,7 +946,9 @@ test('F26-ACTUAL-NEG-OBSERVATION-CHRONOLOGY rejects impossible intervals and per
   fx.observation.observed_at = fx.observation.finished_at;
   fx.writeObservation();
   unlinkSync(fx.receiptPath);
-  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, verifierArgs(fx), {
+    encoding: 'utf8', env: verifierEnv(fx),
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 });
@@ -980,18 +995,25 @@ test('F26-ACTUAL-NEG-OBSERVATION-CHECKER-OUTCOME requires the exact durable chec
   }
 });
 negative('F26-ACTUAL-NEG-OBSERVATION-DIGEST-MISMATCH', 'WSU1_F26_DUAL_OBSERVATION',
-  () => {}, () => ({ WSU1_F26_EXPECT_OBSERVATION_A_SHA256: '0'.repeat(64) }));
+  () => {}, () => ({ WSU1_F26_EXPECT_HOST_OBSERVATION_SHA256: '0'.repeat(64) }));
+negative('F26-ACTUAL-NEG-OBSERVATION-MISSING-AUTHORITY-DIGEST', 'WSU1_F26_DUAL_OBSERVATION',
+  () => {}, () => ({ WSU1_F26_EXPECT_HOST_OBSERVATION_SHA256: undefined }));
+negative('F26-ACTUAL-NEG-HOST-OBSERVATION-CANNOT-CLAIM-PROVIDER-PROOF',
+  'WSU1_F26_DUAL_OBSERVATION', (fx) => {
+    fx.observation.provider_id = 'caller-authored-provider-claim'; fx.writeObservation();
+  });
 
-test('STEP0-3 verifier test fixture guards the exact dual external-observation contract', () => {
+test('STEP0-3 verifier fixture separates one host observation from provider process proof', () => {
   const fx = fixture();
   assert.equal(exactKeys(fx.observation, [
     'schema_version', 'observer_role', 'observer_session_id', 'observed_at', 'project_root', 'worktree',
     'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id',
-    'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'provider_session_id',
-    'process_receipt_id', 'cwd', 'argv', 'env', 'started_at', 'finished_at', 'exit_code',
+    'cwd', 'argv', 'env', 'started_at', 'finished_at', 'exit_code',
     'stdout', 'stderr', 'checker_terminal_status',
   ]), true);
-  assert.notEqual(fx.observations[0].attempt_id, fx.observations[1].attempt_id);
+  const attempts = fx.loop.episodes[1].review_aggregation.attempts;
+  assert.equal(new Set(attempts.map(item => item.process_proof.receipt_id)).size, 2);
+  assert.equal(new Set(attempts.map(item => item.process_proof.receipt)).size, 2);
 });
 
 test('STEP0-3 traversal sources use only baseline Node20 Dirent fields and non-recursive readdir', () => {
@@ -1025,7 +1047,9 @@ test('STEP0-3 verifier includes an ignored imported regular script in the cohere
   const fx = fixture({ ignoredRuntime: true });
   assert.equal(fx.input.artifacts.some(({ path }) => path.endsWith('/scripts/ignored-runtime.mjs')), true);
   unlinkSync(fx.receiptPath);
-  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, verifierArgs(fx), {
+    encoding: 'utf8', env: verifierEnv(fx),
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 });
@@ -1111,7 +1135,7 @@ test('STEP0-3 verifier permits a new receipt outside the reviewed source closure
   unlinkSync(fx.receiptPath);
   const args = verifierArgs(fx);
   args[args.indexOf('--receipt') + 1] = target;
-  const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8', env: verifierEnv(fx) });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
   assert.equal(JSON.parse(readFileSync(target, 'utf8')).run_id, fx.runId);
@@ -1164,7 +1188,7 @@ test('STEP0-3 verifier materializes and binds an initially missing outside recei
   unlinkSync(fx.receiptPath);
   const args = verifierArgs(fx);
   args[args.indexOf('--receipt') + 1] = target;
-  const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8', env: verifierEnv(fx) });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
   assert.equal(JSON.parse(readFileSync(target, 'utf8')).run_id, fx.runId);
@@ -1191,7 +1215,9 @@ test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production c
   writeFileSync(fx.eventPath, `${JSON.stringify(fx.event)}\n`);
   fx.writeLoop();
   unlinkSync(fx.receiptPath);
-  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, verifierArgs(fx), {
+    encoding: 'utf8', env: verifierEnv(fx),
+  });
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, '');
   assert.equal(result.stderr, 'WSU1_F26_EVENT_LOG\n');
@@ -1200,7 +1226,9 @@ test('F26-ACTUAL-NEG-NUL-CHECKSUM rejects an otherwise coherent non-production c
 test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atomically issues receipt', () => {
   const fx = fixture();
   unlinkSync(fx.receiptPath);
-  const result = spawnSync(process.execPath, verifierArgs(fx), { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, verifierArgs(fx), {
+    encoding: 'utf8', env: verifierEnv(fx),
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
   assert.equal(result.stderr, '');
@@ -1208,7 +1236,7 @@ test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atom
   assert.deepEqual(Object.keys(receipt), [
     'run_id', 'workstream_id', 'worktree_prefix', 'point', 'scope', 'reviewed_source_sha256',
     'live_classification_sha256', 'evidence_rows_sha256', 'source_claim_sha256',
-    'attempts', 'aggregate_event', 'host_result_sha256',
+    'attempts', 'provider_process_proofs', 'host_observation', 'aggregate_event', 'host_result_sha256',
   ]);
   assert.equal(receipt.run_id, fx.runId);
   assert.equal(receipt.scope, 'X_E_RESIDUAL_REASON_SEMANTICS+L_CONDITIONAL_DOMINANCE');
@@ -1217,6 +1245,9 @@ test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atom
     fx.loop.episodes[1].review_aggregation.attempts.map(item => item.report_proof.report_sha256));
   assert.deepEqual(receipt.attempts.map(item => item.process_receipt_id),
     fx.loop.episodes[1].review_aggregation.attempts.map(item => item.process_proof.receipt_id));
+  assert.equal(receipt.provider_process_proofs.length, 2);
+  assert.equal(new Set(receipt.provider_process_proofs.map(item => item.receipt_sha256)).size, 2);
+  assert.equal(receipt.host_observation.sha256, sha256(readFileSync(fx.observationPath)));
   assert.equal(receipt.aggregate_event.seq,
     fx.loop.episodes[1].review_aggregation.aggregate_proof.final_event_seq);
   assert.equal(Object.hasOwn(receipt, 'envelope'), false, 'receipt must not embed reviewer prose');

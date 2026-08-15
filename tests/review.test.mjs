@@ -16,6 +16,7 @@ import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -70,9 +71,10 @@ function boundChecker(root, runId, f, point) {
   return { ws, checkerId: r.checkerEpisodeId, worktree };
 }
 
-function seed(detected = { 'deep-review': true }) {
+function seed(detected = { 'deep-review': true }, { dualRequired = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected, now: new Date('2026-06-24T00:00:00Z') });
+  if (!dualRequired) migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -93,6 +95,22 @@ function doneMaker(root, runId, ws, point, f, file) {
   recordEpisode(root, runId, id, { status: 'done', artifacts: [art], proof: {}, fence: f });
   return id;
 }
+
+test('fresh explicit dual approval state rejects scalar review recording without mutation', () => {
+  const { root, runId } = seed({ 'deep-review': true }, { dualRequired: true });
+  const f = fence(runId);
+  const { checkerId, worktree } = boundChecker(root, runId, f, 'dual-required-scalar');
+  const report = wsReport(root, worktree, 'dual-required-review.md', '# scalar must not approve');
+  const before = runInventory(root, runId);
+
+  assert.throws(() => recordReviewOutcome(root, runId, {
+    episodeId: checkerId,
+    verdict: 'APPROVE',
+    proof: { report },
+    fence: f,
+  }), /DUAL_REVIEW_REQUIRED/);
+  assert.deepEqual(runInventory(root, runId), before);
+});
 
 function legacyStandaloneChecker() {
   const { root, runId } = seed();
@@ -178,7 +196,7 @@ test('dispatchReview rejects a checker born from a stale review-config snapshot'
 });
 
 test('dispatchReview rejects a mismatched Workstream scope before reviewer dependency discovery', () => {
-  const { root, runId } = seed();
+  const { root, runId } = seed({ 'deep-review': true }, { dualRequired: true });
   const f = fence(runId);
   const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence: f }).id;
   const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence: f }).id;
@@ -423,6 +441,7 @@ test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed un
   const root = mkdtempSync(join(tmpdir(), 'dl-ack-'));
   const reviewCfg = { points: ['implementation'], reviewer: 'deep-review-loop', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: true };
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', review: reviewCfg, detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   doneMaker(root, runId, ws, 'implementation', f);   // done so the checker binds; require_human_ack still gates comprehension

@@ -11,13 +11,16 @@ import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
 import * as finishModule from '../scripts/lib/finish.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { settleExactDualReview } from './helpers/dual-capture.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 // Codex r2 should-fix-2: review.points 를 ['implementation'] 한 개로 시드해야 recordWorkstreamTerminal('ready')
 // 의 "전 review point done" 게이트(workspace.mjs:77-82, 기본 [design,plan,implementation])를 한 번의 approve 로 충족한다.
-function seed() {
+function seed({ legacyScalar = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-fin-'));
   const review = { points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: false };
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', review, now: new Date('2026-06-24T00:00:00Z') });
+  if (legacyScalar) migrateAuthenticLegacyTransport(root, runId);
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 
@@ -345,17 +348,19 @@ test('finish completed rejects a runDir-relative symlink escaping the project (r
 // Regression: repro of real-world "009" stuck state — pending maker with zero expectedArtifacts
 // blocks finish until abandonEpisode settles it.
 test('repro: abandoning the orphan pending maker unblocks finish --status completed', () => {
-  const { root, runId, fence } = seed();   // review.points=['implementation']
+  const { root, runId, fence } = seed({ legacyScalar: false });   // review.points=['implementation']
   const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
   // Normal sequence: done maker + approved checker (satisfies implementation review point).
-  writeFileSync(join(root, 'art.txt'), 'x');
-  const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
-  recordEpisode(root, runId, good.id, { status: 'in_progress', fence });
-  recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
-  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  const artifact = '.claude/worktrees/wt/art.txt';
   mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
-  writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review report');
-  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
+  writeFileSync(join(root, artifact), 'x');
+  const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [artifact], fence });
+  recordEpisode(root, runId, good.id, { status: 'in_progress', fence });
+  recordEpisode(root, runId, good.id, { status: 'done', artifacts: [artifact], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  settleExactDualReview({
+    root, runId, checkerEpisodeId: dr.checkerEpisodeId, targetMaker: good.id, fence,
+  });
   // Orphan: stranded pending maker with zero expectedArtifacts — isomorphic to repro episode 009.
   const orphan = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [], fence });
   // Mid-test assertion 1: closure itself now rejects the unsettled orphan.

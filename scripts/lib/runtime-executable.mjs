@@ -33,14 +33,19 @@ const VERSION_MAX_BUFFER = 64 * 1024;
 const PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const HASH_BUFFER_BYTES = 64 * 1024;
 const SAFE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export const CHECKER_EXECUTABLE_KINDS = Object.freeze(['codex', 'grok']);
 const CHECKER_EXECUTABLE_ROUTES = Object.freeze({
-  codex: Object.freeze({ reviewer_adapter: 'codex-checker', provider_id: 'openai-codex' }),
-  grok: Object.freeze({ reviewer_adapter: 'grok-checker', provider_id: 'xai-grok' }),
+  codex: Object.freeze({
+    reviewer_adapter: 'codex-checker', provider_id: 'openai-codex', model_id: 'gpt-5.6-sol',
+  }),
+  grok: Object.freeze({
+    reviewer_adapter: 'grok-checker', provider_id: 'xai-grok', model_id: 'grok-4.6',
+  }),
 });
 const CHECKER_APPROVAL_KEYS = Object.freeze([
-  'checker', 'reviewer_adapter', 'provider_id', 'canonical_path', 'sha256', 'version',
+  'checker', 'reviewer_adapter', 'provider_id', 'model_id', 'canonical_path', 'sha256', 'version',
   'platform', 'arch', 'source', 'authenticode', 'approved_by', 'approved_at',
 ]);
 
@@ -498,6 +503,7 @@ function checkerExecutableSecurityIdentity(identity) {
     checker: identity.checker,
     reviewer_adapter: identity.reviewer_adapter,
     provider_id: identity.provider_id,
+    model_id: identity.model_id,
     canonical_path: identity.canonical_path,
     sha256: identity.sha256,
     version: identity.version,
@@ -519,7 +525,8 @@ function assertCheckerExecutableIdentityShape(identity) {
   }
   validateCheckerExecutableKind(identity.checker);
   const route = CHECKER_EXECUTABLE_ROUTES[identity.checker];
-  if (identity.reviewer_adapter !== route.reviewer_adapter || identity.provider_id !== route.provider_id) {
+  if (identity.reviewer_adapter !== route.reviewer_adapter || identity.provider_id !== route.provider_id
+    || identity.model_id !== route.model_id) {
     throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_INVALID', 'checker route identity is invalid');
   }
   absolutePath(identity.canonical_path, 'CHECKER_EXECUTABLE_IDENTITY_INVALID');
@@ -540,9 +547,13 @@ function assertCheckerExecutableIdentityShape(identity) {
 }
 
 function inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
-  platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+  platform, arch, modelId, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
 }) {
   validateCheckerExecutableKind(checker);
+  const route = CHECKER_EXECUTABLE_ROUTES[checker];
+  if (!SAFE_MODEL.test(modelId || '') || modelId !== route.model_id) {
+    throw runtimeError('CHECKER_EXECUTABLE_MODEL_INVALID', 'exact checker route model_id is required');
+  }
   assertTrustedRuntimeNamespace(candidatePath, platform);
   const candidate = regularFile(candidatePath);
   assertTrustedRuntimeNamespace(candidate.canonical, platform);
@@ -562,7 +573,7 @@ function inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
   }
   return {
     checker,
-    ...CHECKER_EXECUTABLE_ROUTES[checker],
+    ...route,
     canonical_path: candidate.canonical,
     sha256,
     version,
@@ -1394,6 +1405,10 @@ export function approveRuntimeExecutable(root, runId, {
 
 export function diagnoseCheckerExecutable(checker, options = {}) {
   validateCheckerExecutableKind(checker);
+  const route = CHECKER_EXECUTABLE_ROUTES[checker];
+  if (!SAFE_MODEL.test(options.modelId || '') || options.modelId !== route.model_id) {
+    throw runtimeError('CHECKER_EXECUTABLE_MODEL_INVALID', 'exact checker route model_id is required');
+  }
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   assertTrustedRuntimeNamespace(options.explicitPath, platform);
@@ -1405,7 +1420,7 @@ export function diagnoseCheckerExecutable(checker, options = {}) {
     approval_required: true,
     identity: {
       checker,
-      ...CHECKER_EXECUTABLE_ROUTES[checker],
+      ...route,
       canonical_path: candidate.canonical,
       sha256,
       version: null,
@@ -1424,6 +1439,10 @@ export function revalidateTrustedCheckerExecutable(identity, options = {}) {
   const arch = options.arch ?? process.arch;
   if (identity.platform !== platform || identity.arch !== arch) {
     throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker platform or architecture changed');
+  }
+  if (options.expectedModelId !== undefined
+    && (!SAFE_MODEL.test(options.expectedModelId || '') || identity.model_id !== options.expectedModelId)) {
+    throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker model identity changed');
   }
   try {
     const candidate = regularFile(identity.canonical_path);
@@ -1459,14 +1478,18 @@ export function revalidateTrustedCheckerExecutable(identity, options = {}) {
 
 function applyCheckerExecutableApproval(loop, checker, approval) {
   const current = loop.autonomy.checker_executable_approvals;
+  if (current === undefined) {
+    throw runtimeError('CHECKER_EXECUTABLE_REAPPROVAL_REQUIRED', 'legacy state requires an explicit dual migration');
+  }
   loop.autonomy.checker_executable_approvals = {
-    ...(current === undefined ? { codex: null, grok: null } : current),
+    ...current,
     [checker]: approval,
   };
 }
 
 export function approveCheckerExecutable(root, runId, {
   checker,
+  modelId,
   candidatePath,
   expectedCanonicalPath,
   expectedSha256,
@@ -1503,7 +1526,7 @@ export function approveCheckerExecutable(root, runId, {
   }
 
   const identity = inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
-    platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+    platform, arch, modelId, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
   });
   if (identity.canonical_path !== expectedPath) {
     throw runtimeError('CHECKER_EXECUTABLE_PATH_MISMATCH', 'diagnosed canonical path does not match approval');
@@ -1517,6 +1540,7 @@ export function approveCheckerExecutable(root, runId, {
     checker,
     reviewer_adapter: approval.reviewer_adapter,
     provider_id: approval.provider_id,
+    model_id: approval.model_id,
     canonical_path: approval.canonical_path,
     sha256: approval.sha256,
     version: approval.version,
@@ -1539,12 +1563,15 @@ export function approveCheckerExecutable(root, runId, {
         throw runtimeError('LEASE_FENCED', lease.reason);
       }
       const approvalMap = loop.autonomy?.checker_executable_approvals;
-      if (approvalMap !== undefined
-        && (approvalMap === null || typeof approvalMap !== 'object' || Array.isArray(approvalMap))) {
+      if (approvalMap === undefined) {
+        throw runtimeError('CHECKER_EXECUTABLE_REAPPROVAL_REQUIRED', 'legacy state requires an explicit dual migration');
+      }
+      if (approvalMap === null || typeof approvalMap !== 'object' || Array.isArray(approvalMap)
+        || JSON.stringify(Object.keys(approvalMap).sort()) !== JSON.stringify(['codex', 'grok'])) {
         throw runtimeError('STATE_INVALID', 'autonomy.checker_executable_approvals is malformed');
       }
       const fresh = inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
-        platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+        platform, arch, modelId, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
       });
       if (JSON.stringify(checkerExecutableSecurityIdentity(fresh))
           !== JSON.stringify(checkerExecutableSecurityIdentity(identity))

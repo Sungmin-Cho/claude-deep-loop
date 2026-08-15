@@ -13,7 +13,7 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
 import { runStreamingProcessSync } from './streaming-process.mjs';
 import { isMeasuredOneTurnUsage } from './budget.mjs';
@@ -29,7 +29,22 @@ const MAX_CACHE_DEPTH = 3;
 const CLI_RESULT_BYTES = 512 * 1024;
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
 const SAFE_BINDING = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 const CAPTURE_RECORD_BYTES = 16 * 1024;
+const CAPTURE_PROOF_KEYS = Object.freeze([
+  'capture_id', 'run_id', 'checker_episode_id', 'attempt_id', 'source_claim_sha256',
+  'record_path', 'record_sha256', 'manifest_path', 'source_manifest_sha256',
+  'skill_path', 'source_skill_sha256',
+]);
+const CAPTURE_SOURCE_KEYS = Object.freeze([
+  'plugin_directory', 'manifest_path', 'skill_path', 'plugin_name', 'plugin_version',
+  'manifest_sha256', 'skill_sha256',
+]);
+
+function exactKeys(value, keys) {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
 
 function streamMetadata(value, truncated = false) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value == null ? '' : String(value));
@@ -307,7 +322,91 @@ function captureDescriptor(directoryPath, source, binding) {
   const expectedRecord = Buffer.from(`${JSON.stringify(exactCaptureRecord(binding, source))}\n`, 'utf8');
   const recordBytes = readIdentityBytes(record, { maxBytes: CAPTURE_RECORD_BYTES });
   if (!recordBytes.equals(expectedRecord)) throw new Error('checker-capture-integrity-drift:record');
-  return { source, directory, record, manifest, skill };
+  return { source, binding: structuredClone(binding), directory, record, manifest, skill };
+}
+
+function captureRelativePath(root, value, runId) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('\\') || /[\0\r\n]/.test(value)) {
+    throw new Error('checker-capture-proof-invalid:path');
+  }
+  const parts = value.split('/');
+  if (parts.some(part => part === '' || part === '.' || part === '..')) {
+    throw new Error('checker-capture-proof-invalid:path');
+  }
+  const prefix = `.deep-loop/runs/${runId}/checker-captures/`;
+  if (!value.startsWith(prefix)) throw new Error('checker-capture-proof-invalid:path');
+  const absolute = resolve(root, ...parts);
+  if (!contained(root, absolute)) throw new Error('checker-capture-proof-invalid:path');
+  return absolute;
+}
+
+function validateCapturedProof({
+  root, runId, checkerEpisodeId, attemptId, sourceClaimSha256, proof,
+}) {
+  if (!exactKeys(proof, CAPTURE_PROOF_KEYS)
+    || proof.run_id !== runId || proof.checker_episode_id !== checkerEpisodeId
+    || proof.attempt_id !== attemptId || proof.source_claim_sha256 !== sourceClaimSha256
+    || !SHA256.test(sourceClaimSha256 || '')) {
+    throw new Error('checker-capture-proof-invalid:binding');
+  }
+  const { capture_id: captureId, ...proofBinding } = proof;
+  if (!SHA256.test(captureId || '')
+    || captureId !== createHash('sha256').update(JSON.stringify(proofBinding)).digest('hex')) {
+    throw new Error('checker-capture-proof-invalid:id');
+  }
+  const recordPath = captureRelativePath(root, proof.record_path, runId);
+  const manifestPath = captureRelativePath(root, proof.manifest_path, runId);
+  const skillPath = captureRelativePath(root, proof.skill_path, runId);
+  if (dirname(recordPath) !== dirname(manifestPath) || dirname(recordPath) !== dirname(skillPath)
+    || basename(recordPath) !== 'capture.json' || basename(manifestPath) !== 'plugin.json'
+    || basename(skillPath) !== 'SKILL.md') {
+    throw new Error('checker-capture-proof-invalid:topology');
+  }
+  const recordIdentity = inspectCheckerFileIdentity(recordPath, { maxBytes: CAPTURE_RECORD_BYTES });
+  const recordBytes = readIdentityBytes(recordIdentity, { maxBytes: CAPTURE_RECORD_BYTES });
+  if (recordIdentity.sha256 !== proof.record_sha256 || !SHA256.test(proof.record_sha256 || '')) {
+    throw new Error('checker-capture-integrity-drift:record');
+  }
+  let record;
+  try { record = JSON.parse(recordBytes.toString('utf8')); }
+  catch { throw new Error('checker-capture-integrity-drift:record'); }
+  const expectedBinding = {
+    run_id: runId,
+    checker_episode_id: checkerEpisodeId,
+    attempt_id: attemptId,
+    source_claim_sha256: sourceClaimSha256,
+  };
+  if (!exactKeys(record, ['schema_version', 'binding', 'source', 'captured'])
+    || record.schema_version !== '1.0'
+    || !exactKeys(record.binding, Object.keys(expectedBinding))
+    || JSON.stringify(record.binding) !== JSON.stringify(expectedBinding)
+    || !exactKeys(record.source, CAPTURE_SOURCE_KEYS)
+    || record.source.plugin_name !== 'deep-review'
+    || !SAFE_VERSION.test(record.source.plugin_version || '')
+    || !SHA256.test(record.source.manifest_sha256 || '')
+    || !SHA256.test(record.source.skill_sha256 || '')
+    || !exactKeys(record.captured, [
+      'manifest_rel', 'manifest_sha256', 'skill_rel', 'skill_sha256',
+    ])
+    || record.captured.manifest_rel !== 'plugin.json'
+    || record.captured.skill_rel !== 'SKILL.md'
+    || record.captured.manifest_sha256 !== record.source.manifest_sha256
+    || record.captured.skill_sha256 !== record.source.skill_sha256) {
+    throw new Error('checker-capture-integrity-drift:record');
+  }
+  const descriptor = captureDescriptor(dirname(recordPath), record.source, expectedBinding);
+  const relativePath = identity => relative(root, identity.canonical_path).split(sep).join('/');
+  if (relativePath(descriptor.record) !== proof.record_path
+    || relativePath(descriptor.manifest) !== proof.manifest_path
+    || relativePath(descriptor.skill) !== proof.skill_path
+    || descriptor.record.sha256 !== proof.record_sha256
+    || descriptor.manifest.sha256 !== proof.source_manifest_sha256
+    || descriptor.skill.sha256 !== proof.source_skill_sha256
+    || record.source.manifest_sha256 !== proof.source_manifest_sha256
+    || record.source.skill_sha256 !== proof.source_skill_sha256) {
+    throw new Error('checker-capture-integrity-drift:proof');
+  }
+  return structuredClone(proof);
 }
 
 export function captureTrustedCheckerSkill({
@@ -315,20 +414,31 @@ export function captureTrustedCheckerSkill({
   runId,
   checkerEpisodeId,
   attemptId,
+  sourceClaimSha256,
   source,
   expected = null,
+  proof = null,
 } = {}) {
   const canonicalRoot = absolutePath(root, 'checker-capture-root-invalid');
   if (!SAFE_BINDING.test(runId || '') || !SAFE_BINDING.test(checkerEpisodeId || '')
-    || !SAFE_BINDING.test(attemptId || '')) throw new Error('checker-capture-binding-invalid');
+    || !SAFE_BINDING.test(attemptId || '') || !SHA256.test(sourceClaimSha256 || '')) {
+    throw new Error('checker-capture-binding-invalid');
+  }
+  if (proof !== null) {
+    return validateCapturedProof({
+      root: canonicalRoot, runId, checkerEpisodeId, attemptId, sourceClaimSha256, proof,
+    });
+  }
   const provenance = checkerSourceProvenance(source);
   const binding = {
     run_id: runId,
     checker_episode_id: checkerEpisodeId,
     attempt_id: attemptId,
+    source_claim_sha256: sourceClaimSha256,
   };
   const key = createHash('sha256')
-    .update(runId).update('\0').update(checkerEpisodeId).update('\0').update(attemptId).digest('hex');
+    .update(runId).update('\0').update(checkerEpisodeId).update('\0').update(attemptId)
+    .update('\0').update(sourceClaimSha256).digest('hex');
   const base = join(runDir(canonicalRoot, runId), 'checker-captures');
   const capturePath = join(base, key);
   if (expected !== null) {

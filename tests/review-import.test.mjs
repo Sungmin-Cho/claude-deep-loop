@@ -14,6 +14,10 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import {
+  claimDualIndependentReview,
+  settleDualAttemptProcess,
+} from '../scripts/lib/dual-checker.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
@@ -31,6 +35,8 @@ import {
   createDirectoryJunction,
   createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
+import { writeExactDualCapture } from './helpers/dual-capture.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'scripts', 'deep-loop.mjs');
@@ -100,9 +106,14 @@ function validImport(overrides = {}) {
   };
 }
 
-function fixture({ runtime = 'codex', detected = { 'deep-review': true }, artifactRel = '.claude/worktrees/w/artifact.txt', artifactBytes = Buffer.from('maker artifact'), claim = true } = {}) {
+function fixture({
+  runtime = 'codex', detected = { 'deep-review': true },
+  artifactRel = '.claude/worktrees/w/artifact.txt', artifactBytes = Buffer.from('maker artifact'),
+  claim = true, legacyScalar = true,
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-review-import-'));
   const { runId } = initRun(root, { runtime, goal: 'g', detected, now: new Date('2026-07-10T00:00:00Z') });
+  if (legacyScalar) migrateAuthenticLegacyTransport(root, runId);
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const worktree = '.claude/worktrees/w';
   mkdirSync(join(root, worktree), { recursive: true });
@@ -138,6 +149,7 @@ function fixtureWithoutChecker({
   const { runId } = initRun(root, {
     runtime, goal: 'g', detected, now: new Date('2026-07-10T00:00:00Z'),
   });
+  migrateAuthenticLegacyTransport(root, runId);
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const worktree = '.claude/worktrees/w';
   mkdirSync(join(root, worktree), { recursive: true });
@@ -618,6 +630,118 @@ function spawnImport(root, runId, raw, extra = []) {
   return { child, done: new Promise(resolve => child.on('close', code => resolve({ code, stdout, stderr }))) };
 }
 
+function dualPublicFixture() {
+  const f = fixture({ claim: false, legacyScalar: false });
+  const ids = [
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  ];
+  const claim = claimDualIndependentReview(f.root, f.runId, {
+    episodeId: f.checkerId,
+    fence: f.fence,
+    idFactory: () => ids.shift(),
+    now: FIXED_NOW,
+  });
+  const sessions = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+  ];
+  const inputs = claim.attempts.map((attempt, index) => {
+    const capture = writeExactDualCapture({
+      root: f.root,
+      runId: f.runId,
+      checkerEpisodeId: f.checkerId,
+      attemptId: attempt.attempt_id,
+      sourceClaimSha256: attempt.source_claim_sha256,
+    }).proof;
+    settleDualAttemptProcess(f.root, f.runId, {
+      episodeId: f.checkerId,
+      attemptId: attempt.attempt_id,
+      capture,
+      process: {
+        provider_id: attempt.provider_id,
+        model_id: attempt.model_id,
+        session_id: sessions[index],
+        usage: { num_turns: 1, input_tokens: 5 + index, output_tokens: 2, tokens: 7 + index },
+        stdout_sha256: `${index + 3}`.repeat(64),
+        stderr_sha256: `${index + 5}`.repeat(64),
+      },
+      fence: f.fence,
+      now: FIXED_NOW,
+    });
+    return {
+      schema_version: '2.0',
+      aggregation_id: claim.aggregation_id,
+      reviewer_id: attempt.reviewer_id,
+      reviewer_adapter: attempt.reviewer_adapter,
+      provider_id: attempt.provider_id,
+      model_id: attempt.model_id,
+      session_id: sessions[index],
+      checker_episode_id: f.checkerId,
+      target_maker: f.makerId,
+      attempt_id: attempt.attempt_id,
+      source_claim_sha256: attempt.source_claim_sha256,
+      verdict: 'APPROVE',
+      report_body: `# public dual review ${index + 1}\n\nAPPROVE`,
+      artifacts: claim.source_binding.artifacts,
+    };
+  });
+  return { ...f, claim, inputs };
+}
+
+test('public review import fail-closes v1 on a fresh dual-required run without durable proof', async () => {
+  const f = fixture({ claim: false, legacyScalar: false });
+  const before = eventLog(f.root, f.runId).length;
+  const result = await spawnImport(f.root, f.runId, JSON.stringify(f.input)).done;
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /DUAL_REVIEW_IMPORT_/);
+  const checker = readState(f.root, f.runId).data.episodes.find(item => item.id === f.checkerId);
+  assert.equal(checker.status, 'pending');
+  assert.equal(eventLog(f.root, f.runId).length, before);
+  assert.equal(existsSync(join(runDir(f.root, f.runId), 'reviews')), false);
+});
+
+test('public v2 review import routes both exact attempts and terminalizes only after the second', async () => {
+  const f = dualPublicFixture();
+  const first = await spawnImport(f.root, f.runId, JSON.stringify(f.inputs[0])).done;
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).status, 'awaiting-second-attempt');
+  let checker = readState(f.root, f.runId).data.episodes.find(item => item.id === f.checkerId);
+  assert.equal(checker.status, 'in_progress');
+  assert.equal(eventLog(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 0);
+
+  const second = await spawnImport(f.root, f.runId, JSON.stringify(f.inputs[1])).done;
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(JSON.parse(second.stdout).terminal, 'approved');
+  checker = readState(f.root, f.runId).data.episodes.find(item => item.id === f.checkerId);
+  assert.equal(checker.status, 'approved');
+  assert.equal(checker.review_aggregation.aggregate_status, 'approved');
+  assert.equal(eventLog(f.root, f.runId).filter(event => event.type === 'review-attempt-outcome').length, 2);
+  assert.equal(eventLog(f.root, f.runId).filter(event => event.type === 'review-outcome').length, 1);
+});
+
+test('public v2 review import rejects model, session, and source binding reversals', async () => {
+  for (const [label, mutate] of [
+    ['model', value => { value.model_id = 'gpt-5.6-sol-unapproved'; }],
+    ['session', value => { value.session_id = '33333333-3333-4333-8333-333333333333'; }],
+    ['source', value => { value.source_claim_sha256 = 'f'.repeat(64); }],
+  ]) {
+    const f = dualPublicFixture();
+    const input = structuredClone(f.inputs[0]);
+    mutate(input);
+    const before = eventLog(f.root, f.runId).length;
+    const result = await spawnImport(f.root, f.runId, JSON.stringify(input)).done;
+    assert.equal(result.code, 1, `${label}: ${result.stderr}`);
+    assert.match(result.stderr,
+      /DUAL_REVIEW_IMPORT_(?:IDENTITY_MISMATCH|BINDING_MISMATCH|SOURCE_MISMATCH)/, label);
+    assert.equal(eventLog(f.root, f.runId).length, before, label);
+    const checker = readState(f.root, f.runId).data.episodes.find(item => item.id === f.checkerId);
+    assert.equal(checker.status, 'in_progress', label);
+    assert.equal(checker.review_aggregation.attempts.every(item => item.report_proof === null), true, label);
+  }
+});
+
 test('locked commit rebuilds the exact envelope and rejects post-preparation byte tampering', () => {
   const f = fixture();
   const beforeEvents = eventLog(f.root, f.runId).length;
@@ -645,7 +769,15 @@ test('post-preparation scope drift rejects imported proof without orphaning a re
   }, {
     afterMaterialize() {
       const state = readState(f.root, f.runId).data;
-      state.session_chain.sessions.find(session => session.run_id === f.runId).scope.workstream_id = wsOther;
+      state.autonomy.continuation_policy = 'workstream-session';
+      state.session_chain.sessions.find(session => session.run_id === f.runId).scope = {
+        kind: 'workstream',
+        workstream_id: wsOther,
+        bound_at_seq: state.event_log_head.seq,
+        terminal_event: null,
+        closed_at: null,
+        superseded_at: null,
+      };
       writeState(f.root, f.runId, state);
     },
   }), /SESSION_SCOPE_MISMATCH/);
@@ -659,7 +791,15 @@ test('public review import rejects cross-scope target before report artifact cre
     title: 'other', branch: 'other', worktree: '.claude/worktrees/other', fence: f.fence,
   }).id;
   const state = readState(f.root, f.runId).data;
-  state.session_chain.sessions.find(session => session.run_id === f.runId).scope.workstream_id = wsOther;
+  state.autonomy.continuation_policy = 'workstream-session';
+  state.session_chain.sessions.find(session => session.run_id === f.runId).scope = {
+    kind: 'workstream',
+    workstream_id: wsOther,
+    bound_at_seq: state.event_log_head.seq,
+    terminal_event: null,
+    closed_at: null,
+    superseded_at: null,
+  };
   writeState(f.root, f.runId, state);
   const reviews = join(runDir(f.root, f.runId), 'reviews');
   const before = existsSync(reviews) ? readdirSync(reviews).sort() : [];

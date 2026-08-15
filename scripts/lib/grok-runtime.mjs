@@ -1,6 +1,5 @@
 import { posix, win32 } from 'node:path';
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 
@@ -17,7 +16,6 @@ export function buildGrokHeadlessEntry({
   projectRoot,
   prompt,
   schema,
-  sessionId,
   model = 'grok-4.6',
   effort = 'xhigh',
   env = {},
@@ -27,7 +25,6 @@ export function buildGrokHeadlessEntry({
   if (typeof prompt !== 'string' || prompt.length === 0) {
     throw new Error('INVALID_GROK_PROMPT');
   }
-  if (!SESSION_ID.test(sessionId || '')) throw new Error('INVALID_GROK_SESSION_ID');
   if (!SAFE_MODEL.test(model || '')) throw new Error('INVALID_GROK_MODEL');
   if (!EFFORTS.has(effort)) throw new Error('INVALID_GROK_EFFORT');
   if (schema == null || typeof schema !== 'object' || Array.isArray(schema)) {
@@ -48,7 +45,6 @@ export function buildGrokHeadlessEntry({
       '--cwd', cwd,
       '--model', model,
       '--effort', effort,
-      '--session-id', sessionId,
       '--output-format', 'json',
       '--json-schema', encodedSchema,
       '--max-turns', '1',
@@ -65,7 +61,6 @@ export function buildGrokHeadlessEntry({
     usageOutputKind: 'grok-json',
     captureFinalMessage: true,
     captureProcessDiagnostic: true,
-    trustedSessionId: sessionId,
     trustedModelId: model,
   };
 }

@@ -20,6 +20,7 @@ import { captureReconciledRunSnapshot } from './state.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { runStreamingProcess } from './streaming-process.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
+import { captureTrustedCheckerSkill } from './codex-checker.mjs';
 
 export const DUAL_CHECKER_ROUTES = Object.freeze([
   Object.freeze({
@@ -408,7 +409,8 @@ export function claimDualIndependentReview(root, runId, options = {}) {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const CAPTURE_KEYS = Object.freeze([
-  'capture_id', 'record_path', 'record_sha256', 'manifest_path',
+  'capture_id', 'run_id', 'checker_episode_id', 'attempt_id', 'source_claim_sha256',
+  'record_path', 'record_sha256', 'manifest_path',
   'source_manifest_sha256', 'skill_path', 'source_skill_sha256',
 ]);
 const PROCESS_KEYS = Object.freeze([
@@ -442,34 +444,31 @@ function attemptClaimHash(aggregation, attempt) {
   return contentHash(JSON.stringify(attemptIdentity(aggregation, attempt)));
 }
 
-function validateCaptureProof(root, runId, capture) {
+function validateCaptureProof(root, runId, capture, {
+  checkerEpisodeId, attemptId, sourceClaimSha256,
+} = {}) {
   if (!exactKeys(capture, CAPTURE_KEYS)) throw new Error('DUAL_REVIEW_CAPTURE_INVALID');
-  const prefix = `.deep-loop/runs/${runId}/checker-captures/`;
-  const paths = [capture.record_path, capture.manifest_path, capture.skill_path];
-  if (new Set(paths).size !== paths.length || paths.some(path => (
-    typeof path !== 'string' || !path.startsWith(prefix)
-  ))) throw new Error('DUAL_REVIEW_CAPTURE_INVALID');
-  for (const [pathKey, hashKey] of [
-    ['record_path', 'record_sha256'],
-    ['manifest_path', 'source_manifest_sha256'],
-    ['skill_path', 'source_skill_sha256'],
-  ]) {
-    if (!SHA256.test(capture[hashKey] || '')) throw new Error('DUAL_REVIEW_CAPTURE_INVALID');
-    const real = containedRealFile(canonicalProjectRoot(root), capture[pathKey]);
-    if (!real || sha256File(real) !== capture[hashKey]) {
-      throw new Error('DUAL_REVIEW_CAPTURE_MISMATCH');
+  try {
+    return captureTrustedCheckerSkill({
+      root: canonicalProjectRoot(root),
+      runId,
+      checkerEpisodeId,
+      attemptId,
+      sourceClaimSha256,
+      proof: capture,
+    });
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.startsWith('checker-capture-binding-invalid')
+      || message.startsWith('checker-capture-proof-invalid')) {
+      throw new Error('DUAL_REVIEW_CAPTURE_INVALID');
     }
+    throw new Error('DUAL_REVIEW_CAPTURE_MISMATCH');
   }
-  const { capture_id: captureId, ...binding } = capture;
-  if (!SHA256.test(captureId || '')
-    || captureId !== contentHash(JSON.stringify(binding))) {
-    throw new Error('DUAL_REVIEW_CAPTURE_INVALID');
-  }
-  return structuredClone(capture);
 }
 
-export function verifyDualCaptureProof(root, runId, capture) {
-  return validateCaptureProof(root, runId, capture);
+export function verifyDualCaptureProof(root, runId, capture, expected = {}) {
+  return validateCaptureProof(root, runId, capture, expected);
 }
 
 export function blockDualIndependentReview(root, runId, options = {}) {
@@ -577,7 +576,11 @@ export function settleDualAttemptProcess(root, runId, options = {}) {
     || initial.attempt.process_proof !== null) {
     throw new Error('DUAL_REVIEW_PROCESS_ALREADY_SETTLED');
   }
-  const exactCapture = validateCaptureProof(root, runId, capture);
+  const exactCapture = validateCaptureProof(root, runId, capture, {
+    checkerEpisodeId: initial.checker.id,
+    attemptId: initial.attempt.attempt_id,
+    sourceClaimSha256: initial.attempt.source_claim_sha256,
+  });
   const exactProcess = validateProcessInput(process, initial.attempt);
   const payload = processReceiptPayload(
     root, runId, initial.aggregation, initial.attempt, exactCapture, exactProcess,
@@ -642,7 +645,11 @@ export function settleDualAttemptProcess(root, runId, options = {}) {
       || locked.attempt.cost_proof !== null || locked.attempt.report_proof !== null) {
       throw new Error('DUAL_REVIEW_PROCESS_ALREADY_SETTLED');
     }
-    validateCaptureProof(root, runId, exactCapture);
+    validateCaptureProof(root, runId, exactCapture, {
+      checkerEpisodeId: locked.checker.id,
+      attemptId: locked.attempt.attempt_id,
+      sourceClaimSha256: locked.attempt.source_claim_sha256,
+    });
     validateProcessInput(exactProcess, locked.attempt);
     const collision = locked.aggregation.attempts.some(attempt => (
       attempt !== locked.attempt && attempt.session_id === exactProcess.session_id
@@ -789,7 +796,11 @@ function verifyStoredProcessProof(root, runId, aggregation, attempt, lines) {
   const capture = attempt.capture_proof;
   const process = attempt.process_proof;
   const cost = attempt.cost_proof;
-  validateCaptureProof(root, runId, capture);
+  validateCaptureProof(root, runId, capture, {
+    checkerEpisodeId: aggregation.source_binding.checker_episode_id,
+    attemptId: attempt.attempt_id,
+    sourceClaimSha256: attempt.source_claim_sha256,
+  });
   if (!exactKeys(process, [
     'receipt_id', 'receipt', 'provider_id', 'model_id', 'session_id', 'claim_hash',
     'stdout_sha256', 'stderr_sha256',

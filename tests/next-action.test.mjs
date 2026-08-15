@@ -16,6 +16,7 @@ import {
 import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 function loop(over = {}) {
   const l = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
@@ -718,6 +719,7 @@ test('E: acking exactly blocking_episode_ids advances the next tick to dispatch_
     runtime: 'claude', goal: 'debt remedy', detected: { 'deep-review': true },
     now: new Date('2026-07-25T00:00:00.000Z'),
   });
+  migrateAuthenticLegacyTransport(root, runId);
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const worktree = '.claude/worktrees/remedy';
   mkdirSync(join(root, worktree), { recursive: true });
@@ -781,6 +783,7 @@ test('A′: the first maker of a new workstream-session run routes directly to d
 test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehension gate stays until human ack', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
@@ -811,6 +814,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
 test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode (end-to-end)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // A done maker so dispatchReview binds the checker to it (target_maker set) — the realistic review flow.

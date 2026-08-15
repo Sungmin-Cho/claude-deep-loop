@@ -559,7 +559,8 @@ const DUAL_ATTEMPT_KEYS = Object.freeze([
   'report_proof', 'cost_proof',
 ]);
 const DUAL_CAPTURE_KEYS = Object.freeze([
-  'capture_id', 'record_path', 'record_sha256', 'manifest_path',
+  'capture_id', 'run_id', 'checker_episode_id', 'attempt_id', 'source_claim_sha256',
+  'record_path', 'record_sha256', 'manifest_path',
   'source_manifest_sha256', 'skill_path', 'source_skill_sha256',
 ]);
 const DUAL_PROCESS_KEYS = Object.freeze([
@@ -596,11 +597,15 @@ function validOneTurnUsage(usage) {
     && usage.tokens === usage.input_tokens + usage.output_tokens;
 }
 
-function validDualCapture(proof) {
+function validDualCapture(proof, attempt, sourceBinding) {
   if (!exactObject(proof, DUAL_CAPTURE_KEYS)) return false;
   const { capture_id: captureId, ...binding } = proof;
   return SHA256.test(captureId || '')
     && captureId === contentHash(JSON.stringify(binding))
+    && proof.run_id === sourceBinding?.run_id
+    && proof.checker_episode_id === sourceBinding?.checker_episode_id
+    && proof.attempt_id === attempt?.attempt_id
+    && proof.source_claim_sha256 === attempt?.source_claim_sha256
     && [proof.record_path, proof.manifest_path, proof.skill_path]
       .every(path => portableRel(path, '.deep-loop/runs/'))
     && new Set([proof.record_path, proof.manifest_path, proof.skill_path]).size === 3
@@ -632,7 +637,7 @@ function validDualCost(proof, processProof) {
     && SHA256.test(proof.event_checksum || '') && validOneTurnUsage(proof.usage);
 }
 
-function validDualAttemptClaim(attempt) {
+function validDualAttemptClaim(attempt, sourceBinding) {
   if (!exactObject(attempt, DUAL_ATTEMPT_KEYS)) return false;
   if (![0, 1].includes(attempt.slot)
     || !REVIEW_ATTEMPT_ID.test(attempt.attempt_id || '')) return false;
@@ -648,7 +653,7 @@ function validDualAttemptClaim(attempt) {
     && attempt.process_proof === null && attempt.report_proof === null
     && attempt.cost_proof === null;
   const proofed = UUID.test(attempt.session_id || '')
-    && validDualCapture(attempt.capture_proof)
+    && validDualCapture(attempt.capture_proof, attempt, sourceBinding)
     && validDualProcess(attempt.process_proof, attempt)
     && validDualCost(attempt.cost_proof, attempt.process_proof);
   if (attempt.status === 'claimed') return empty || (proofed && attempt.report_proof === null);
@@ -695,7 +700,7 @@ function validateReviewAggregation(ep, errors) {
   }
   if (!validDualSourceBinding(aggregation.source_binding)) fail('source_binding is invalid');
   if (!Array.isArray(aggregation.attempts) || aggregation.attempts.length !== 2
-    || aggregation.attempts.some(attempt => !validDualAttemptClaim(attempt))) {
+    || aggregation.attempts.some(attempt => !validDualAttemptClaim(attempt, aggregation.source_binding))) {
     fail('attempts must contain exactly two valid claims');
   } else {
     if (aggregation.attempts.some((attempt, index) => attempt.slot !== index)) {
@@ -740,7 +745,7 @@ function validateReviewAggregation(ep, errors) {
     && aggregation.attempts.length === 2
     && aggregation.attempts.every(attempt => attempt.status === 'imported');
   const allProofedImported = allImported
-    && aggregation.attempts.every(attempt => validDualAttemptClaim(attempt));
+    && aggregation.attempts.every(attempt => validDualAttemptClaim(attempt, aggregation.source_binding));
   if (aggregation.aggregate_status === 'in_progress') {
     if (aggregation.aggregate_proof !== null) fail('in_progress aggregate_proof must be null');
     if (allImported) fail('in_progress aggregate cannot have both attempts imported');
@@ -789,12 +794,16 @@ const LAUNCHER_APPROVAL_KEYS = Object.freeze([
   'authenticode', 'approved_by', 'approved_at',
 ]);
 const CHECKER_APPROVAL_KEYS = Object.freeze([
-  'checker', 'reviewer_adapter', 'provider_id', 'canonical_path', 'sha256', 'version',
+  'checker', 'reviewer_adapter', 'provider_id', 'model_id', 'canonical_path', 'sha256', 'version',
   'platform', 'arch', 'source', 'authenticode', 'approved_by', 'approved_at',
 ]);
 const CHECKER_APPROVAL_ROUTES = Object.freeze({
-  codex: Object.freeze({ reviewer_adapter: 'codex-checker', provider_id: 'openai-codex' }),
-  grok: Object.freeze({ reviewer_adapter: 'grok-checker', provider_id: 'xai-grok' }),
+  codex: Object.freeze({
+    reviewer_adapter: 'codex-checker', provider_id: 'openai-codex', model_id: 'gpt-5.6-sol',
+  }),
+  grok: Object.freeze({
+    reviewer_adapter: 'grok-checker', provider_id: 'xai-grok', model_id: 'grok-4.6',
+  }),
 });
 const AUTHENTICODE_KEYS = Object.freeze(['status', 'signer', 'thumbprint']);
 
@@ -975,6 +984,7 @@ function validateCheckerExecutableApprovals(approvals, errors) {
     if (approval.checker !== checker) slotFail('checker must match its map key');
     if (approval.reviewer_adapter !== route.reviewer_adapter) slotFail('reviewer_adapter is route-mismatched');
     if (approval.provider_id !== route.provider_id) slotFail('provider_id is route-mismatched');
+    if (approval.model_id !== route.model_id) slotFail('model_id is route-mismatched');
     const path = approval.canonical_path;
     const windows = approval.platform === 'win32';
     if (!portableAbsolute(path) || /[\0\r\n]/.test(path || '')

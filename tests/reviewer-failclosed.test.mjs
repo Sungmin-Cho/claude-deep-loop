@@ -19,6 +19,7 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TRACKED_CONTRACT = join(here, '..', 'skills', 'deep-loop-workflow', 'references', 'contracts', 'HILLCLIMB-001.yaml');
@@ -31,6 +32,7 @@ function seedRun({ reviewer, flags = [], recipe, detected = { 'deep-review': tru
     ? { points: ['design', 'plan', 'implementation'], reviewer, mode: 'cross-model', flags, converge: true, max_review_rounds: 5, require_human_ack: true }
     : undefined;
   const { runId } = initRun(root, { runtime: 'claude', goal: recipe === 'harness-hill-climb' ? '하네스 개선' : 'g', recipe, review, detected, now: new Date('2026-07-10T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId, f: fence(runId) };
 }
 

@@ -15,7 +15,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
   "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
-  "expected_counts": { "L": 33, "B": 7, "X": 34, "E2": 150, "E3": 14, "E4": 21, "E5": 1, "E7": 86, "E8": 40 },
+  "expected_counts": { "L": 39, "B": 7, "X": 34, "E2": 163, "E3": 14, "E4": 21, "E5": 1, "E7": 86, "E8": 42 },
   "base_x_reasons": {
     "safety-downgrade": ["attended-launch.mjs#revokeAttendedLaunch", "spawn-optin.mjs#resetDesktop"],
     "boot-observation": ["detect-terminal.mjs#detectAndPersist"],
@@ -116,7 +116,28 @@ This tracked overlay resolves the pinned seed into the current execution surface
     { "id": "sessionstart-restore.mjs#resolveSessionStartProjectRoot", "classification": "E7", "reason": "expanded-read-pure-non-run-state" },
     { "id": "sessionstart-restore.mjs#resolveSessionStartRunId", "classification": "E7", "reason": "expanded-read-pure-non-run-state" },
     { "id": "state.mjs#withReadLock", "classification": "E2", "reason": "no-run-state-write" },
-    { "id": "state.mjs#writeCompactRestoreState", "classification": "E3", "reason": "infrastructure-primitive" }
+    { "id": "state.mjs#writeCompactRestoreState", "classification": "E3", "reason": "infrastructure-primitive" },
+    { "id": "codex-checker.mjs#buildCodexCheckerEntry", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "dual-checker.mjs#DUAL_CHECKER_ROUTES", "classification": "E8", "reason": "non-callable-value" },
+    { "id": "dual-checker.mjs#blockDualIndependentReview", "classification": "L", "reason": "leasecheck-dominated" },
+    { "id": "dual-checker.mjs#claimDualIndependentReview", "classification": "L", "reason": "leasecheck-dominated" },
+    { "id": "dual-checker.mjs#importDualReviewOutcome", "classification": "L", "reason": "leasecheck-dominated" },
+    { "id": "dual-checker.mjs#runDualCheckerProcesses", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "dual-checker.mjs#runDualStreamingProcessesSync", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "dual-checker.mjs#settleDualAttemptFailureCost", "classification": "L", "reason": "leasecheck-dominated" },
+    { "id": "dual-checker.mjs#settleDualAttemptProcess", "classification": "L", "reason": "leasecheck-dominated" },
+    { "id": "dual-checker.mjs#verifyDualCaptureProof", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "grok-checker.mjs#buildGrokCheckerPrompt", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "grok-checker.mjs#runIndependentGrokChecker", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "grok-runtime.mjs#buildGrokHeadlessEntry", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "review-import.mjs#parseDualReviewImport", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "review-import.mjs#prepareImportedDualReview", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "review.mjs#deriveIndependentReviewClaim", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "runtime-executable.mjs#CHECKER_EXECUTABLE_KINDS", "classification": "E8", "reason": "non-callable-value" },
+    { "id": "runtime-executable.mjs#approveCheckerExecutable", "classification": "L", "reason": "leasecheck-dominated" },
+    { "id": "runtime-executable.mjs#diagnoseCheckerExecutable", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "runtime-executable.mjs#revalidateTrustedCheckerExecutable", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "usage-parser.mjs#parseGrokJson", "classification": "E2", "reason": "no-run-state-write" }
   ]
 }
 <!-- F26-LIVE-JSON-END -->
