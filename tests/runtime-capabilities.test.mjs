@@ -75,8 +75,7 @@ test('current values match today behavior', () => {
   assert.equal(runtimeCapability('codex', 'version_probe'), 'codex');
 });
 
-// Task 11에서 해제 — 이 시점에는 의도적으로 호출부가 없다
-test('every capability field has at least one production consumer', { skip: true }, () => {
+test('every capability field has at least one production consumer', () => {
   // 필드 이름이 scripts/ 어딘가에서 실제로 조회되는지 확인한다. 소비자 없는 필드는
   // 테이블을 사실이 아닌 문서로 만든다.
   const sources = walkScripts().map(f => readFileSync(f, 'utf8')).join('\n');

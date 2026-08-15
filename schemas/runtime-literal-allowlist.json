@@ -2,6 +2,12 @@
   "$comment": "런타임 리터럴을 그대로 두는 지점의 선언. 등재는 '이 리터럴은 능력이 되어서는 안 된다'는 주장이며 리뷰 대상이다. docs/는 gitignore라 이 파일을 schemas/에 둔다.",
   "entries": [
     {
+      "file": "scripts/lib/runtime.mjs",
+      "line": 1,
+      "literal": "['claude', 'codex']",
+      "reason": "정경 SESSION_RUNTIMES 정의. 능력 테이블의 키가 여기서 파생되므로 리터럴 자체는 남아야 한다"
+    },
+    {
       "file": "scripts/lib/headless-host.mjs",
       "line": 640,
       "literal": "sessionRuntime(postCostLoop) !== 'codex'",
