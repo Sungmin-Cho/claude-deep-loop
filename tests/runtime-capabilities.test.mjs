@@ -78,9 +78,11 @@ test('current values match today behavior', () => {
 test('every capability field has at least one production consumer', () => {
   // 필드 이름이 scripts/ 어딘가에서 실제로 조회되는지 확인한다. 소비자 없는 필드는
   // 테이블을 사실이 아닌 문서로 만든다.
+  // Match actual lookups, not the table declaration (which writes `field: value`).
   const sources = walkScripts().map(f => readFileSync(f, 'utf8')).join('\n');
   for (const field of FIELDS) {
-    assert.ok(sources.includes(`'${field}'`), `capability ${field} has no consumer in scripts/`);
+    const lookup = new RegExp(`runtimeCapability\\([^\\n]*'${field}'`);
+    assert.match(sources, lookup, `capability ${field} has no runtimeCapability(...) consumer`);
   }
 });
 
