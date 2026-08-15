@@ -5,6 +5,21 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.16.1] — 2026-08-15
+
+### Changed
+
+- **런타임 의존 동작을 선언된 capability 테이블에서 조회한다.** `runtime === 'claude' ? A : B`
+  분기를 `RUNTIME_CAPABILITIES` + `runtimeCapability(runtime, field)`로 바꿨다. 테이블 값은
+  현행 동작의 전사이며 새 값을 정하지 않는다. `SESSION_RUNTIMES`는 `['claude', 'codex']`로
+  남고, fresh-loop 드리프트 fence와 불변식 6의 Codex 결제는 정체성 검사로 남겨
+  `schemas/runtime-literal-allowlist.json`에 사유와 함께 등재한다.
+
+### Fixed
+
+- **Windows 테스트가 allowlist 키를 POSIX 경로로 비교한다.** `path.relative()`가 내는
+  백슬래시 때문에 선언된 `scripts/lib/...` 항목이 매칭되지 않던 Node 24 칸을 고친다.
+
 ## [1.16.0] — 2026-08-12
 
 ### Added
