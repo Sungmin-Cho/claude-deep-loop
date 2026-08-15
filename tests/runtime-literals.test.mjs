@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PATTERN = /(?:[!=]==\s*'(?:claude|codex)'|\['claude',\s*'codex'\])/;
@@ -23,7 +23,7 @@ test('every runtime literal in scripts/ is converted or declared', () => {
   const undeclared = [];
 
   for (const file of walk(join(repoRoot, 'scripts'))) {
-    const rel = relative(repoRoot, file);
+    const rel = relative(repoRoot, file).split(sep).join('/');
     readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
       if (!PATTERN.test(line)) return;
       const key = `${rel}:${index + 1}`;
