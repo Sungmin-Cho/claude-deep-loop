@@ -81,7 +81,7 @@ function seededRnd(hex) {
 }
 
 export function buildReport(results, {
-  now = '2026-08-10T00:00:00Z', bank = [], out = null, kernelVersion = '1.16.0',
+  now = '2026-08-10T00:00:00Z', bank = [], out = null, kernelVersion = '1.16.1',
   barrierEvidence = undefined, enforceFullBank = false, profile = {
     id: 'deep-loop-current-v1.16', driver: 'fixture', model: 'none:fixture', harness: 'none:fixture',
   },

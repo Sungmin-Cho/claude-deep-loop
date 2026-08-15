@@ -967,12 +967,13 @@ function runTrustedVerifier(fixture, options = {}) {
   }
 }
 function runProductionWorkflowForTest(fixture, options = {}) {
+  const releaseVersion = JSON.parse(readFileSync(join(REPO_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version;
   const env = {
     ...process.env,
     DEEP_LOOP_CANDIDATE_ROOT: fixture.candidate, DEEP_LOOP_STAGE_PARENT: fixture.stageParent,
     DEEP_LOOP_PROJECT_ROOT: fixture.project, DEEP_LOOP_CANONICAL_PROJECT_ROOT: fixture.project,
     GITHUB_WORKSPACE: fixture.workspace, DEEP_LOOP_RUN_ID: fixture.runId,
-    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: '1.16.0',
+    DEEP_LOOP_EXPECTED_PLUGIN_NAME: 'deep-loop', DEEP_LOOP_EXPECTED_PLUGIN_VERSION: releaseVersion,
     DEEP_LOOP_EXPECTED_PLUGIN_SOURCE_SHA256: fixture.digest, ...options,
   };
   const sourceDir = mkdtempSync(join(tmpdir(), 'dl-production-source-'));

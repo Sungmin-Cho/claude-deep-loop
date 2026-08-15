@@ -93,7 +93,7 @@ test('validateResult requires the five verdicts and seven metadata fields', () =
     }],
     kernel_findings: [],
     profile_comparison_stub: [],
-    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.16', kernel_version: '1.16.0', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
+    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.16', kernel_version: '1.16.1', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
   };
   assert.equal(validateResult(result).ok, true);
   assert.equal(validateResult({ ...result, results: [{ verdict: 'nope' }] }).ok, false);
@@ -126,7 +126,7 @@ test('host status, row verification, and summary accounting are equivalent by co
       invariant_family: [4], host_binding: null,
     }],
     kernel_findings: [], profile_comparison_stub: [],
-    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.16', kernel_version: '1.16.0', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
+    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.16', kernel_version: '1.16.1', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
   };
   assert.equal(validateResult(base).ok, true);
   const launderedRow = structuredClone(base);
