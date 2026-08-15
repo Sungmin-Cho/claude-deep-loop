@@ -313,6 +313,23 @@ test('computeRunMetrics: 지표 exact 단언', () => {
   assert.equal(m.comprehension.ack_before_first_dispatch, true);
 });
 
+test('dual attempt outcomes do not double-count the one aggregate checker outcome', () => {
+  const loop = loopFixture();
+  loop.episodes = [{
+    id: '002-c', role: 'checker', kind: 'review', point: 'implementation',
+    workstream_id: 'ws-01', status: 'approved',
+  }];
+  const dualEvents = [
+    { seq: 1, ts: iso(T0 + 1), type: 'review-attempt-outcome', data: { episodeId: '002-c', verdict: 'APPROVE' }, checksum: 'a' },
+    { seq: 2, ts: iso(T0 + 2), type: 'review-attempt-outcome', data: { episodeId: '002-c', verdict: 'APPROVE' }, checksum: 'b' },
+    { seq: 3, ts: iso(T0 + 3), type: 'review-outcome', data: { episodeId: '002-c', verdict: 'APPROVE' }, checksum: 'c' },
+  ];
+  const metrics = computeRunMetrics(loop, dualEvents);
+  assert.deepEqual(metrics.review.per_point.implementation, {
+    checker_count: 1, approve: 1, request_changes: 0, concern: 0,
+  });
+});
+
 test('computeRunMetrics: maker 없는 run은 ack_before_first_dispatch=null', () => {
   const loop = { ...loopFixture(), episodes: [] };
   const m = computeRunMetrics(loop, []);

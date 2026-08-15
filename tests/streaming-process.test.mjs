@@ -211,6 +211,70 @@ test('runStreamingProcess feeds Codex JSONL incrementally without returning raw 
   assert.equal(Object.hasOwn(result, 'stdout'), false);
 });
 
+test('captured Codex identity requires one effective exact launch-model argument before spawn', async () => {
+  const { runStreamingProcess } = await streamingModule();
+  for (const argv of [
+    ['exec'],
+    ['exec', '--model', 'gpt-5.6-sol', '--model', 'mutant'],
+    ['exec', '--', '--model', 'gpt-5.6-sol'],
+    ['exec', '--model=gpt-5.6-sol'],
+    ['exec', '-c', 'model="mutant"', '--model', 'gpt-5.6-sol'],
+  ]) {
+    let spawns = 0;
+    const result = await runStreamingProcess({
+      bin: '/codex', argv, usageOutputKind: 'codex-jsonl', captureProviderIdentity: true,
+      captureProcessDiagnostic: true,
+    }, {
+      timeoutMs: 2_000,
+      spawnImpl: () => { spawns += 1; return controlledChild(); },
+    });
+    assert.equal(result.ok, false, JSON.stringify(argv));
+    assert.equal(result.reason, 'codex-provider-model-invalid', JSON.stringify(argv));
+    assert.equal(result.process_diagnostic.reason_code, 'process-config-invalid', JSON.stringify(argv));
+    assert.equal(spawns, 0, JSON.stringify(argv));
+  }
+});
+
+test('runStreamingProcess parses bounded Grok JSON with provider-emitted model/session identity', async () => {
+  const { runStreamingProcess } = await streamingModule();
+  const child = controlledChild();
+  const review = {
+    schema_version: '2.0', aggregation_id: 'aggregation-1', reviewer_id: 'grok-review',
+    reviewer_adapter: 'grok-checker', provider_id: 'xai-grok', model_id: 'grok-4.6',
+    session_id: '11111111-1111-4111-8111-111111111111', checker_episode_id: 'checker',
+    target_maker: 'maker', attempt_id: 'attempt', source_claim_sha256: 'a'.repeat(64),
+    verdict: 'APPROVE', report_body: 'APPROVE', artifacts: [],
+  };
+  const pending = runStreamingProcess({
+    bin: '/grok', argv: [], usageOutputKind: 'grok-json', captureFinalMessage: true,
+    captureProcessDiagnostic: true,
+  }, { timeoutMs: 2_000, spawnImpl: () => child });
+  child.stdout.emit('data', Buffer.from(JSON.stringify({
+    session_id: review.session_id,
+    model: 'grok-4.6',
+    num_turns: 1,
+    usage: { input_tokens: 19, output_tokens: 7 },
+    result: review,
+  })));
+  child.emit('close', 0);
+  const result = await pending;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.usage, {
+    num_turns: 1, input_tokens: 19, output_tokens: 7, tokens: 26,
+  });
+  assert.deepEqual(result.providerIdentity, {
+    session_id: review.session_id, model_id: 'grok-4.6',
+  });
+  assert.equal(result.finalMessage.equals(Buffer.from(JSON.stringify(review))), true);
+  assert.equal(result.process_streams.stdout.sha256, sha256(JSON.stringify({
+    session_id: review.session_id,
+    model: 'grok-4.6',
+    num_turns: 1,
+    usage: { input_tokens: 19, output_tokens: 7 },
+    result: review,
+  })), true);
+});
+
 test('streaming async and sync paths opt into exact Codex final-message bytes', async () => {
   const { runStreamingProcess, runStreamingProcessSync } = await streamingModule();
   const entry = {

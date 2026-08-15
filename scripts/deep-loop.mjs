@@ -72,8 +72,10 @@ import {
   recoverRelocatedRoot,
 } from './lib/project-root-recovery.mjs';
 import {
+  approveCheckerExecutable,
   approveLauncherExecutable,
   approveRuntimeExecutable,
+  diagnoseCheckerExecutable,
   diagnoseLauncherExecutable,
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
@@ -343,7 +345,7 @@ function projectRunResolution(result) {
 // explicit so adding a mutating dispatcher route requires updating this table.
 export const MUTATING_ROUTE_INVENTORY = Object.freeze([
   'root recovery acquire', 'root rebind', 'root recover',
-  'runtime-executable approve', 'launcher-executable approve',
+  'runtime-executable approve', 'checker-executable approve', 'launcher-executable approve',
   'checkpoint emit', 'checkpoint observe', 'checkpoint restore',
   'lease acquire', 'lease activate', 'lease reap', 'lease release',
   'workstream new', 'workstream set', 'workstream terminal',
@@ -735,6 +737,62 @@ const handlers = {
     if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
     const result = approveRuntimeExecutable(root, runId, {
       runtime,
+      candidatePath,
+      expectedCanonicalPath,
+      expectedSha256,
+      actor,
+      confirm: true,
+      fence: { owner, generation: Number(f.generation) },
+      now: parseNow(f),
+    });
+    json(result);
+    return 0;
+  },
+  'checker-executable': async (a) => {
+    const [verb, ...rest] = a;
+    const f = parseFlags(rest);
+    if (verb !== 'diagnose' && verb !== 'approve') {
+      error(`unknown checker-executable verb: ${verb ?? '<none>'}`);
+      return 2;
+    }
+    if (flagOccurrences(rest, 'path') > 1) {
+      throw new Error('CHECKER_EXECUTABLE_AMBIGUOUS: exactly one explicit candidate path is required');
+    }
+    const checker = reqStr(f, 'checker');
+    if (!checker) { error('USAGE: --checker <codex|grok> is required'); return 2; }
+    const candidatePath = reqStr(f, 'path');
+    if (!candidatePath) { error('USAGE: --path ABSOLUTE_NATIVE_CHECKER is required'); return 2; }
+
+    if (verb === 'diagnose') {
+      json(diagnoseCheckerExecutable(checker, { explicitPath: candidatePath }));
+      return 0;
+    }
+
+    const expectedCanonicalPath = reqStr(f, 'canonical-path');
+    if (!expectedCanonicalPath) { error('USAGE: --canonical-path ABSOLUTE_NATIVE_CHECKER is required'); return 2; }
+    const expectedSha256 = reqStr(f, 'sha256');
+    if (!expectedSha256) { error('USAGE: --sha256 LOWERCASE_SHA256 is required'); return 2; }
+    const actor = reqStr(f, 'actor');
+    if (!actor) { error('USAGE: --actor human is required'); return 2; }
+    if (f.confirm !== true && f.confirm !== 'true') {
+      error('CONFIRM_REQUIRED: checker executable approval requires --confirm');
+      return 2;
+    }
+    const owner = reqStr(f, 'owner');
+    if (!owner) { error('USAGE: --owner OWNER is required'); return 2; }
+    if (f.generation === undefined || f.generation === true) {
+      error('USAGE: --generation N is required');
+      return 2;
+    }
+    if (typeof f.generation !== 'string' || !/^(?:0|[1-9]\d*)$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) {
+      throw new Error('INVALID_GENERATION: must be a non-negative safe integer');
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('USAGE: --run-id RUN_ID is required'); return 2; }
+    const result = approveCheckerExecutable(root, runId, {
+      checker,
       candidatePath,
       expectedCanonicalPath,
       expectedSha256,

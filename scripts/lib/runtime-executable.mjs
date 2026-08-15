@@ -34,6 +34,16 @@ const PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const HASH_BUFFER_BYTES = 64 * 1024;
 const SAFE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 
+export const CHECKER_EXECUTABLE_KINDS = Object.freeze(['codex', 'grok']);
+const CHECKER_EXECUTABLE_ROUTES = Object.freeze({
+  codex: Object.freeze({ reviewer_adapter: 'codex-checker', provider_id: 'openai-codex' }),
+  grok: Object.freeze({ reviewer_adapter: 'grok-checker', provider_id: 'xai-grok' }),
+});
+const CHECKER_APPROVAL_KEYS = Object.freeze([
+  'checker', 'reviewer_adapter', 'provider_id', 'canonical_path', 'sha256', 'version',
+  'platform', 'arch', 'source', 'authenticode', 'approved_by', 'approved_at',
+]);
+
 const CODEX_TARGETS = Object.freeze({
   'darwin:arm64': Object.freeze({
     alias: '@openai/codex-darwin-arm64', suffix: 'darwin-arm64', triple: 'aarch64-apple-darwin', executable: 'codex',
@@ -428,6 +438,139 @@ function assertApprovableNativePath(path) {
   if (/\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path)) {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'script and shell shim executables cannot be approved');
   }
+}
+
+function validateCheckerExecutableKind(checker) {
+  if (!CHECKER_EXECUTABLE_KINDS.includes(checker)) {
+    throw runtimeError(
+      'CHECKER_EXECUTABLE_KIND_INVALID',
+      `checker must be one of ${CHECKER_EXECUTABLE_KINDS.join(', ')}`,
+    );
+  }
+  return checker;
+}
+
+function assertExpectedCheckerExecutableName(checker, path, platform) {
+  const name = platform === 'win32' ? win32.basename(path).toLowerCase() : basename(path);
+  const expected = platform === 'win32' ? `${checker}.exe` : checker;
+  if (name !== expected) {
+    throw runtimeError('CHECKER_EXECUTABLE_UNTRUSTED', `expected native ${expected} executable`);
+  }
+  try {
+    assertApprovableNativePath(path);
+  } catch {
+    throw runtimeError('CHECKER_EXECUTABLE_UNTRUSTED', 'script and shell shim executables cannot be approved');
+  }
+}
+
+function probeCheckerExecutableVersion(checker, executable, runVersion = spawnSync, expectedVersion = null) {
+  let result;
+  try {
+    result = runVersion(executable, ['--version'], {
+      encoding: 'utf8', shell: false, timeout: VERSION_TIMEOUT_MS, maxBuffer: VERSION_MAX_BUFFER,
+      windowsHide: true, env: {},
+    });
+  } catch {
+    throw runtimeError('CHECKER_EXECUTABLE_VERSION_INVALID', 'bounded direct --version probe failed');
+  }
+  if (!result || result.error || result.status !== 0 || result.signal) {
+    throw runtimeError('CHECKER_EXECUTABLE_VERSION_INVALID', 'bounded direct --version probe failed');
+  }
+  const stdout = typeof result.stdout === 'string' ? result.stdout : String(result.stdout || '');
+  const stderr = typeof result.stderr === 'string' ? result.stderr : String(result.stderr || '');
+  const normalized = stdout.replace(/\r\n/g, '\n').trimEnd();
+  const match = checker === 'codex'
+    ? /^codex-cli (\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$/.exec(normalized)
+    : /^grok (\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?) \([0-9a-f]{7,64}\) \[[A-Za-z0-9][A-Za-z0-9._-]{0,63}\]$/.exec(normalized);
+  if (!match || normalized.includes('\n') || stderr.trim() !== ''
+    || Buffer.byteLength(stdout) > 1024 || Buffer.byteLength(stderr) > 1024
+    || (expectedVersion !== null && match[1] !== expectedVersion)) {
+    throw runtimeError(
+      'CHECKER_EXECUTABLE_VERSION_INVALID',
+      `version output is not a matching bounded ${checker} line`,
+    );
+  }
+  return match[1];
+}
+
+function checkerExecutableSecurityIdentity(identity) {
+  return {
+    checker: identity.checker,
+    reviewer_adapter: identity.reviewer_adapter,
+    provider_id: identity.provider_id,
+    canonical_path: identity.canonical_path,
+    sha256: identity.sha256,
+    version: identity.version,
+    platform: identity.platform,
+    arch: identity.arch,
+    source: identity.source,
+    authenticode: identity.authenticode ?? null,
+  };
+}
+
+function assertCheckerExecutableIdentityShape(identity) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+    throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_INVALID', 'identity must be an object');
+  }
+  const keys = Object.keys(identity).sort();
+  if (keys.length !== CHECKER_APPROVAL_KEYS.length
+    || !CHECKER_APPROVAL_KEYS.every(key => keys.includes(key))) {
+    throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_INVALID', 'identity fields are incomplete or unknown');
+  }
+  validateCheckerExecutableKind(identity.checker);
+  const route = CHECKER_EXECUTABLE_ROUTES[identity.checker];
+  if (identity.reviewer_adapter !== route.reviewer_adapter || identity.provider_id !== route.provider_id) {
+    throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_INVALID', 'checker route identity is invalid');
+  }
+  absolutePath(identity.canonical_path, 'CHECKER_EXECUTABLE_IDENTITY_INVALID');
+  assertExpectedCheckerExecutableName(identity.checker, identity.canonical_path, identity.platform);
+  const approvedAt = new Date(identity.approved_at);
+  if (!/^[0-9a-f]{64}$/.test(identity.sha256 || '') || !SAFE_VERSION.test(identity.version || '')
+    || typeof identity.platform !== 'string' || identity.platform.length === 0
+    || typeof identity.arch !== 'string' || identity.arch.length === 0
+    || identity.source !== 'human-explicit' || identity.approved_by !== 'human'
+    || typeof identity.approved_at !== 'string' || !Number.isFinite(approvedAt.getTime())
+    || approvedAt.toISOString() !== identity.approved_at) {
+    throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_INVALID', 'identity fields are invalid');
+  }
+  if (identity.authenticode !== null
+    && (typeof identity.authenticode !== 'object' || Array.isArray(identity.authenticode))) {
+    throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_INVALID', 'authenticode identity is invalid');
+  }
+}
+
+function inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
+  platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+}) {
+  validateCheckerExecutableKind(checker);
+  assertTrustedRuntimeNamespace(candidatePath, platform);
+  const candidate = regularFile(candidatePath);
+  assertTrustedRuntimeNamespace(candidate.canonical, platform);
+  assertExpectedCheckerExecutableName(checker, candidate.canonical, platform);
+  const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '') || sha256 !== expectedSha256) {
+    throw runtimeError('CHECKER_EXECUTABLE_HASH_MISMATCH', 'exact lowercase SHA-256 does not match the executable');
+  }
+  const version = probeCheckerExecutableVersion(checker, candidate.canonical, runVersion);
+  const authenticode = normalizeAuthenticode(candidate.canonical, {
+    platform, authenticodeProbe, authenticodePolicy,
+  });
+  const after = regularFile(candidate.canonical);
+  if (after.canonical !== candidate.canonical
+    || hashRegularFile(after.canonical, after.stat) !== sha256) {
+    throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker executable changed during approval verification');
+  }
+  return {
+    checker,
+    ...CHECKER_EXECUTABLE_ROUTES[checker],
+    canonical_path: candidate.canonical,
+    sha256,
+    version,
+    platform,
+    arch,
+    source: 'human-explicit',
+    authenticode,
+  };
 }
 
 function inspectHumanApprovedExecutable(runtime, candidatePath, {
@@ -1246,5 +1389,185 @@ export function approveRuntimeExecutable(root, runId, {
       }
     },
     { floor: MUTATION_TURN_FLOOR });
+  return { ok: true, approval };
+}
+
+export function diagnoseCheckerExecutable(checker, options = {}) {
+  validateCheckerExecutableKind(checker);
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  assertTrustedRuntimeNamespace(options.explicitPath, platform);
+  const candidate = regularFile(options.explicitPath);
+  assertTrustedRuntimeNamespace(candidate.canonical, platform);
+  assertExpectedCheckerExecutableName(checker, candidate.canonical, platform);
+  const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
+  return {
+    approval_required: true,
+    identity: {
+      checker,
+      ...CHECKER_EXECUTABLE_ROUTES[checker],
+      canonical_path: candidate.canonical,
+      sha256,
+      version: null,
+      platform,
+      arch,
+      source: 'human-explicit',
+      authenticode: null,
+      version_probe: 'deferred-until-human-approval',
+    },
+  };
+}
+
+export function revalidateTrustedCheckerExecutable(identity, options = {}) {
+  assertCheckerExecutableIdentityShape(identity);
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  if (identity.platform !== platform || identity.arch !== arch) {
+    throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker platform or architecture changed');
+  }
+  try {
+    const candidate = regularFile(identity.canonical_path);
+    assertTrustedRuntimeNamespace(candidate.canonical, platform);
+    assertExpectedCheckerExecutableName(identity.checker, candidate.canonical, platform);
+    if (candidate.canonical !== identity.canonical_path
+      || hashRegularFile(candidate.canonical, candidate.stat) !== identity.sha256) {
+      throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker canonical path or hash changed');
+    }
+    const version = probeCheckerExecutableVersion(
+      identity.checker,
+      candidate.canonical,
+      options.runVersion ?? spawnSync,
+      identity.version,
+    );
+    const authenticode = identity.authenticode == null && options.authenticodePolicy == null
+      ? null
+      : normalizeAuthenticode(candidate.canonical, {
+        platform,
+        authenticodeProbe: options.authenticodeProbe,
+        authenticodePolicy: options.authenticodePolicy,
+      });
+    const current = { ...checkerExecutableSecurityIdentity(identity), version, authenticode };
+    if (JSON.stringify(current) !== JSON.stringify(checkerExecutableSecurityIdentity(identity))) {
+      throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker security identity changed');
+    }
+    return identity;
+  } catch (error) {
+    if (String(error?.message || error).startsWith('CHECKER_EXECUTABLE_DRIFT:')) throw error;
+    throw runtimeError('CHECKER_EXECUTABLE_DRIFT', String(error?.message || error));
+  }
+}
+
+function applyCheckerExecutableApproval(loop, checker, approval) {
+  const current = loop.autonomy.checker_executable_approvals;
+  loop.autonomy.checker_executable_approvals = {
+    ...(current === undefined ? { codex: null, grok: null } : current),
+    [checker]: approval,
+  };
+}
+
+export function approveCheckerExecutable(root, runId, {
+  checker,
+  candidatePath,
+  expectedCanonicalPath,
+  expectedSha256,
+  actor,
+  confirm,
+  fence,
+  now = Date.now(),
+  platform = process.platform,
+  arch = process.arch,
+  runVersion = spawnSync,
+  authenticodeProbe,
+  authenticodePolicy,
+} = {}) {
+  validateCheckerExecutableKind(checker);
+  if (actor !== 'human') {
+    throw runtimeError('INVALID_ACTOR', 'checker executable approval requires actor human');
+  }
+  if (confirm !== true) {
+    throw runtimeError('CONFIRM_REQUIRED', 'checker executable approval requires confirmation');
+  }
+  if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation) || fence.generation < 0) {
+    throw runtimeError('FENCE_REQUIRED', 'checker executable approval requires owner and generation');
+  }
+  assertTrustedRuntimeNamespace(candidatePath, platform);
+  assertTrustedRuntimeNamespace(expectedCanonicalPath, platform);
+  const expectedPath = absolutePath(expectedCanonicalPath, 'CHECKER_EXECUTABLE_PATH_INVALID');
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '')) {
+    throw runtimeError('CHECKER_EXECUTABLE_HASH_INVALID', 'exact lowercase SHA-256 is required');
+  }
+  const approvedAt = new Date(now);
+  if (!Number.isFinite(approvedAt.getTime())) {
+    throw runtimeError('INVALID_NOW', 'checker executable approval timestamp');
+  }
+
+  const identity = inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
+    platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+  });
+  if (identity.canonical_path !== expectedPath) {
+    throw runtimeError('CHECKER_EXECUTABLE_PATH_MISMATCH', 'diagnosed canonical path does not match approval');
+  }
+  const approval = {
+    ...checkerExecutableSecurityIdentity(identity),
+    approved_by: 'human',
+    approved_at: approvedAt.toISOString(),
+  };
+  const eventData = {
+    checker,
+    reviewer_adapter: approval.reviewer_adapter,
+    provider_id: approval.provider_id,
+    canonical_path: approval.canonical_path,
+    sha256: approval.sha256,
+    version: approval.version,
+    actor: 'human',
+  };
+
+  appendAnchored(
+    root,
+    runId,
+    { type: 'checker-executable-approved', data: eventData },
+    (loop) => { applyCheckerExecutableApproval(loop, checker, approval); },
+    (loop) => {
+      const lease = leaseCheck(loop, fence, 'recover');
+      if (!lease.ok) {
+        if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease'
+          || lease.reason === 'RUN_PAUSED' || lease.reason === 'lease-released'
+          || lease.reason === 'lease-releasing-carveout') {
+          throw runtimeError('CHECKER_EXECUTABLE_STATE_INVALID', lease.reason);
+        }
+        throw runtimeError('LEASE_FENCED', lease.reason);
+      }
+      const approvalMap = loop.autonomy?.checker_executable_approvals;
+      if (approvalMap !== undefined
+        && (approvalMap === null || typeof approvalMap !== 'object' || Array.isArray(approvalMap))) {
+        throw runtimeError('STATE_INVALID', 'autonomy.checker_executable_approvals is malformed');
+      }
+      const fresh = inspectHumanApprovedCheckerExecutable(checker, candidatePath, {
+        platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+      });
+      if (JSON.stringify(checkerExecutableSecurityIdentity(fresh))
+          !== JSON.stringify(checkerExecutableSecurityIdentity(identity))
+        || fresh.canonical_path !== expectedPath || fresh.sha256 !== expectedSha256) {
+        throw runtimeError('CHECKER_EXECUTABLE_DRIFT', 'checker changed before the approval transaction');
+      }
+      for (const [otherChecker, other] of Object.entries(approvalMap ?? {})) {
+        if (otherChecker === checker || other === null) continue;
+        if (other.canonical_path === approval.canonical_path || other.sha256 === approval.sha256) {
+          throw runtimeError('CHECKER_EXECUTABLE_IDENTITY_COLLISION', 'checker executable identities must be distinct');
+        }
+      }
+      const candidateLoop = structuredClone(loop);
+      applyCheckerExecutableApproval(candidateLoop, checker, approval);
+      const validation = validateLoop(candidateLoop);
+      if (!validation.ok) {
+        throw runtimeError(
+          'STATE_INVALID',
+          `checker executable approval would violate schema (${validation.errors.join('; ')})`,
+        );
+      }
+    },
+    { floor: MUTATION_TURN_FLOOR },
+  );
   return { ok: true, approval };
 }

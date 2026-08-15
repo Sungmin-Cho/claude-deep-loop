@@ -28,6 +28,22 @@ const NODE20_TRAVERSAL_SOURCES = [
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const exactKeys = (value, keys) => Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
 
+test('P7 verifier exposes exactly two import and observation inputs with dual fail-closed diagnostics', () => {
+  const source = readFileSync(VERIFIER, 'utf8');
+  for (const flag of [
+    '--import-input-a', '--import-input-b',
+    '--external-observation-a', '--external-observation-b',
+  ]) assert.match(source, new RegExp(flag));
+  assert.doesNotMatch(source, /'--import-input',|'--external-observation',/u);
+  for (const diagnostic of [
+    'WSU1_F26_DUAL_INPUT_COUNT', 'WSU1_F26_DUAL_IDENTITY_COLLISION',
+    'WSU1_F26_DUAL_SOURCE_MISMATCH', 'WSU1_F26_DUAL_REPORT_PROOF',
+    'WSU1_F26_DUAL_PROCESS_PROOF', 'WSU1_F26_DUAL_COST_PROOF',
+    'WSU1_F26_DUAL_OBSERVATION', 'WSU1_F26_DUAL_AGGREGATE_ORDER',
+    'WSU1_F26_SYNTHETIC_AGGREGATE',
+  ]) assert.match(source, new RegExp(diagnostic));
+});
+
 function checksumFor(seq, ts, type, data, prev) {
   return sha256(Buffer.from(`${seq}|${ts}|${type}|${JSON.stringify(data)}|${prev}`));
 }
@@ -69,11 +85,15 @@ function fixture({
   const worktree = join(projectRoot, ...worktreePrefix.split('/'));
   const runDir = join(projectRoot, '.deep-loop', 'runs', runId);
   const reviews = join(runDir, 'reviews');
+  const captures = join(runDir, 'checker-captures');
+  const processReceipts = join(runDir, 'preflight', 'process-receipts');
   const fixtures = join(worktree, 'tests', 'fixtures');
   const scripts = join(worktree, 'scripts');
   mkdirSync(join(scripts, 'nested'), { recursive: true });
   mkdirSync(fixtures, { recursive: true });
   mkdirSync(reviews, { recursive: true });
+  mkdirSync(captures, { recursive: true });
+  mkdirSync(processReceipts, { recursive: true });
   const imports = [];
   writeFileSync(join(scripts, 'nested', 'surface-nested.mjs'), 'export const nested = true;\n');
   if (scriptDecoy === 'file') {
@@ -121,13 +141,11 @@ function fixture({
   const workstreamId = 'ws-010';
   const makerId = '001-deep-work';
   const checkerId = '002-deep-review';
-  const attemptId = 'attempt-010';
-  const claim = {
+  const aggregationId = 'aggregation-010';
+  const sourceWithoutDigest = {
     run_id: runId,
-    reviewer_id: 'deep-review',
     checker_episode_id: checkerId,
     target_maker: makerId,
-    attempt_id: attemptId,
     workstream_id: workstreamId,
     point,
     project_root: projectRoot,
@@ -136,61 +154,271 @@ function fixture({
     lease_generation: 1,
     artifacts,
   };
-  const input = {
-    schema_version: '1.0',
-    reviewer_id: claim.reviewer_id,
-    checker_episode_id: checkerId,
-    target_maker: makerId,
-    attempt_id: attemptId,
-    verdict: 'APPROVE',
-    report_body: 'Reviewed residual semantics and conditional public fence wiring.',
-    artifacts,
-  };
-  const envelope = {
-    schema_version: '1.0',
-    envelope: {
-      producer: 'deep-loop',
-      artifact_kind: 'review-report',
-      schema: { name: 'review-report', version: '1.0' },
+  const sourceClaimSha256 = sha256(Buffer.from(JSON.stringify(sourceWithoutDigest)));
+  const sourceBinding = { ...sourceWithoutDigest, source_claim_sha256: sourceClaimSha256 };
+  const routes = [
+    {
+      slot: 0, attempt_id: 'attempt-010-a', reviewer_id: 'deep-review',
+      reviewer_adapter: 'codex-checker', provider_id: 'openai-codex',
+      model_id: 'gpt-5.6-sol', session_id: '11111111-1111-4111-8111-111111111111',
+    },
+    {
+      slot: 1, attempt_id: 'attempt-010-b', reviewer_id: 'grok-review',
+      reviewer_adapter: 'grok-checker', provider_id: 'xai-grok',
+      model_id: 'grok-4.6', session_id: '22222222-2222-4222-8222-222222222222',
+    },
+  ];
+  const usage = [
+    { num_turns: 1, input_tokens: 17, output_tokens: 5, tokens: 22 },
+    { num_turns: 1, input_tokens: 19, output_tokens: 7, tokens: 26 },
+  ];
+  const attempts = [];
+  const inputs = [];
+  const envelopes = [];
+  const reportPaths = [];
+  const receiptObjects = [];
+  for (const route of routes) {
+    const base = `.deep-loop/runs/${runId}/checker-captures/${route.attempt_id}`;
+    const captureFiles = {
+      record_path: `${base}/capture.json`,
+      manifest_path: `${base}/plugin.json`,
+      skill_path: `${base}/SKILL.md`,
+    };
+    const captureBytes = {
+      record_path: Buffer.from(`capture:${route.attempt_id}`),
+      manifest_path: Buffer.from(`manifest:${route.reviewer_id}`),
+      skill_path: Buffer.from(`skill:${route.reviewer_adapter}`),
+    };
+    for (const key of Object.keys(captureFiles)) {
+      const path = join(projectRoot, ...captureFiles[key].split('/'));
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, captureBytes[key]);
+    }
+    const captureBinding = {
+      record_path: captureFiles.record_path,
+      record_sha256: sha256(captureBytes.record_path),
+      manifest_path: captureFiles.manifest_path,
+      source_manifest_sha256: sha256(captureBytes.manifest_path),
+      skill_path: captureFiles.skill_path,
+      source_skill_sha256: sha256(captureBytes.skill_path),
+    };
+    const captureProof = {
+      capture_id: sha256(Buffer.from(JSON.stringify(captureBinding))), ...captureBinding,
+    };
+    const identity = {
+      aggregation_id: aggregationId,
+      slot: route.slot,
+      attempt_id: route.attempt_id,
+      reviewer_id: route.reviewer_id,
+      reviewer_adapter: route.reviewer_adapter,
+      provider_id: route.provider_id,
+      model_id: route.model_id,
+      source_claim_sha256: sourceClaimSha256,
+    };
+    const receiptPayload = {
+      contract: 'deep-loop-dual-checker-process-receipt-v1',
+      project_root: projectRoot,
       run_id: runId,
-      parent_run_id: null,
-      generated_at: '2026-08-10T00:00:00.000Z',
-      git: {},
-      provenance: {
-        source_artifacts: artifacts.map(({ path }) => path),
-        tool_versions: {},
-        review_binding: {
-          reviewer_id: input.reviewer_id,
-          checker_episode_id: checkerId,
-          target_maker: makerId,
-          attempt_id: attemptId,
-          artifacts,
+      ...identity,
+      session_id: route.session_id,
+      claim_hash: sha256(Buffer.from(JSON.stringify(identity))),
+      capture: captureProof,
+      stdout_sha256: sha256(Buffer.from(`stdout:${route.attempt_id}`)),
+      stderr_sha256: sha256(Buffer.from(`stderr:${route.attempt_id}`)),
+      usage: usage[route.slot],
+    };
+    const receipt = {
+      ...receiptPayload, receipt_id: sha256(Buffer.from(JSON.stringify(receiptPayload))),
+    };
+    receiptObjects.push(receipt);
+    const receiptRel = `.deep-loop/runs/${runId}/preflight/process-receipts/${receipt.receipt_id}-dual-checker.json`;
+    writeFileSync(join(projectRoot, ...receiptRel.split('/')), JSON.stringify(receipt, null, 2));
+    const input = {
+      schema_version: '2.0',
+      aggregation_id: aggregationId,
+      reviewer_id: route.reviewer_id,
+      reviewer_adapter: route.reviewer_adapter,
+      provider_id: route.provider_id,
+      model_id: route.model_id,
+      session_id: route.session_id,
+      checker_episode_id: checkerId,
+      target_maker: makerId,
+      attempt_id: route.attempt_id,
+      source_claim_sha256: sourceClaimSha256,
+      verdict: 'APPROVE',
+      report_body: `Independent review ${route.slot + 1} approved the bounded source contract.`,
+      artifacts,
+    };
+    inputs.push(input);
+    attempts.push({
+      ...route,
+      status: 'imported',
+      source_claim_sha256: sourceClaimSha256,
+      capture_proof: captureProof,
+      process_proof: {
+        receipt_id: receipt.receipt_id,
+        receipt: receiptRel,
+        provider_id: route.provider_id,
+        model_id: route.model_id,
+        session_id: route.session_id,
+        claim_hash: receipt.claim_hash,
+        stdout_sha256: receipt.stdout_sha256,
+        stderr_sha256: receipt.stderr_sha256,
+      },
+      report_proof: null,
+      cost_proof: {
+        receipt_id: receipt.receipt_id,
+        event_seq: route.slot + 1,
+        event_checksum: null,
+        usage: usage[route.slot],
+      },
+    });
+  }
+
+  for (const route of routes) {
+    const attempt = attempts[route.slot];
+    const input = inputs[route.slot];
+    const envelope = {
+      schema_version: '1.0',
+      envelope: {
+        producer: 'deep-loop',
+        artifact_kind: 'review-attempt-report',
+        schema: { name: 'review-attempt-report', version: '2.0' },
+        run_id: runId,
+        parent_run_id: null,
+        generated_at: `2026-08-10T00:00:0${route.slot + 2}.000Z`,
+        git: {},
+        provenance: {
+          source_artifacts: artifacts.map(({ path }) => path),
+          tool_versions: {},
+          review_binding: {
+            aggregation_id: aggregationId,
+            reviewer_id: route.reviewer_id,
+            reviewer_adapter: route.reviewer_adapter,
+            provider_id: route.provider_id,
+            model_id: route.model_id,
+            session_id: route.session_id,
+            checker_episode_id: checkerId,
+            target_maker: makerId,
+            attempt_id: route.attempt_id,
+            source_claim_sha256: sourceClaimSha256,
+            process_receipt_id: attempt.process_proof.receipt_id,
+            cost_event_seq: attempt.cost_proof.event_seq,
+            capture_sha256: attempt.capture_proof.record_sha256,
+            artifacts,
+          },
         },
       },
-    },
-    payload: { verdict: input.verdict, report_body: input.report_body },
-  };
-  const reportBytes = Buffer.from(JSON.stringify(envelope, null, 2));
-  const reportSha = sha256(reportBytes);
-  const reportPath = join(reviews, `${reportSha}.json`);
-  writeFileSync(reportPath, reportBytes);
-  const processContext = {
-    origin_owner: 'owner-010',
-    origin_generation: 1,
-    checker_episode_id: checkerId,
-    attempt_id: attemptId,
-    target_maker: makerId,
-    claim_hash: sha256(Buffer.from(JSON.stringify(claim))),
-  };
+      payload: { verdict: input.verdict, report_body: input.report_body },
+    };
+    const reportBytes = Buffer.from(JSON.stringify(envelope, null, 2));
+    const reportSha = sha256(reportBytes);
+    const reportPath = join(reviews, `${reportSha}.json`);
+    writeFileSync(reportPath, reportBytes);
+    envelopes.push(envelope);
+    reportPaths.push(reportPath);
+    attempt.report_proof = {
+      verdict: 'APPROVE',
+      report: `.deep-loop/runs/${runId}/reviews/${reportSha}.json`,
+      report_sha256: reportSha,
+      event_seq: route.slot + 3,
+      event_checksum: null,
+    };
+  }
+
   const ts = '2026-08-10T00:00:00.000Z';
-  const costData = {
-    source: 'codex-checker-measured',
-    process_kind: 'checker',
-    process_context: processContext,
+  const events = attempts.map(attempt => ({
+    ts,
+    type: 'cost',
+    data: {
+      turns: attempt.cost_proof.usage.num_turns,
+      tokens: attempt.cost_proof.usage.tokens,
+      reported_turns: attempt.cost_proof.usage.num_turns,
+      reported_tokens: attempt.cost_proof.usage.tokens,
+      input_tokens: attempt.cost_proof.usage.input_tokens,
+      output_tokens: attempt.cost_proof.usage.output_tokens,
+      owner: 'owner-010',
+      generation: 1,
+      source: `${attempt.provider_id}-dual-checker-measured`,
+      process_receipt_id: attempt.process_proof.receipt_id,
+      dual_checker_aggregation_id: aggregationId,
+      dual_checker_attempt_id: attempt.attempt_id,
+      provider_id: attempt.provider_id,
+      model_id: attempt.model_id,
+      session_id: attempt.session_id,
+    },
+  }));
+  for (const attempt of attempts) {
+    events.push({
+      ts,
+      type: 'review-attempt-outcome',
+      data: {
+        episodeId: checkerId,
+        aggregation_id: aggregationId,
+        attempt_id: attempt.attempt_id,
+        reviewer_id: attempt.reviewer_id,
+        reviewer_adapter: attempt.reviewer_adapter,
+        provider_id: attempt.provider_id,
+        model_id: attempt.model_id,
+        session_id: attempt.session_id,
+        target_maker: makerId,
+        verdict: 'APPROVE',
+        report: attempt.report_proof.report,
+        report_sha256: attempt.report_proof.report_sha256,
+        process_receipt_id: attempt.process_proof.receipt_id,
+        cost_event_seq: attempt.cost_proof.event_seq,
+        capture_sha256: attempt.capture_proof.record_sha256,
+        source_claim_sha256: sourceClaimSha256,
+      },
+    });
+  }
+  const aggregate = {
+    aggregation_id: aggregationId,
+    checker_episode_id: checkerId,
+    target_maker: makerId,
+    source_claim_sha256: sourceClaimSha256,
+    attempt_ids: attempts.map(attempt => attempt.attempt_id),
+    reviewer_ids: attempts.map(attempt => attempt.reviewer_id),
+    reviewer_adapters: attempts.map(attempt => attempt.reviewer_adapter),
+    provider_ids: attempts.map(attempt => attempt.provider_id),
+    model_ids: attempts.map(attempt => attempt.model_id),
+    session_ids: attempts.map(attempt => attempt.session_id),
+    attempt_reports: attempts.map(attempt => attempt.report_proof.report),
+    report_hashes: attempts.map(attempt => attempt.report_proof.report_sha256),
+    process_receipts: attempts.map(attempt => attempt.process_proof.receipt),
+    process_receipt_ids: attempts.map(attempt => attempt.process_proof.receipt_id),
+    cost_event_seqs: attempts.map(attempt => attempt.cost_proof.event_seq),
+    capture_ids: attempts.map(attempt => attempt.capture_proof.capture_id),
+    capture_records: attempts.map(attempt => attempt.capture_proof.record_path),
+    capture_hashes: attempts.map(attempt => attempt.capture_proof.record_sha256),
   };
-  const event = { seq: 1, ts, type: 'cost', data: costData };
-  event.checksum = checksumFor(event.seq, event.ts, event.type, event.data, 'GENESIS');
+  events.push({
+    ts,
+    type: 'review-outcome',
+    data: {
+      episodeId: checkerId,
+      verdict: 'APPROVE',
+      workstream_id: workstreamId,
+      point,
+      target_maker: makerId,
+      reviewer_id: 'dual-checker-aggregate',
+      review_source: 'imported-stdin',
+      ...aggregate,
+    },
+  });
+  let previous = 'GENESIS';
+  events.forEach((event, index) => {
+    event.seq = index + 1;
+    event.checksum = checksumFor(event.seq, event.ts, event.type, event.data, previous);
+    previous = event.checksum;
+  });
+  attempts.forEach((attempt, index) => {
+    attempt.cost_proof.event_checksum = events[index].checksum;
+    attempt.report_proof.event_checksum = events[index + 2].checksum;
+  });
+  const aggregateEvent = events.at(-1);
   const loop = {
+    schema_version: '0.5.0',
     run_id: runId,
     project: { root: projectRoot },
     autonomy: {
@@ -202,15 +430,40 @@ function fixture({
       { id: makerId, role: 'maker', kind: 'implementation', status: 'done', point,
         workstream_id: workstreamId, artifacts: artifacts.map(({ path }) => path) },
       { id: checkerId, role: 'checker', plugin: 'deep-review', status: 'approved', point,
-        workstream_id: workstreamId, target_maker: makerId, attempt_id: attemptId,
-        review_source: 'imported-stdin', review_claim: claim },
+        workstream_id: workstreamId, target_maker: makerId,
+        review_source: 'imported-stdin',
+        review_aggregation: {
+          schema_version: '2.0',
+          policy: 'ALL_LITERAL_APPROVE_2',
+          aggregation_id: aggregationId,
+          required_attempt_count: 2,
+          aggregate_status: 'approved',
+          source_binding: sourceBinding,
+          attempts,
+          aggregate_proof: {
+            source_claim_sha256: sourceClaimSha256,
+            attempt_ids: aggregate.attempt_ids,
+            report_hashes: aggregate.report_hashes,
+            process_receipt_ids: aggregate.process_receipt_ids,
+            cost_event_seqs: aggregate.cost_event_seqs,
+            capture_hashes: aggregate.capture_hashes,
+            final_event_seq: aggregateEvent.seq,
+            final_event_checksum: aggregateEvent.checksum,
+          },
+        } },
     ],
-    event_log_head: { seq: event.seq, checksum: event.checksum },
+    event_log_head: { seq: aggregateEvent.seq, checksum: aggregateEvent.checksum },
   };
-  const observation = {
+  const hostResult = `${JSON.stringify({
+    ok: true,
+    action: 'checker-complete',
+    checkerEpisodeId: checkerId,
+    attemptId: attempts[1].attempt_id,
+  })}\n`;
+  const observations = attempts.map((attempt, index) => ({
     schema_version: 1,
     observer_role: 'orchestrator',
-    observer_session_id: 'orchestrator-session-010',
+    observer_session_id: `orchestrator-session-010-${index}`,
     observed_at: '2026-08-10T00:01:00.000Z',
     project_root: projectRoot,
     worktree: worktreePrefix,
@@ -219,33 +472,34 @@ function fixture({
     point,
     maker_episode_id: makerId,
     checker_episode_id: checkerId,
+    attempt_id: attempt.attempt_id,
+    reviewer_id: attempt.reviewer_id,
+    reviewer_adapter: attempt.reviewer_adapter,
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    provider_session_id: attempt.session_id,
+    process_receipt_id: attempt.process_proof.receipt_id,
     cwd: projectRoot,
     argv: [
       process.execPath,
       join(worktree, 'scripts', 'hooks-impl', 'drive-headless.mjs'),
-      '--project-root',
-      projectRoot,
-      '--run-id',
-      runId,
+      '--project-root', projectRoot, '--run-id', runId,
     ],
     env: { DEEP_LOOP_UNATTENDED: '1' },
     started_at: '2026-08-10T00:00:00.000Z',
     finished_at: '2026-08-10T00:01:00.000Z',
     exit_code: 0,
-    stdout: `${JSON.stringify({
-      ok: true,
-      action: 'checker-complete',
-      checkerEpisodeId: checkerId,
-      attemptId,
-    })}\n`,
+    stdout: hostResult,
     stderr: '',
     checker_terminal_status: 'approved',
-  };
+  }));
   const loopPath = join(runDir, 'loop.json');
   const loopHashPath = join(runDir, '.loop.hash');
   const eventPath = join(runDir, 'event-log.jsonl');
-  const inputPath = join(projectRoot, 'manual-review.json');
-  const observationPath = join(projectRoot, 'external-observation.json');
+  const inputPaths = [join(projectRoot, 'manual-review-a.json'), join(projectRoot, 'manual-review-b.json')];
+  const observationPaths = [
+    join(projectRoot, 'external-observation-a.json'), join(projectRoot, 'external-observation-b.json'),
+  ];
   const receiptPath = join(projectRoot, 'receipt.json');
   const writeLoop = () => {
     const bytes = Buffer.from(`${JSON.stringify(loop, null, 2)}\n`);
@@ -253,13 +507,16 @@ function fixture({
     writeFileSync(loopHashPath, sha256(bytes));
   };
   writeLoop();
-  writeFileSync(eventPath, `${JSON.stringify(event)}\n`);
-  writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
-  writeFileSync(observationPath, `${JSON.stringify(observation, null, 2)}\n`);
+  writeFileSync(eventPath, `${events.map(event => JSON.stringify(event)).join('\n')}\n`);
+  inputPaths.forEach((path, index) => writeFileSync(path, `${JSON.stringify(inputs[index], null, 2)}\n`));
+  observationPaths.forEach((path, index) => writeFileSync(path, `${JSON.stringify(observations[index], null, 2)}\n`));
   writeFileSync(receiptPath, 'sentinel-receipt-bytes\n');
   return {
-    projectRoot, runId, worktreePrefix, worktree, runDir, reportPath, loopPath, loopHashPath, eventPath,
-    inputPath, observationPath, receiptPath, loop, event, input, observation, envelope,
+    projectRoot, runId, worktreePrefix, worktree, runDir,
+    reportPath: reportPaths[0], reportPaths, loopPath, loopHashPath, eventPath,
+    inputPath: inputPaths[0], inputPaths, observationPath: observationPaths[0], observationPaths,
+    receiptPath, loop, event: events[0], events, input: inputs[0], inputs,
+    observation: observations[0], observations, envelope: envelopes[0], envelopes,
     writeLoop,
     writeEvents: (events) => {
       let prev = 'GENESIS';
@@ -274,22 +531,20 @@ function fixture({
       writeFileSync(eventPath, events.map((item) => JSON.stringify(item)).join('\n') + (events.length ? '\n' : ''));
       writeLoop();
     },
-    writeObservation: () => writeFileSync(observationPath, `${JSON.stringify(observation, null, 2)}\n`),
+    writeObservation: (index = 0) => writeFileSync(
+      observationPaths[index], `${JSON.stringify(observations[index], null, 2)}\n`,
+    ),
+    writeInput: (index = 0) => writeFileSync(
+      inputPaths[index], `${JSON.stringify(inputs[index], null, 2)}\n`,
+    ),
   };
 }
 
 function invoke(fx, extraEnv = {}) {
   const sentinel = readFileSync(fx.receiptPath);
-  const result = spawnSync(process.execPath, [
-    VERIFIER,
-    '--project-root', fx.projectRoot,
-    '--run-id', fx.runId,
-    '--worktree', fx.worktreePrefix,
-    '--point', 'wsu1-f26-independent-review',
-    '--import-input', fx.inputPath,
-    '--external-observation', fx.observationPath,
-    '--receipt', fx.receiptPath,
-  ], { encoding: 'utf8', env: { ...process.env, ...extraEnv } });
+  const result = spawnSync(process.execPath, verifierArgs(fx), {
+    encoding: 'utf8', env: { ...process.env, ...extraEnv },
+  });
   assert.notEqual(result.status, 0, 'negative verifier fixture unexpectedly passed');
   assert.equal(result.stdout, '');
   assert.deepEqual(readFileSync(fx.receiptPath), sentinel, 'negative path changed receipt bytes');
@@ -321,8 +576,10 @@ function verifierArgs(fx) {
     '--run-id', fx.runId,
     '--worktree', fx.worktreePrefix,
     '--point', 'wsu1-f26-independent-review',
-    '--import-input', fx.inputPath,
-    '--external-observation', fx.observationPath,
+    '--import-input-a', fx.inputPaths[0],
+    '--import-input-b', fx.inputPaths[1],
+    '--external-observation-a', fx.observationPaths[0],
+    '--external-observation-b', fx.observationPaths[1],
     '--receipt', fx.receiptPath,
   ];
 }
@@ -593,27 +850,69 @@ test('F26-ACTUAL-NEG-RUN-INTEGRITY requires the anchored loop bytes without leak
     assert.doesNotMatch(result.stderr, /RAW-LOOP-SECRET|loop\.json|\.loop\.hash|wsu1-f26-verifier-/u, name);
   }
 });
-negative('F26-ACTUAL-NEG-MISSING-COST-EVENT', 'WSU1_F26_COST_EVENT_COUNT', (fx) => fx.writeEvents([]));
-negative('F26-ACTUAL-NEG-DUPLICATE-COST-EVENT', 'WSU1_F26_COST_EVENT_COUNT', (fx) => {
-  fx.writeEvents([fx.event, structuredClone(fx.event)]);
+negative('F26-ACTUAL-NEG-MISSING-COST-EVENT', 'WSU1_F26_DUAL_COST_PROOF', (fx) => fx.writeEvents([]));
+negative('F26-ACTUAL-NEG-DUPLICATE-COST-EVENT', 'WSU1_F26_DUAL_AGGREGATE_ORDER', (fx) => {
+  fx.writeEvents([...fx.events, structuredClone(fx.event)]);
 });
-negative('F26-ACTUAL-NEG-MISSING-REPORT', 'WSU1_F26_REPORT_MISSING', (fx) => unlinkSync(fx.reportPath));
-negative('F26-ACTUAL-NEG-CLAIM-CONTEXT-MISMATCH', 'WSU1_F26_CLAIM_CONTEXT', (fx) => {
-  fx.loop.episodes[1].review_claim.attempt_id = 'different-attempt'; fx.writeLoop();
+negative('F26-ACTUAL-NEG-MISSING-REPORT', 'WSU1_F26_DUAL_REPORT_PROOF', (fx) => unlinkSync(fx.reportPath));
+negative('F26-ACTUAL-NEG-CLAIM-CONTEXT-MISMATCH', 'WSU1_F26_DUAL_INPUT_COUNT', (fx) => {
+  fx.loop.episodes[1].review_aggregation.attempts[0].attempt_id = 'different-attempt'; fx.writeLoop();
 });
-negative('F26-ACTUAL-NEG-WORKTREE-K-MISMATCH', 'WSU1_F26_WORKTREE_K', (fx) => {
+negative('F26-ACTUAL-NEG-WORKTREE-K-MISMATCH', 'WSU1_F26_DUAL_SOURCE_MISMATCH', (fx) => {
   fx.loop.episodes[0].artifacts = fx.loop.episodes[0].artifacts.slice(1); fx.writeLoop();
 });
-negative('F26-ACTUAL-NEG-MISSING-OBSERVATION', 'WSU1_F26_OBSERVATION_MISSING', (fx) => {
+negative('F26-ACTUAL-NEG-DUAL-INPUT rejects a scalar-shaped or partial second import',
+  'WSU1_F26_DUAL_INPUT_COUNT', (fx) => {
+    fx.inputs[1].schema_version = '1.0'; fx.writeInput(1);
+  });
+negative('F26-ACTUAL-NEG-DUAL-IDENTITY-COLLISION rejects copied reviewer identity before proof use',
+  'WSU1_F26_DUAL_IDENTITY_COLLISION', (fx) => {
+    const attempts = fx.loop.episodes[1].review_aggregation.attempts;
+    attempts[1].reviewer_id = attempts[0].reviewer_id;
+    fx.inputs[1].reviewer_id = attempts[0].reviewer_id;
+    fx.writeInput(1); fx.writeLoop();
+  });
+negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects a missing independent process receipt',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    const attempt = fx.loop.episodes[1].review_aggregation.attempts[1];
+    unlinkSync(join(fx.projectRoot, ...attempt.process_proof.receipt.split('/')));
+  });
+negative('F26-ACTUAL-NEG-SYNTHETIC-AGGREGATE rejects any third review artifact',
+  'WSU1_F26_SYNTHETIC_AGGREGATE', (fx) => {
+    writeFileSync(join(fx.runDir, 'reviews', `${'f'.repeat(64)}.json`), '{}');
+  });
+test('F26-ACTUAL-NEG-DUAL-AGGREGATE-REVERSAL rejects aggregate publication before either attempt outcome', () => {
+  const fx = fixture();
+  const aggregate = fx.events.find(event => event.type === 'review-outcome');
+  const outcomes = fx.events.filter(event => event.type === 'review-attempt-outcome');
+  fx.writeEvents([fx.events[0], fx.events[1], outcomes[0], aggregate, outcomes[1]]);
+  const checker = fx.loop.episodes[1];
+  for (const attempt of checker.review_aggregation.attempts) {
+    const cost = fx.events.find(event => event.type === 'cost'
+      && event.data.dual_checker_attempt_id === attempt.attempt_id);
+    const outcome = fx.events.find(event => event.type === 'review-attempt-outcome'
+      && event.data.attempt_id === attempt.attempt_id);
+    attempt.cost_proof.event_seq = cost.seq;
+    attempt.cost_proof.event_checksum = cost.checksum;
+    attempt.report_proof.event_seq = outcome.seq;
+    attempt.report_proof.event_checksum = outcome.checksum;
+  }
+  checker.review_aggregation.aggregate_proof.final_event_seq = aggregate.seq;
+  checker.review_aggregation.aggregate_proof.final_event_checksum = aggregate.checksum;
+  fx.writeLoop();
+  const result = invoke(fx);
+  assert.equal(result.stderr, 'WSU1_F26_DUAL_AGGREGATE_ORDER\n');
+});
+negative('F26-ACTUAL-NEG-MISSING-OBSERVATION', 'WSU1_F26_DUAL_OBSERVATION', (fx) => {
   unlinkSync(fx.observationPath);
 });
-negative('F26-ACTUAL-NEG-OBSERVATION-NON-REGULAR', 'WSU1_F26_OBSERVATION_NON_REGULAR', (fx) => {
+negative('F26-ACTUAL-NEG-OBSERVATION-NON-REGULAR', 'WSU1_F26_DUAL_OBSERVATION', (fx) => {
   const target = join(fx.projectRoot, 'observation-target.json');
   writeFileSync(target, `${JSON.stringify(fx.observation)}\n`);
   unlinkSync(fx.observationPath);
   createFileSymlink(target, fx.observationPath);
 });
-negative('F26-ACTUAL-NEG-OBSERVATION-SHAPE', 'WSU1_F26_OBSERVATION_SHAPE', (fx) => {
+negative('F26-ACTUAL-NEG-OBSERVATION-SHAPE', 'WSU1_F26_DUAL_OBSERVATION', (fx) => {
   delete fx.observation.observed_at; fx.writeObservation();
 });
 test('F26-ACTUAL-NEG-OBSERVATION-CHRONOLOGY rejects impossible intervals and permits equality', () => {
@@ -626,7 +925,7 @@ test('F26-ACTUAL-NEG-OBSERVATION-CHRONOLOGY rejects impossible intervals and per
     mutate(fx);
     fx.writeObservation();
     const result = invokeWithoutReceipt(fx);
-    assert.equal(result.stderr, 'WSU1_F26_OBSERVATION_SHAPE\n', name);
+    assert.equal(result.stderr, 'WSU1_F26_DUAL_OBSERVATION\n', name);
   }
 
   const fx = fixture();
@@ -638,7 +937,7 @@ test('F26-ACTUAL-NEG-OBSERVATION-CHRONOLOGY rejects impossible intervals and per
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'WSU1_F26_ACTUAL_RUN_VERIFIED\n');
 });
-negative('F26-ACTUAL-NEG-OBSERVATION-RUN-MISMATCH', 'WSU1_F26_OBSERVATION_RUN', (fx) => {
+negative('F26-ACTUAL-NEG-OBSERVATION-RUN-MISMATCH', 'WSU1_F26_DUAL_OBSERVATION', (fx) => {
   fx.observation.run_id = '01DIFFERENTRUN00000000000000'; fx.writeObservation();
 });
 test('F26-ACTUAL-NEG-OBSERVATION-COMMAND-MISMATCH', () => {
@@ -654,10 +953,10 @@ test('F26-ACTUAL-NEG-OBSERVATION-COMMAND-MISMATCH', () => {
     mutate(fx);
     fx.writeObservation();
     const result = invoke(fx);
-    assert.equal(result.stderr, 'WSU1_F26_OBSERVATION_COMMAND\n', name);
+    assert.equal(result.stderr, 'WSU1_F26_DUAL_OBSERVATION\n', name);
   }
 });
-negative('F26-ACTUAL-NEG-OBSERVATION-RESULT-MISMATCH', 'WSU1_F26_OBSERVATION_RESULT', (fx) => {
+negative('F26-ACTUAL-NEG-OBSERVATION-RESULT-MISMATCH', 'WSU1_F26_DUAL_OBSERVATION', (fx) => {
   fx.observation.exit_code = 1; fx.writeObservation();
 });
 test('F26-ACTUAL-NEG-OBSERVATION-CHECKER-OUTCOME requires the exact durable checker identity', () => {
@@ -677,19 +976,22 @@ test('F26-ACTUAL-NEG-OBSERVATION-CHECKER-OUTCOME requires the exact durable chec
     fx.observation.stdout = `${JSON.stringify(outcome)}\n`;
     fx.writeObservation();
     const result = invoke(fx);
-    assert.equal(result.stderr, 'WSU1_F26_OBSERVATION_RESULT\n', name);
+    assert.equal(result.stderr, 'WSU1_F26_DUAL_OBSERVATION\n', name);
   }
 });
-negative('F26-ACTUAL-NEG-OBSERVATION-DIGEST-MISMATCH', 'WSU1_F26_OBSERVATION_DIGEST',
-  () => {}, () => ({ WSU1_F26_EXPECT_OBSERVATION_SHA256: '0'.repeat(64) }));
+negative('F26-ACTUAL-NEG-OBSERVATION-DIGEST-MISMATCH', 'WSU1_F26_DUAL_OBSERVATION',
+  () => {}, () => ({ WSU1_F26_EXPECT_OBSERVATION_A_SHA256: '0'.repeat(64) }));
 
-test('STEP0-3 verifier test fixture guards the exact external-observation 20-key contract', () => {
+test('STEP0-3 verifier test fixture guards the exact dual external-observation contract', () => {
   const fx = fixture();
   assert.equal(exactKeys(fx.observation, [
     'schema_version', 'observer_role', 'observer_session_id', 'observed_at', 'project_root', 'worktree',
-    'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id', 'cwd', 'argv', 'env',
-    'started_at', 'finished_at', 'exit_code', 'stdout', 'stderr', 'checker_terminal_status',
+    'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id',
+    'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'provider_session_id',
+    'process_receipt_id', 'cwd', 'argv', 'env', 'started_at', 'finished_at', 'exit_code',
+    'stdout', 'stderr', 'checker_terminal_status',
   ]), true);
+  assert.notEqual(fx.observations[0].attempt_id, fx.observations[1].attempt_id);
 });
 
 test('STEP0-3 traversal sources use only baseline Node20 Dirent fields and non-recursive readdir', () => {
@@ -731,7 +1033,7 @@ test('STEP0-3 verifier includes an ignored imported regular script in the cohere
 test('F26-ACTUAL-NEG-WORKTREE-K rejects omission of an ignored imported regular script', () => {
   const fx = fixture({ ignoredRuntime: true, includeIgnoredArtifact: false });
   const result = invokeWithoutReceipt(fx);
-  assert.equal(result.stderr, 'WSU1_F26_WORKTREE_K\n');
+  assert.equal(result.stderr, 'WSU1_F26_DUAL_SOURCE_MISMATCH\n');
 });
 
 test('F26-ACTUAL-NEG-WORKTREE-K rejects a nonregular scripts entry', {
@@ -905,15 +1207,19 @@ test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atom
   const receipt = JSON.parse(readFileSync(fx.receiptPath, 'utf8'));
   assert.deepEqual(Object.keys(receipt), [
     'run_id', 'workstream_id', 'worktree_prefix', 'point', 'scope', 'reviewed_source_sha256',
-    'live_classification_sha256', 'evidence_rows_sha256', 'checker_cost_event',
-    'external_observation', 'report_path', 'report_sha256', 'envelope',
+    'live_classification_sha256', 'evidence_rows_sha256', 'source_claim_sha256',
+    'attempts', 'aggregate_event', 'host_result_sha256',
   ]);
   assert.equal(receipt.run_id, fx.runId);
   assert.equal(receipt.scope, 'X_E_RESIDUAL_REASON_SEMANTICS+L_CONDITIONAL_DOMINANCE');
-  assert.equal(receipt.checker_cost_event.claim_hash,
-    sha256(Buffer.from(JSON.stringify(fx.loop.episodes[1].review_claim))));
-  assert.equal(receipt.external_observation.observer_session_id, fx.observation.observer_session_id);
-  assert.deepEqual(receipt.envelope, fx.envelope);
+  assert.equal(receipt.attempts.length, 2);
+  assert.deepEqual(receipt.attempts.map(item => item.report_sha256),
+    fx.loop.episodes[1].review_aggregation.attempts.map(item => item.report_proof.report_sha256));
+  assert.deepEqual(receipt.attempts.map(item => item.process_receipt_id),
+    fx.loop.episodes[1].review_aggregation.attempts.map(item => item.process_proof.receipt_id));
+  assert.equal(receipt.aggregate_event.seq,
+    fx.loop.episodes[1].review_aggregation.aggregate_proof.final_event_seq);
+  assert.equal(Object.hasOwn(receipt, 'envelope'), false, 'receipt must not embed reviewer prose');
 });
 
 test('STEP0-3 verifier receipt publication flushes its parent before and after temp unlink', () => {

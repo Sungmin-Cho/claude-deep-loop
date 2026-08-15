@@ -100,6 +100,39 @@ test('runIndependentCodexChecker builds one fresh read-only schema-bound shell-f
   assert.equal(result.finalMessage.equals(expectedFinal), true);
 });
 
+test('dual Codex checker entry fixes the concrete model and requests trusted provider identity capture', async () => {
+  const { buildCodexCheckerEntry, buildCodexCheckerPrompt } = await checkerModule();
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-dual-codex-entry-')));
+  const skillPath = join(root, 'SKILL.md');
+  const schemaPath = join(root, 'review-import.schema.json');
+  writeFileSync(skillPath, '---\nname: deep-review-loop\n---\n');
+  writeFileSync(schemaPath, '{}');
+  const dualContract = {
+    schema_version: '2.0', aggregation_id: 'aggregation-1', reviewer_id: 'deep-review',
+    reviewer_adapter: 'codex-checker', provider_id: 'openai-codex', model_id: 'gpt-5.6-sol',
+    session_id: 'provider-session-bound-by-host', checker_episode_id: '002-deep-review',
+    target_maker: '001-deep-work', attempt_id: 'attempt-codex',
+    source_claim_sha256: 'a'.repeat(64), artifacts: [],
+    review_context: { workstream_id: 'ws-1', point: 'implementation', project_root: root },
+  };
+  const entry = buildCodexCheckerEntry({
+    executable: '/opt/codex/bin/codex', projectRoot: root, checkerSkillPath: skillPath,
+    outputSchemaPath: schemaPath, contract: dualContract, env: {},
+    model: 'gpt-5.6-sol', effort: 'xhigh', captureProviderIdentity: true,
+  });
+  assert.equal(entry.captureProviderIdentity, true);
+  assert.equal(entry.captureFinalMessage, true);
+  assert.equal(entry.captureProcessDiagnostic, true);
+  assert.equal(entry.usageOutputKind, 'codex-jsonl');
+  assert.deepEqual(entry.argv.slice(entry.argv.indexOf('--model'), entry.argv.indexOf('--model') + 2), [
+    '--model', 'gpt-5.6-sol',
+  ]);
+  assert.ok(entry.argv.includes('model_reasoning_effort="xhigh"'));
+  const prompt = buildCodexCheckerPrompt({ ...dualContract, checker_skill_path: skillPath });
+  assert.match(prompt, /aggregation_id, reviewer_id, reviewer_adapter, provider_id, model_id, session_id, checker_episode_id, target_maker, attempt_id, source_claim_sha256, and artifacts/i);
+  assert.match(prompt, /review_context is context-only/i);
+});
+
 test('runIndependentCodexChecker preserves an exact measured turn when the final message is missing', async () => {
   const { runIndependentCodexChecker } = await checkerModule();
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-missing-final-')));

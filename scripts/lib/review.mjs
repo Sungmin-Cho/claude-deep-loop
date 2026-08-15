@@ -134,7 +134,7 @@ function checkIndependentReviewFence(loop, fence) {
   return runtime;
 }
 
-function claimedContext(root, loop, episodeId, attemptId, fence) {
+export function deriveIndependentReviewClaim(root, loop, episodeId, attemptId, fence) {
   const runtime = checkIndependentReviewFence(loop, fence);
   const context = snapshotContext(loop, episodeId);
   const checker = context.checker;
@@ -204,7 +204,7 @@ export function claimIndependentReview(root, runId, options = {}) {
       }
       if (loop.status !== 'running') throw new Error('REVIEW_CLAIM_RUN_NOT_RUNNING');
       if (checker?.status !== 'pending') throw new Error('REVIEW_CLAIM_NOT_PENDING');
-      context = claimedContext(root, loop, episodeId, attemptId, fence);
+      context = deriveIndependentReviewClaim(root, loop, episodeId, attemptId, fence);
       Object.assign(eventData, {
         reviewer_id: context.claim.reviewer_id,
         target_maker: context.claim.target_maker,
@@ -273,7 +273,7 @@ export function blockIndependentReview(root, runId, options = {}) {
     if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
       throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
     }
-    locked = claimedContext(root, loop, episodeId, attemptId, fence);
+    locked = deriveIndependentReviewClaim(root, loop, episodeId, attemptId, fence);
     if (!sameJson(checker.review_claim, locked.claim)) throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
   });
   return { ok: true, status: 'blocked', reason: safeReason };
@@ -289,7 +289,7 @@ export function revalidateIndependentReviewClaim(root, runId, options = {}) {
   if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
     throw new Error('REVIEW_CLAIM_MISMATCH');
   }
-  const fresh = claimedContext(root, loop, episodeId, attemptId, fence);
+  const fresh = deriveIndependentReviewClaim(root, loop, episodeId, attemptId, fence);
   if (!sameJson(checker.review_claim, fresh.claim)) throw new Error('REVIEW_CLAIM_MISMATCH');
   return { ok: true, claim: fresh.claim };
 }

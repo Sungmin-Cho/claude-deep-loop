@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   CHECKER_PROCESS_PHASES,
   CHECKER_PROCESS_REASON_CODES,
@@ -20,6 +21,97 @@ function minimalValid() {
     session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null, takeover_kind: null }, consumed_milestones: [], sessions: [] },
     workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
   };
+}
+
+const digest = value => createHash('sha256').update(value).digest('hex');
+
+function dualAggregationLoop({ approved = false } = {}) {
+  const loop = minimalValid();
+  loop.schema_version = '0.5.0';
+  const sourceWithoutDigest = {
+    run_id: 'R', checker_episode_id: 'checker', target_maker: 'maker',
+    workstream_id: 'ws', point: 'implementation', project_root: '/repo',
+    runtime: 'codex', lease_owner: 'OWNER', lease_generation: 1,
+    artifacts: [{ path: 'worktree/artifact.txt', sha256: 'a'.repeat(64) }],
+  };
+  const sourceClaimSha256 = digest(JSON.stringify(sourceWithoutDigest));
+  const attempts = [
+    {
+      slot: 0, attempt_id: 'attempt-one', reviewer_id: 'deep-review',
+      reviewer_adapter: 'codex-checker', provider_id: 'openai-codex',
+      model_id: 'gpt-5.6-sol', session_id: null,
+      source_claim_sha256: sourceClaimSha256, status: 'claimed',
+      capture_proof: null, process_proof: null, report_proof: null, cost_proof: null,
+    },
+    {
+      slot: 1, attempt_id: 'attempt-two', reviewer_id: 'grok-review',
+      reviewer_adapter: 'grok-checker', provider_id: 'xai-grok',
+      model_id: 'grok-4.6', session_id: null,
+      source_claim_sha256: sourceClaimSha256, status: 'claimed',
+      capture_proof: null, process_proof: null, report_proof: null, cost_proof: null,
+    },
+  ];
+  const aggregation = {
+    schema_version: '2.0', policy: 'ALL_LITERAL_APPROVE_2',
+    aggregation_id: 'aggregation-11111111-1111-4111-8111-111111111111',
+    required_attempt_count: 2, aggregate_status: 'in_progress',
+    source_binding: { ...sourceWithoutDigest, source_claim_sha256: sourceClaimSha256 },
+    attempts, aggregate_proof: null,
+  };
+  if (approved) {
+    for (const [index, attempt] of attempts.entries()) {
+      const suffix = String(index + 1);
+      const captureBinding = {
+        record_path: `.deep-loop/runs/R/checker-captures/${suffix}/capture.json`,
+        record_sha256: suffix.repeat(64),
+        manifest_path: `.deep-loop/runs/R/checker-captures/${suffix}/plugin.json`,
+        source_manifest_sha256: '3'.repeat(64),
+        skill_path: `.deep-loop/runs/R/checker-captures/${suffix}/SKILL.md`,
+        source_skill_sha256: '5'.repeat(64),
+      };
+      attempt.session_id = index === 0
+        ? '11111111-1111-4111-8111-111111111111'
+        : '22222222-2222-4222-8222-222222222222';
+      attempt.capture_proof = {
+        capture_id: digest(JSON.stringify(captureBinding)), ...captureBinding,
+      };
+      attempt.process_proof = {
+        receipt_id: `${index + 7}`.repeat(64),
+        receipt: `.deep-loop/runs/R/preflight/process-receipts/${suffix}.json`,
+        provider_id: attempt.provider_id, model_id: attempt.model_id,
+        session_id: attempt.session_id, claim_hash: (index === 0 ? '9' : 'b').repeat(64),
+        stdout_sha256: `${index + 1}`.repeat(64), stderr_sha256: `${index + 2}`.repeat(64),
+      };
+      attempt.cost_proof = {
+        receipt_id: attempt.process_proof.receipt_id,
+        event_seq: 10 + index, event_checksum: `${index + 3}`.repeat(64),
+        usage: { num_turns: 1, input_tokens: 3, output_tokens: 2, tokens: 5 },
+      };
+      attempt.report_proof = {
+        verdict: 'APPROVE',
+        report: `.deep-loop/runs/R/reviews/${index + 4}.json`,
+        report_sha256: `${index + 4}`.repeat(64),
+        event_seq: 20 + index, event_checksum: `${index + 5}`.repeat(64),
+      };
+      attempt.status = 'imported';
+    }
+    aggregation.aggregate_status = 'approved';
+    aggregation.aggregate_proof = {
+      source_claim_sha256: sourceClaimSha256,
+      attempt_ids: attempts.map(attempt => attempt.attempt_id),
+      report_hashes: attempts.map(attempt => attempt.report_proof.report_sha256),
+      process_receipt_ids: attempts.map(attempt => attempt.process_proof.receipt_id),
+      cost_event_seqs: attempts.map(attempt => attempt.cost_proof.event_seq),
+      capture_hashes: attempts.map(attempt => attempt.capture_proof.record_sha256),
+      final_event_seq: 30, final_event_checksum: 'f'.repeat(64),
+    };
+  }
+  loop.episodes = [{
+    id: 'checker', role: 'checker', plugin: 'deep-review',
+    status: approved ? 'approved' : 'in_progress',
+    request_rel: 'episodes/checker/request.md', review_aggregation: aggregation,
+  }];
+  return loop;
 }
 
 function validActivationReceipt() {
@@ -57,6 +149,82 @@ const OPEN_WORKSTREAM_SCOPE = Object.freeze({
 
 test('valid loop.json passes', () => {
   assert.equal(validate(minimalValid()).ok, true);
+});
+
+test('v0.5 dual aggregation requires the exact closed 2.0 claim shape and null claim-time sessions', () => {
+  const valid = dualAggregationLoop();
+  assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
+  for (const [label, mutate] of [
+    ['missing policy', value => { delete value.policy; }],
+    ['wrong envelope version', value => { value.schema_version = '1.0'; }],
+    ['wrong attempt count', value => { value.required_attempt_count = 1; }],
+    ['slot collision', value => { value.attempts[1].slot = 0; }],
+    ['reviewer collision', value => { value.attempts[1].reviewer_id = value.attempts[0].reviewer_id; }],
+    ['adapter collision', value => { value.attempts[1].reviewer_adapter = value.attempts[0].reviewer_adapter; }],
+    ['provider collision', value => { value.attempts[1].provider_id = value.attempts[0].provider_id; }],
+    ['model collision', value => { value.attempts[1].model_id = value.attempts[0].model_id; }],
+    ['slot route swap', value => {
+      for (const key of ['reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id']) {
+        [value.attempts[0][key], value.attempts[1][key]] = [value.attempts[1][key], value.attempts[0][key]];
+      }
+    }],
+    ['untrusted claim session', value => { value.attempts[0].session_id = '11111111-1111-4111-8111-111111111111'; }],
+    ['source digest drift', value => { value.source_binding.source_claim_sha256 = 'f'.repeat(64); }],
+    ['empty source artifacts', value => {
+      value.source_binding.artifacts = [];
+      const { source_claim_sha256: _digest, ...source } = value.source_binding;
+      value.source_binding.source_claim_sha256 = digest(JSON.stringify(source));
+      for (const attempt of value.attempts) {
+        attempt.source_claim_sha256 = value.source_binding.source_claim_sha256;
+      }
+    }],
+    ['legacy source evidence is not part of the exact v2 source binding', value => {
+      value.source_binding.evidence = {
+        insights_path: '.deep-loop/insights/01TEST-insights.json', emit_ulid: '01TEST',
+        producer_run_id: 'R', sha256: 'b'.repeat(64), candidates: [],
+      };
+      const { source_claim_sha256: _digest, ...source } = value.source_binding;
+      value.source_binding.source_claim_sha256 = digest(JSON.stringify(source));
+      for (const attempt of value.attempts) {
+        attempt.source_claim_sha256 = value.source_binding.source_claim_sha256;
+      }
+    }],
+    ['extra aggregate key', value => { value.synthetic_report = 'forbidden'; }],
+  ]) {
+    const candidate = structuredClone(valid);
+    mutate(candidate.episodes[0].review_aggregation);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+  const legacy = structuredClone(valid);
+  legacy.schema_version = '0.4.0';
+  assert.equal(validate(legacy).ok, false, 'legacy scalar state cannot carry dual evidence');
+
+  const blocked = structuredClone(valid);
+  blocked.episodes[0].status = 'blocked';
+  blocked.episodes[0].review_aggregation.aggregate_status = 'blocked';
+  assert.equal(validate(blocked).ok, true, validate(blocked).errors.join('; '));
+  blocked.episodes[0].status = 'in_progress';
+  assert.equal(validate(blocked).ok, false, 'blocked aggregate must also block the outer checker');
+});
+
+test('approved dual aggregate binds two distinct exact capture/process/report/cost proofs', () => {
+  const valid = dualAggregationLoop({ approved: true });
+  assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
+  for (const [label, mutate] of [
+    ['session collision', value => { value.attempts[1].session_id = value.attempts[0].session_id; value.attempts[1].process_proof.session_id = value.attempts[0].session_id; }],
+    ['capture collision', value => { value.attempts[1].capture_proof = structuredClone(value.attempts[0].capture_proof); }],
+    ['process collision', value => { value.attempts[1].process_proof.receipt_id = value.attempts[0].process_proof.receipt_id; value.attempts[1].cost_proof.receipt_id = value.attempts[0].process_proof.receipt_id; }],
+    ['report collision', value => { value.attempts[1].report_proof.report_sha256 = value.attempts[0].report_proof.report_sha256; }],
+    ['cost collision', value => { value.attempts[1].cost_proof.event_seq = value.attempts[0].cost_proof.event_seq; }],
+    ['missing cost', value => { value.attempts[1].cost_proof = null; }],
+    ['non-approve', value => { value.attempts[1].report_proof.verdict = 'CONCERN'; }],
+    ['aggregate report mismatch', value => { value.aggregate_proof.report_hashes[1] = 'e'.repeat(64); }],
+    ['premature outer status', value => { value.aggregate_status = 'in_progress'; value.aggregate_proof = null; }],
+  ]) {
+    const candidate = structuredClone(valid);
+    mutate(candidate.episodes[0].review_aggregation);
+    assert.equal(validate(candidate).ok, false, label);
+  }
 });
 
 test('schema registry includes activation lifecycle event kinds', () => {
@@ -825,6 +993,23 @@ function validLauncherApproval(kind = 'wt') {
   };
 }
 
+function validCheckerApproval(checker = 'codex') {
+  return {
+    checker,
+    reviewer_adapter: checker === 'codex' ? 'codex-checker' : 'grok-checker',
+    provider_id: checker === 'codex' ? 'openai-codex' : 'xai-grok',
+    canonical_path: checker === 'codex' ? '/opt/codex/bin/codex' : '/opt/grok/bin/grok',
+    sha256: (checker === 'codex' ? 'c' : 'd').repeat(64),
+    version: checker === 'codex' ? '0.144.1' : '1.0.4',
+    platform: 'darwin',
+    arch: 'arm64',
+    source: 'human-explicit',
+    authenticode: null,
+    approved_by: 'human',
+    approved_at: checker === 'codex' ? '2026-08-15T08:01:00.000Z' : '2026-08-15T08:02:00.000Z',
+  };
+}
+
 test('new runs initialize a null immutable runtime executable approval and valid approval state passes', () => {
   const loop = buildInitialLoop({ runtime: 'codex', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-11T00:00:00Z') });
   assert.equal(loop.autonomy.runtime_executable_approval, null);
@@ -853,6 +1038,54 @@ test('runtime executable approval schema rejects malformed identity, authority, 
     const result = validate(loop);
     assert.equal(result.ok, false, label);
     assert.ok(result.errors.some(error => /runtime_executable_approval/.test(error)), `${label}: ${result.errors.join('; ')}`);
+  }
+});
+
+test('checker executable approval map is exact, route-bound, distinct, legacy-readable, and immutable', () => {
+  const loop = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-08-15T08:00:00Z') });
+  assert.deepEqual(loop.autonomy.checker_executable_approvals, { codex: null, grok: null });
+  loop.autonomy.checker_executable_approvals = {
+    codex: validCheckerApproval('codex'),
+    grok: validCheckerApproval('grok'),
+  };
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  assert.equal(classifyPatch('autonomy.checker_executable_approvals', loop.autonomy.checker_executable_approvals), 'forbid');
+  assert.equal(classifyPatch('autonomy.checker_executable_approvals.grok', validCheckerApproval('grok')), 'forbid');
+
+  delete loop.autonomy.checker_executable_approvals;
+  assert.equal(validate(loop).ok, true, 'legacy state without checker approvals must stay readable');
+});
+
+test('checker executable approval schema rejects malformed routes, fields, and cross-provider collisions', () => {
+  const exact = () => ({
+    codex: validCheckerApproval('codex'),
+    grok: validCheckerApproval('grok'),
+  });
+  const mutations = [
+    ['map null', () => null],
+    ['missing slot', map => ({ codex: map.codex })],
+    ['unknown slot', map => ({ ...map, claude: null })],
+    ['primitive slot', map => ({ ...map, grok: 'approved' })],
+    ['checker mismatch', map => ({ ...map, grok: { ...map.grok, checker: 'codex' } })],
+    ['adapter mismatch', map => ({ ...map, grok: { ...map.grok, reviewer_adapter: 'codex-checker' } })],
+    ['provider mismatch', map => ({ ...map, grok: { ...map.grok, provider_id: 'openai-codex' } })],
+    ['wrong basename', map => ({ ...map, grok: { ...map.grok, canonical_path: '/opt/grok/bin/not-grok' } })],
+    ['script path', map => ({ ...map, grok: { ...map.grok, canonical_path: '/opt/grok/bin/grok.js' } })],
+    ['uppercase hash', map => ({ ...map, grok: { ...map.grok, sha256: 'D'.repeat(64) } })],
+    ['bad version', map => ({ ...map, grok: { ...map.grok, version: 'stable' } })],
+    ['wrong source', map => ({ ...map, grok: { ...map.grok, source: 'path-search' } })],
+    ['not human', map => ({ ...map, grok: { ...map.grok, approved_by: 'agent' } })],
+    ['bad timestamp', map => ({ ...map, grok: { ...map.grok, approved_at: 'today' } })],
+    ['unknown field', map => ({ ...map, grok: { ...map.grok, trusted: true } })],
+    ['same canonical path', map => ({ ...map, grok: { ...map.grok, canonical_path: map.codex.canonical_path } })],
+    ['same executable hash', map => ({ ...map, grok: { ...map.grok, sha256: map.codex.sha256 } })],
+  ];
+  for (const [label, mutate] of mutations) {
+    const loop = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-08-15T08:00:00Z') });
+    loop.autonomy.checker_executable_approvals = mutate(exact());
+    const result = validate(loop);
+    assert.equal(result.ok, false, label);
+    assert.ok(result.errors.some(error => /checker_executable_approvals/.test(error)), `${label}: ${result.errors.join('; ')}`);
   }
 });
 

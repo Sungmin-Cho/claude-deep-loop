@@ -20,6 +20,146 @@ import { isOpenScope } from './session-scope.mjs';
 // while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
 export { MUTATION_TURN_FLOOR };
 
+const RELOCATED_DUAL_RECEIPT = /^([a-f0-9]{64})-dual-checker(-failed)?\.json$/;
+const RELOCATED_DUAL_SUCCESS_KEYS = Object.freeze([
+  'contract', 'project_root', 'run_id', 'aggregation_id', 'slot', 'attempt_id',
+  'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'source_claim_sha256',
+  'session_id', 'claim_hash', 'capture', 'stdout_sha256', 'stderr_sha256', 'usage',
+  'receipt_id',
+]);
+const RELOCATED_DUAL_FAILURE_KEYS = Object.freeze([
+  'contract', 'project_root', 'run_id', 'aggregation_id', 'attempt_id', 'reviewer_id',
+  'reviewer_adapter', 'expected_provider_id', 'expected_model_id', 'observed_provider_id',
+  'observed_model_id', 'observed_session_id', 'source_claim_sha256', 'claim_hash',
+  'failure_reason', 'usage', 'stdout_sha256', 'stderr_sha256', 'receipt_id',
+]);
+
+function exactRelocatedKeys(value, keys) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function relocatedDualClaimHash(aggregation, attempt) {
+  return contentHash(JSON.stringify({
+    aggregation_id: aggregation.aggregation_id,
+    slot: attempt.slot,
+    attempt_id: attempt.attempt_id,
+    reviewer_id: attempt.reviewer_id,
+    reviewer_adapter: attempt.reviewer_adapter,
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    source_claim_sha256: attempt.source_claim_sha256,
+  }));
+}
+
+function inventoryRelocatedDualReceipt({
+  name, bytes, receipt, runId, loop, oldRootDigest, lines, batchReceiptIds,
+}) {
+  const match = name.match(RELOCATED_DUAL_RECEIPT);
+  if (!match) return false;
+  const failure = match[2] === '-failed';
+  const payload = { ...receipt };
+  delete payload.receipt_id;
+  if ((failure
+    ? !exactRelocatedKeys(receipt, RELOCATED_DUAL_FAILURE_KEYS)
+    : !exactRelocatedKeys(receipt, RELOCATED_DUAL_SUCCESS_KEYS))
+    || receipt.receipt_id !== match[1]
+    || receipt.receipt_id !== contentHash(JSON.stringify(payload))
+    || receipt.run_id !== runId || receipt.project_root !== loop.project.root
+    || projectRootDigest(receipt.project_root) !== oldRootDigest
+    || !isMeasuredOneTurnUsage(receipt.usage)
+    || !bytes.equals(Buffer.from(JSON.stringify(receipt, null, 2)))
+    || batchReceiptIds.has(receipt.receipt_id)) {
+    throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+  }
+  const checker = (loop.episodes || []).find(episode => (
+    episode.review_aggregation?.aggregation_id === receipt.aggregation_id
+  ));
+  const aggregation = checker?.review_aggregation;
+  const attempts = aggregation?.attempts?.filter(attempt => attempt.attempt_id === receipt.attempt_id);
+  if (loop.schema_version !== '0.5.0' || checker?.role !== 'checker'
+    || aggregation?.schema_version !== '2.0' || attempts?.length !== 1) {
+    throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+  }
+  const attempt = attempts[0];
+  if (receipt.reviewer_id !== attempt.reviewer_id
+    || receipt.reviewer_adapter !== attempt.reviewer_adapter
+    || receipt.source_claim_sha256 !== attempt.source_claim_sha256
+    || receipt.claim_hash !== relocatedDualClaimHash(aggregation, attempt)) {
+    throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+  }
+  const costs = lines.filter(event => event.type === 'cost'
+    && event.data?.process_receipt_id === receipt.receipt_id);
+  if (costs.length !== 1) throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+  let expectedCost;
+  if (!failure) {
+    if (receipt.contract !== 'deep-loop-dual-checker-process-receipt-v1'
+      || receipt.slot !== attempt.slot || receipt.provider_id !== attempt.provider_id
+      || receipt.model_id !== attempt.model_id || receipt.session_id !== attempt.session_id
+      || receipt.receipt_id !== attempt.process_proof?.receipt_id
+      || receipt.claim_hash !== attempt.process_proof?.claim_hash
+      || receipt.stdout_sha256 !== attempt.process_proof?.stdout_sha256
+      || receipt.stderr_sha256 !== attempt.process_proof?.stderr_sha256
+      || JSON.stringify(receipt.capture) !== JSON.stringify(attempt.capture_proof)
+      || !sameMeasuredUsage(receipt.usage, attempt.cost_proof?.usage)
+      || costs[0].seq !== attempt.cost_proof?.event_seq
+      || costs[0].checksum !== attempt.cost_proof?.event_checksum) {
+      throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+    }
+    expectedCost = {
+      turns: receipt.usage.num_turns,
+      tokens: receipt.usage.tokens,
+      reported_turns: receipt.usage.num_turns,
+      reported_tokens: receipt.usage.tokens,
+      input_tokens: receipt.usage.input_tokens,
+      output_tokens: receipt.usage.output_tokens,
+      owner: aggregation.source_binding.lease_owner,
+      generation: aggregation.source_binding.lease_generation,
+      source: `${receipt.provider_id}-dual-checker-measured`,
+      process_receipt_id: receipt.receipt_id,
+      dual_checker_aggregation_id: aggregation.aggregation_id,
+      dual_checker_attempt_id: attempt.attempt_id,
+      provider_id: receipt.provider_id,
+      model_id: receipt.model_id,
+      session_id: receipt.session_id,
+    };
+  } else {
+    if (receipt.contract !== 'deep-loop-dual-checker-failed-process-receipt-v1'
+      || receipt.expected_provider_id !== attempt.provider_id
+      || receipt.expected_model_id !== attempt.model_id || attempt.status !== 'blocked') {
+      throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+    }
+    expectedCost = {
+      turns: receipt.usage.num_turns,
+      tokens: receipt.usage.tokens,
+      reported_turns: receipt.usage.num_turns,
+      reported_tokens: receipt.usage.tokens,
+      input_tokens: receipt.usage.input_tokens,
+      output_tokens: receipt.usage.output_tokens,
+      owner: aggregation.source_binding.lease_owner,
+      generation: aggregation.source_binding.lease_generation,
+      source: `${attempt.provider_id}-dual-checker-failed-measured`,
+      process_receipt_id: receipt.receipt_id,
+      dual_checker_aggregation_id: aggregation.aggregation_id,
+      dual_checker_attempt_id: attempt.attempt_id,
+      provider_id: receipt.observed_provider_id,
+      model_id: receipt.observed_model_id,
+      session_id: receipt.observed_session_id,
+      expected_provider_id: receipt.expected_provider_id,
+      expected_model_id: receipt.expected_model_id,
+      dual_checker_failure_reason: receipt.failure_reason,
+    };
+  }
+  if (JSON.stringify(costs[0].data) !== JSON.stringify(expectedCost)) {
+    throw new Error('PROJECT_ROOT_ACCOUNTING_CONFLICT');
+  }
+  batchReceiptIds.add(receipt.receipt_id);
+  return true;
+}
+
 export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDigest) {
   const dir = join(runDir(root, runId), 'preflight', 'process-receipts');
   if (!existsSync(dir)) return { settledReceiptIds: [], costEvents: [] };
@@ -29,8 +169,18 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
   const batchReceiptIds = new Set();
   for (const name of readdirSync(dir).filter(value => value.endsWith('.json')).sort()) {
     let receipt;
-    try { receipt = JSON.parse(readFileSync(join(dir, name), 'utf8')); }
+    let bytes;
+    try {
+      bytes = readFileSync(join(dir, name));
+      receipt = JSON.parse(bytes.toString('utf8'));
+    }
     catch { throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE'); }
+    if (inventoryRelocatedDualReceipt({
+      name, bytes, receipt, runId, loop, oldRootDigest, lines, batchReceiptIds,
+    })) {
+      settledReceiptIds.push(receipt.receipt_id);
+      continue;
+    }
     const payload = { ...receipt };
     delete payload.receipt_id;
     const expectedName = receipt?.process_kind && receipt?.context

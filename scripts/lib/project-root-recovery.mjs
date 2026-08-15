@@ -651,26 +651,51 @@ function clearRelocatedLaunchAuthority(loop, storedRoot, iso) {
   };
 }
 
+function reviewAttemptIds(loop) {
+  return [...new Set((loop.episodes || []).flatMap(episode => [
+    ...(typeof episode.review_claim?.attempt_id === 'string'
+      ? [episode.review_claim.attempt_id] : []),
+    ...(episode.review_aggregation?.schema_version === '2.0'
+      && Array.isArray(episode.review_aggregation.attempts)
+      ? episode.review_aggregation.attempts
+        .map(attempt => attempt.attempt_id)
+        .filter(value => typeof value === 'string')
+      : []),
+  ]))].sort();
+}
+
 function invalidatedReviewAttempts(loop, iso) {
   const ids = [];
   for (const episode of loop.episodes || []) {
     const claim = episode.review_claim;
-    if (!claim || typeof claim !== 'object') continue;
-    const attemptId = claim.attempt_id;
-    episode.invalidated_review_claims = [
-      ...(episode.invalidated_review_claims || []),
-      {
-        ...structuredClone(claim),
-        invalidated_at: iso,
-        reason: 'project-root-relocated',
-      },
-    ];
-    delete episode.review_claim;
-    delete episode.attempt_id;
+    if (claim && typeof claim === 'object') {
+      const attemptId = claim.attempt_id;
+      episode.invalidated_review_claims = [
+        ...(episode.invalidated_review_claims || []),
+        {
+          ...structuredClone(claim),
+          invalidated_at: iso,
+          reason: 'project-root-relocated',
+        },
+      ];
+      delete episode.review_claim;
+      delete episode.attempt_id;
+      episode.status = 'blocked';
+      episode.block_reason = 'project-root-relocated';
+      episode.needs_human = true;
+      if (typeof attemptId === 'string') ids.push(attemptId);
+    }
+    const aggregation = episode.review_aggregation;
+    if (aggregation?.schema_version !== '2.0' || !Array.isArray(aggregation.attempts)) continue;
+    for (const attempt of aggregation.attempts) {
+      if (typeof attempt.attempt_id === 'string') ids.push(attempt.attempt_id);
+      if (attempt.status === 'claimed') attempt.status = 'blocked';
+    }
+    aggregation.aggregate_status = 'blocked';
+    aggregation.aggregate_proof = null;
     episode.status = 'blocked';
     episode.block_reason = 'project-root-relocated';
     episode.needs_human = true;
-    if (typeof attemptId === 'string') ids.push(attemptId);
   }
   return [...new Set(ids)].sort();
 }
@@ -899,10 +924,7 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
     projectRootDigest(snapshot.data.project.root),
   );
   const settledIds = accounting.settledReceiptIds;
-  const invalidatedIds = (snapshot.data.episodes || [])
-    .map(episode => episode.review_claim?.attempt_id)
-    .filter(value => typeof value === 'string')
-    .sort();
+  const invalidatedIds = reviewAttemptIds(snapshot.data);
   const operation = freezeOperation(candidateCanonical, runId, snapshot, classified, iso);
   const eventData = {
     operation_id: operation.operationId,

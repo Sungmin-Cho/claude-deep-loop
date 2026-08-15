@@ -42,6 +42,9 @@ function seed({ reviewer = 'deep-review', newPolicy = false } = {}) {
     env: {}, platform: 'linux', run: () => ({ code: 1 }),
   });
   if (!newPolicy) migrateAuthenticLegacyTransport(root, runId);
+  const scalarState = readState(root, runId).data;
+  delete scalarState.autonomy.checker_executable_approvals;
+  writeState(root, runId, scalarState);
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const worktree = '.claude/worktrees/w';
   const artifact = `${worktree}/artifact.txt`;

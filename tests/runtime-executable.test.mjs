@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -703,6 +704,137 @@ test('human exact path+SHA approval accepts native Claude.exe and persists the b
   assert.deepEqual(readState(root, runId).data.autonomy.runtime_executable_approval, result.approval);
   assert.ok(calls.length >= 2, 'approval performs initial and fresh in-lock direct probes');
   assert.ok(calls.every(call => call.bin === executable && call.options.shell === false));
+});
+
+test('dual checker executables require separate exact human approvals and fresh shell-free revalidation', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-dual-checker-approval-')));
+  const executables = {
+    codex: join(root, process.platform === 'win32' ? 'codex.exe' : 'codex'),
+    grok: join(root, process.platform === 'win32' ? 'grok.exe' : 'grok'),
+  };
+  writeFileSync(executables.codex, 'approved codex checker bytes');
+  writeFileSync(executables.grok, 'approved grok checker bytes');
+  chmodSync(executables.codex, 0o755);
+  chmodSync(executables.grok, 0o755);
+  const sha256 = Object.fromEntries(Object.entries(executables).map(([checker, path]) => [
+    checker,
+    createHash('sha256').update(readFileSync(path)).digest('hex'),
+  ]));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-08-15T08:00:00.000Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const legacyState = readState(root, runId).data;
+  delete legacyState.autonomy.checker_executable_approvals;
+  writeState(root, runId, legacyState);
+  assert.equal(readState(root, runId).data.autonomy.checker_executable_approvals, undefined,
+    'legacy v0.4 state may omit the new exact approval map');
+  const calls = [];
+  const runVersion = (bin, argv, options) => {
+    calls.push({ bin, argv, options });
+    return bin === executables.codex
+      ? { status: 0, signal: null, stdout: 'codex-cli 0.144.1\n', stderr: '' }
+      : { status: 0, signal: null, stdout: 'grok 1.0.4 (d846eb93d94d) [stable]\n', stderr: '' };
+  };
+
+  for (const checker of ['codex', 'grok']) {
+    const before = durableApprovalBytes(root, runId);
+    const diagnosed = runtimeExecutable.diagnoseCheckerExecutable(checker, {
+      explicitPath: executables[checker], platform: process.platform, arch: process.arch,
+    });
+    assert.equal(diagnosed.approval_required, true);
+    assert.equal(diagnosed.identity.checker, checker);
+    assert.equal(diagnosed.identity.canonical_path, executables[checker]);
+    assert.equal(diagnosed.identity.sha256, sha256[checker]);
+    assert.equal(diagnosed.identity.version, null);
+    assert.deepEqual(durableApprovalBytes(root, runId), before, 'diagnosis must be read-only');
+
+    const approved = runtimeExecutable.approveCheckerExecutable(root, runId, {
+      checker,
+      candidatePath: executables[checker],
+      expectedCanonicalPath: executables[checker],
+      expectedSha256: sha256[checker],
+      actor: 'human',
+      confirm: true,
+      fence: { owner: runId, generation: 1 },
+      now: Date.parse(`2026-08-15T08:0${checker === 'codex' ? '1' : '2'}:00.000Z`),
+      platform: process.platform,
+      arch: process.arch,
+      runVersion,
+    }).approval;
+    assert.equal(approved.checker, checker);
+    assert.equal(approved.reviewer_adapter, checker === 'codex' ? 'codex-checker' : 'grok-checker');
+    assert.equal(approved.provider_id, checker === 'codex' ? 'openai-codex' : 'xai-grok');
+    assert.equal(approved.version, checker === 'codex' ? '0.144.1' : '1.0.4');
+    assert.deepEqual(runtimeExecutable.revalidateTrustedCheckerExecutable(approved, {
+      platform: process.platform, arch: process.arch, runVersion,
+    }), approved);
+  }
+
+  const approvals = readState(root, runId).data.autonomy.checker_executable_approvals;
+  assert.deepEqual(Object.keys(approvals), ['codex', 'grok']);
+  assert.notEqual(approvals.codex.canonical_path, approvals.grok.canonical_path);
+  assert.notEqual(approvals.codex.sha256, approvals.grok.sha256);
+  assert.ok(calls.length >= 6, 'each approval is probed before and under lock, then revalidated');
+  assert.ok(calls.every(call => call.argv.length === 1 && call.argv[0] === '--version'));
+  assert.ok(calls.every(call => call.options.shell === false));
+  const events = readFileSync(join(root, '.deep-loop', 'runs', runId, 'event-log.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(
+    events.filter(event => event.type === 'checker-executable-approved').map(event => event.data.checker),
+    ['codex', 'grok'],
+  );
+});
+
+test('checker executable approval rejects malformed provider version output without durable mutation', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-grok-checker-invalid-version-')));
+  const executable = join(root, process.platform === 'win32' ? 'grok.exe' : 'grok');
+  writeFileSync(executable, 'grok checker bytes');
+  chmodSync(executable, 0o755);
+  const expectedSha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-08-15T08:00:00.000Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const before = durableApprovalBytes(root, runId);
+
+  assert.throws(
+    () => runtimeExecutable.approveCheckerExecutable(root, runId, {
+      checker: 'grok', candidatePath: executable, expectedCanonicalPath: executable,
+      expectedSha256, actor: 'human', confirm: true,
+      fence: { owner: runId, generation: 1 },
+      platform: process.platform, arch: process.arch,
+      runVersion: () => ({
+        status: 0, signal: null, stdout: 'grok 1.0.4\nforged second line\n', stderr: '',
+      }),
+    }),
+    /CHECKER_EXECUTABLE_VERSION_INVALID/,
+  );
+  assert.deepEqual(durableApprovalBytes(root, runId), before);
+});
+
+test('checker-executable CLI exposes read-only diagnosis without reading a run pointer', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-cli-diagnose-')));
+  const executable = join(root, process.platform === 'win32' ? 'grok.exe' : 'grok');
+  writeFileSync(executable, 'grok checker bytes');
+  chmodSync(executable, 0o755);
+  const result = spawnSync(process.execPath, [
+    join(process.cwd(), 'scripts', 'deep-loop.mjs'),
+    'checker-executable', 'diagnose', '--checker', 'grok', '--path', executable,
+  ], {
+    cwd: root,
+    encoding: 'utf8',
+    shell: false,
+    timeout: 5_000,
+    env: {},
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  const diagnosed = JSON.parse(result.stdout);
+  assert.equal(diagnosed.identity.checker, 'grok');
+  assert.equal(diagnosed.identity.provider_id, 'xai-grok');
+  assert.equal(diagnosed.identity.canonical_path, executable);
+  assert.equal(existsSync(join(root, '.deep-loop')), false, 'diagnosis must not resolve current or create state');
 });
 
 test('official Windows approval persists the observed Authenticode identity and repeats the pinned probe in-lock', () => {

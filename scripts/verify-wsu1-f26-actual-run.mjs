@@ -10,17 +10,35 @@ import { flushDirectory } from './lib/atomic-write.mjs';
 const SHA256 = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const FLAGS = Object.freeze([
-  '--project-root', '--run-id', '--worktree', '--point', '--import-input',
-  '--external-observation', '--receipt',
+  '--project-root', '--run-id', '--worktree', '--point',
+  '--import-input-a', '--import-input-b',
+  '--external-observation-a', '--external-observation-b', '--receipt',
 ]);
 const INPUT_KEYS = Object.freeze([
-  'schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker',
-  'attempt_id', 'verdict', 'report_body', 'artifacts',
+  'schema_version', 'aggregation_id', 'reviewer_id', 'reviewer_adapter',
+  'provider_id', 'model_id', 'session_id', 'checker_episode_id', 'target_maker',
+  'attempt_id', 'source_claim_sha256', 'verdict', 'report_body', 'artifacts',
 ]);
 const OBSERVATION_KEYS = Object.freeze([
   'schema_version', 'observer_role', 'observer_session_id', 'observed_at', 'project_root', 'worktree',
-  'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id', 'cwd', 'argv', 'env',
-  'started_at', 'finished_at', 'exit_code', 'stdout', 'stderr', 'checker_terminal_status',
+  'run_id', 'workstream_id', 'point', 'maker_episode_id', 'checker_episode_id',
+  'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'provider_session_id',
+  'process_receipt_id', 'cwd', 'argv', 'env', 'started_at', 'finished_at', 'exit_code',
+  'stdout', 'stderr', 'checker_terminal_status',
+]);
+const CAPTURE_KEYS = Object.freeze([
+  'capture_id', 'record_path', 'record_sha256', 'manifest_path',
+  'source_manifest_sha256', 'skill_path', 'source_skill_sha256',
+]);
+const PROCESS_PROOF_KEYS = Object.freeze([
+  'receipt_id', 'receipt', 'provider_id', 'model_id', 'session_id', 'claim_hash',
+  'stdout_sha256', 'stderr_sha256',
+]);
+const COST_PROOF_KEYS = Object.freeze([
+  'receipt_id', 'event_seq', 'event_checksum', 'usage',
+]);
+const REPORT_PROOF_KEYS = Object.freeze([
+  'verdict', 'report', 'report_sha256', 'event_seq', 'event_checksum',
 ]);
 const RECEIPT_SCOPE = 'X_E_RESIDUAL_REASON_SEMANTICS+L_CONDITIONAL_DOMINANCE';
 const byteSort = (left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right));
@@ -298,64 +316,164 @@ function validateEventLog(lines, head) {
   if (!same(head, expected)) fail('WSU1_F26_EVENT_LOG');
 }
 
-function validateInput(input) {
-  if (!exactKeys(input, INPUT_KEYS) || input.schema_version !== '1.0'
-    || typeof input.reviewer_id !== 'string' || input.reviewer_id.length === 0
-    || typeof input.checker_episode_id !== 'string' || input.checker_episode_id.length === 0
-    || typeof input.target_maker !== 'string' || input.target_maker.length === 0
-    || !RUN_ID.test(input.attempt_id || '') || input.verdict !== 'APPROVE'
-    || typeof input.report_body !== 'string' || input.report_body.trim().length === 0
-    || !canonicalArtifacts(input.artifacts)) fail('WSU1_F26_CLAIM_CONTEXT');
+function safeIdentity(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512
+    && !/[\0\r\n]/.test(value);
 }
 
-function validateReport(report, input, claim, runId) {
-  if (report?.schema_version !== '1.0' || report.envelope?.producer !== 'deep-loop'
-    || report.envelope?.artifact_kind !== 'review-report'
-    || report.envelope?.schema?.name !== 'review-report' || report.envelope?.schema?.version !== '1.0'
-    || report.envelope?.run_id !== runId) return false;
-  const binding = report.envelope?.provenance?.review_binding;
+function measuredUsage(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    && value.num_turns === 1
+    && ['input_tokens', 'output_tokens', 'tokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
+    && value.tokens === value.input_tokens + value.output_tokens
+    && ['cached_input_tokens', 'reasoning_output_tokens'].every(key => (
+      !Object.hasOwn(value, key) || (Number.isSafeInteger(value[key]) && value[key] >= 0)
+    ));
+}
+
+function validateInput(input) {
+  if (!exactKeys(input, INPUT_KEYS) || input.schema_version !== '2.0'
+    || !['aggregation_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'session_id',
+      'checker_episode_id', 'target_maker'].every(key => safeIdentity(input[key]))
+    || !RUN_ID.test(input.attempt_id || '') || !SHA256.test(input.source_claim_sha256 || '')
+    || input.verdict !== 'APPROVE' || typeof input.report_body !== 'string'
+    || !canonicalArtifacts(input.artifacts)?.length) fail('WSU1_F26_DUAL_INPUT_COUNT');
+}
+
+function attemptIdentity(aggregation, attempt) {
+  return {
+    aggregation_id: aggregation.aggregation_id,
+    slot: attempt.slot,
+    attempt_id: attempt.attempt_id,
+    reviewer_id: attempt.reviewer_id,
+    reviewer_adapter: attempt.reviewer_adapter,
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    source_claim_sha256: attempt.source_claim_sha256,
+  };
+}
+
+function validateCapture(projectRoot, runId, capture) {
+  if (!exactKeys(capture, CAPTURE_KEYS) || !SHA256.test(capture.capture_id || '')) {
+    fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  }
+  const { capture_id: captureId, ...binding } = capture;
+  if (captureId !== sha256(Buffer.from(JSON.stringify(binding)))) fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  const prefix = `.deep-loop/runs/${runId}/checker-captures/`;
+  const pairs = [
+    ['record_path', 'record_sha256'],
+    ['manifest_path', 'source_manifest_sha256'],
+    ['skill_path', 'source_skill_sha256'],
+  ];
+  if (new Set(pairs.map(([pathKey]) => capture[pathKey])).size !== pairs.length) {
+    fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  }
+  for (const [pathKey, hashKey] of pairs) {
+    const portable = portableRelative(capture[pathKey]);
+    if (!portable || !portable.startsWith(prefix) || !SHA256.test(capture[hashKey] || '')) {
+      fail('WSU1_F26_DUAL_PROCESS_PROOF');
+    }
+    const bytes = regularBytes(resolve(projectRoot, ...portable.split('/')), 'WSU1_F26_DUAL_PROCESS_PROOF');
+    if (sha256(bytes) !== capture[hashKey]) fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  }
+}
+
+function validateProcessProof(projectRoot, runId, aggregation, attempt) {
+  const process = attempt.process_proof;
+  const cost = attempt.cost_proof;
+  validateCapture(projectRoot, runId, attempt.capture_proof);
+  if (!exactKeys(process, PROCESS_PROOF_KEYS) || !exactKeys(cost, COST_PROOF_KEYS)
+    || !measuredUsage(cost.usage) || process.receipt_id !== cost.receipt_id
+    || process.provider_id !== attempt.provider_id || process.model_id !== attempt.model_id
+    || process.session_id !== attempt.session_id || !safeIdentity(process.session_id)
+    || ![process.receipt_id, process.claim_hash, process.stdout_sha256, process.stderr_sha256]
+      .every(value => SHA256.test(value || ''))) fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  const receiptPath = `.deep-loop/runs/${runId}/preflight/process-receipts/${process.receipt_id}-dual-checker.json`;
+  if (process.receipt !== receiptPath) fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  const { bytes, value: receipt } = regularJson(
+    resolve(projectRoot, ...receiptPath.split('/')), 'WSU1_F26_DUAL_PROCESS_PROOF',
+  );
+  const payload = {
+    contract: 'deep-loop-dual-checker-process-receipt-v1',
+    project_root: projectRoot,
+    run_id: runId,
+    ...attemptIdentity(aggregation, attempt),
+    session_id: attempt.session_id,
+    claim_hash: sha256(Buffer.from(JSON.stringify(attemptIdentity(aggregation, attempt)))),
+    capture: attempt.capture_proof,
+    stdout_sha256: process.stdout_sha256,
+    stderr_sha256: process.stderr_sha256,
+    usage: cost.usage,
+  };
+  const expected = { ...payload, receipt_id: sha256(Buffer.from(JSON.stringify(payload))) };
+  if (!same(receipt, expected) || !bytes.equals(Buffer.from(JSON.stringify(expected, null, 2)))
+    || process.receipt_id !== expected.receipt_id || process.claim_hash !== expected.claim_hash) {
+    fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  }
+  return receipt;
+}
+
+function validateReport(projectRoot, runId, aggregation, attempt, input) {
+  const proof = attempt.report_proof;
+  if (!exactKeys(proof, REPORT_PROOF_KEYS) || proof.verdict !== 'APPROVE'
+    || !SHA256.test(proof.report_sha256 || '')
+    || proof.report !== `.deep-loop/runs/${runId}/reviews/${proof.report_sha256}.json`) {
+    fail('WSU1_F26_DUAL_REPORT_PROOF');
+  }
+  const { bytes, value: report } = regularJson(
+    resolve(projectRoot, ...proof.report.split('/')), 'WSU1_F26_DUAL_REPORT_PROOF',
+  );
+  if (sha256(bytes) !== proof.report_sha256 || report?.schema_version !== '1.0'
+    || report.envelope?.producer !== 'deep-loop'
+    || report.envelope?.artifact_kind !== 'review-attempt-report'
+    || report.envelope?.schema?.name !== 'review-attempt-report'
+    || report.envelope?.schema?.version !== '2.0' || report.envelope?.run_id !== runId
+    || !same(report.envelope?.provenance?.source_artifacts, input.artifacts.map(({ path }) => path))
+    || !same(report.payload, { verdict: 'APPROVE', report_body: input.report_body })) {
+    fail('WSU1_F26_DUAL_REPORT_PROOF');
+  }
   const expectedBinding = {
-    reviewer_id: input.reviewer_id,
+    aggregation_id: aggregation.aggregation_id,
+    reviewer_id: attempt.reviewer_id,
+    reviewer_adapter: attempt.reviewer_adapter,
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    session_id: attempt.session_id,
     checker_episode_id: input.checker_episode_id,
     target_maker: input.target_maker,
-    attempt_id: input.attempt_id,
-    artifacts: canonicalArtifacts(input.artifacts),
+    attempt_id: attempt.attempt_id,
+    source_claim_sha256: attempt.source_claim_sha256,
+    process_receipt_id: attempt.process_proof.receipt_id,
+    cost_event_seq: attempt.cost_proof.event_seq,
+    capture_sha256: attempt.capture_proof.record_sha256,
+    artifacts: input.artifacts,
   };
-  return same(binding, expectedBinding)
-    && same(report.envelope?.provenance?.source_artifacts, expectedBinding.artifacts.map(({ path }) => path))
-    && same(report.payload, { verdict: input.verdict, report_body: input.report_body })
-    && same(canonicalArtifacts(claim.artifacts), expectedBinding.artifacts);
-}
-
-function locateReport(runDirectory, input, claim, runId) {
-  const reviews = canonicalDirectory(join(runDirectory, 'reviews'), 'WSU1_F26_REPORT_MISSING');
-  const matches = [];
-  for (const entry of readdirSync(reviews, { withFileTypes: true })) {
-    if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
-    const path = join(reviews, entry.name);
-    const bytes = regularBytes(path, 'WSU1_F26_REPORT_MISSING');
-    if (sha256(bytes) !== entry.name.slice(0, 64)) continue;
-    let report;
-    try { report = JSON.parse(bytes.toString('utf8')); } catch { continue; }
-    if (validateReport(report, input, claim, runId)) matches.push({ path, bytes, report, sha: entry.name.slice(0, 64) });
+  if (!same(report.envelope?.provenance?.review_binding, expectedBinding)) {
+    fail('WSU1_F26_DUAL_REPORT_PROOF');
   }
-  if (matches.length !== 1) fail('WSU1_F26_REPORT_MISSING');
-  return matches[0];
+  return { report, bytes };
 }
 
-function validateObservation(observation, context) {
+function validateObservation(observation, context, attempt) {
   const observedAt = Date.parse(observation?.observed_at);
   const startedAt = Date.parse(observation?.started_at);
   const finishedAt = Date.parse(observation?.finished_at);
   if (!exactKeys(observation, OBSERVATION_KEYS) || observation.schema_version !== 1
     || observation.observer_role !== 'orchestrator'
-    || typeof observation.observer_session_id !== 'string' || observation.observer_session_id.length === 0
+    || !safeIdentity(observation.observer_session_id)
     || !Number.isFinite(observedAt) || !Number.isFinite(startedAt) || !Number.isFinite(finishedAt)
-    || startedAt > finishedAt || finishedAt > observedAt) fail('WSU1_F26_OBSERVATION_SHAPE');
+    || startedAt > finishedAt || finishedAt > observedAt) fail('WSU1_F26_DUAL_OBSERVATION');
   if (observation.project_root !== context.projectRoot || observation.worktree !== context.worktreePrefix
     || observation.run_id !== context.runId || observation.workstream_id !== context.workstream.id
     || observation.point !== context.point || observation.maker_episode_id !== context.maker.id
-    || observation.checker_episode_id !== context.checker.id) fail('WSU1_F26_OBSERVATION_RUN');
+    || observation.checker_episode_id !== context.checker.id
+    || observation.attempt_id !== attempt.attempt_id || observation.reviewer_id !== attempt.reviewer_id
+    || observation.reviewer_adapter !== attempt.reviewer_adapter
+    || observation.provider_id !== attempt.provider_id || observation.model_id !== attempt.model_id
+    || observation.provider_session_id !== attempt.session_id
+    || observation.process_receipt_id !== attempt.process_proof.receipt_id) {
+    fail('WSU1_F26_DUAL_OBSERVATION');
+  }
   const expectedArgv = [
     process.execPath,
     join(context.worktree, 'scripts', 'hooks-impl', 'drive-headless.mjs'),
@@ -365,13 +483,13 @@ function validateObservation(observation, context) {
     context.runId,
   ];
   if (observation.cwd !== context.projectRoot || !same(observation.argv, expectedArgv)
-    || !same(observation.env, { DEEP_LOOP_UNATTENDED: '1' })) fail('WSU1_F26_OBSERVATION_COMMAND');
+    || !same(observation.env, { DEEP_LOOP_UNATTENDED: '1' })) fail('WSU1_F26_DUAL_OBSERVATION');
   let result;
-  try { result = JSON.parse(observation.stdout.trim()); } catch { fail('WSU1_F26_OBSERVATION_RESULT'); }
+  try { result = JSON.parse(observation.stdout.trim()); } catch { fail('WSU1_F26_DUAL_OBSERVATION'); }
   if (observation.exit_code !== 0 || observation.stderr !== '' || observation.checker_terminal_status !== 'approved'
     || result?.ok !== true || result.action !== 'checker-complete'
     || result.checkerEpisodeId !== context.checker.id
-    || result.attemptId !== context.claim.attempt_id) fail('WSU1_F26_OBSERVATION_RESULT');
+    || result.attemptId !== context.aggregation.attempts[1].attempt_id) fail('WSU1_F26_DUAL_OBSERVATION');
 }
 
 function unlinkExact(path, identity) {
@@ -488,76 +606,243 @@ function main() {
   }
   if (loop.session_chain?.lease?.resume_policy === 'human') fail('WSU1_F26_HUMAN_POLICY');
 
-  const { value: input } = regularJson(resolve(args['--import-input']), 'WSU1_F26_CLAIM_CONTEXT');
-  validateInput(input);
+  const inputPaths = [resolve(args['--import-input-a']), resolve(args['--import-input-b'])];
+  const observationPaths = [
+    resolve(args['--external-observation-a']), resolve(args['--external-observation-b']),
+  ];
+  if (new Set(inputPaths).size !== 2 || new Set(observationPaths).size !== 2) {
+    fail('WSU1_F26_DUAL_INPUT_COUNT');
+  }
+  const inputs = inputPaths.map(path => regularJson(path, 'WSU1_F26_DUAL_INPUT_COUNT').value);
+  inputs.forEach(validateInput);
+  const [firstInput] = inputs;
   const workstream = loop.workstreams?.find((item) => item?.worktree === worktreePrefix);
-  const maker = loop.episodes?.find((item) => item?.id === input.target_maker);
-  const checker = loop.episodes?.find((item) => item?.id === input.checker_episode_id);
-  if (!workstream || maker?.role !== 'maker' || maker.status !== 'done' || maker.point !== point
-    || maker.workstream_id !== workstream.id || checker?.role !== 'checker'
-    || !['deep-review', 'subagent-checker'].includes(checker.plugin) || checker.status !== 'approved'
-    || checker.review_source !== 'imported-stdin' || checker.point !== point
-    || checker.workstream_id !== workstream.id || checker.target_maker !== maker.id
-    || checker.attempt_id !== input.attempt_id) fail('WSU1_F26_CLAIM_CONTEXT', 'identity');
-  const claim = checker.review_claim;
-  const claimAxes = claim && [claim.reviewer_id, claim.checker_episode_id, claim.target_maker, claim.attempt_id];
-  if (!same(claimAxes, [input.reviewer_id, input.checker_episode_id, input.target_maker, input.attempt_id])
-    || claim.run_id !== runId || claim.workstream_id !== workstream.id || claim.point !== point
-    || claim.project_root !== projectRoot || claim.runtime !== 'codex'
-    || claim.lease_owner !== loop.session_chain.lease.owner_run_id
-    || claim.lease_generation !== loop.session_chain.lease.generation) fail('WSU1_F26_CLAIM_CONTEXT', JSON.stringify({
-      axes: same(claimAxes, [input.reviewer_id, input.checker_episode_id, input.target_maker, input.attempt_id]),
-      run: claim?.run_id === runId,
-      workstream: claim?.workstream_id === workstream.id,
-      point: claim?.point === point,
-      root: claim?.project_root === projectRoot,
-      runtime: claim?.runtime === 'codex',
-      owner: claim?.lease_owner === loop.session_chain.lease.owner_run_id,
-      generation: claim?.lease_generation === loop.session_chain.lease.generation,
-    }));
+  const maker = loop.episodes?.find((item) => item?.id === firstInput.target_maker);
+  const checker = loop.episodes?.find((item) => item?.id === firstInput.checker_episode_id);
+  const aggregation = checker?.review_aggregation;
+  if (loop.schema_version !== '0.5.0' || !workstream || maker?.role !== 'maker'
+    || maker.status !== 'done' || maker.point !== point || maker.workstream_id !== workstream.id
+    || checker?.role !== 'checker' || !['deep-review', 'subagent-checker'].includes(checker.plugin)
+    || checker.status !== 'approved' || checker.review_source !== 'imported-stdin'
+    || checker.point !== point || checker.workstream_id !== workstream.id
+    || checker.target_maker !== maker.id || Object.hasOwn(checker, 'review_claim')
+    || Object.hasOwn(checker, 'attempt_id')
+    || !exactKeys(aggregation, [
+      'schema_version', 'policy', 'aggregation_id', 'required_attempt_count', 'aggregate_status',
+      'source_binding', 'attempts', 'aggregate_proof',
+    ]) || aggregation.schema_version !== '2.0' || aggregation.policy !== 'ALL_LITERAL_APPROVE_2'
+    || aggregation.required_attempt_count !== 2 || aggregation.aggregate_status !== 'approved'
+    || !safeIdentity(aggregation.aggregation_id) || !Array.isArray(aggregation.attempts)
+    || aggregation.attempts.length !== 2) fail('WSU1_F26_DUAL_INPUT_COUNT');
+
+  const attemptKeys = [
+    'slot', 'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id',
+    'session_id', 'status', 'source_claim_sha256', 'capture_proof', 'process_proof',
+    'report_proof', 'cost_proof',
+  ];
+  for (let index = 0; index < 2; index += 1) {
+    const attempt = aggregation.attempts[index];
+    const input = inputs[index];
+    if (!exactKeys(attempt, attemptKeys) || attempt.slot !== index || attempt.status !== 'imported'
+      || input.aggregation_id !== aggregation.aggregation_id
+      || input.checker_episode_id !== checker.id || input.target_maker !== maker.id
+      || !['attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'session_id',
+        'source_claim_sha256'].every(key => input[key] === attempt[key])) {
+      fail('WSU1_F26_DUAL_INPUT_COUNT');
+    }
+  }
+  for (const key of [
+    'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'session_id',
+  ]) {
+    if (new Set(aggregation.attempts.map(attempt => attempt[key])).size !== 2) {
+      fail('WSU1_F26_DUAL_IDENTITY_COLLISION');
+    }
+  }
 
   const sources = sourceArtifacts(worktree);
   const relativeContract = sourceContract(sources);
   const kernelContract = relativeContract.map(({ path, sha256: digest }) => ({
     path: `${worktreePrefix}/${path}`, sha256: digest,
   })).sort((left, right) => byteSort(left.path, right.path));
-  if (!same(canonicalArtifacts(input.artifacts), kernelContract)
-    || !same(canonicalArtifacts(claim.artifacts), kernelContract)
+  const source = aggregation.source_binding;
+  const sourceKeys = [
+    'run_id', 'checker_episode_id', 'target_maker', 'workstream_id', 'point', 'project_root',
+    'runtime', 'lease_owner', 'lease_generation', 'artifacts', 'source_claim_sha256',
+  ];
+  const { source_claim_sha256: sourceClaimSha256, ...sourceWithoutDigest } = source || {};
+  if (!exactKeys(source, sourceKeys) || source.run_id !== runId || source.checker_episode_id !== checker.id
+    || source.target_maker !== maker.id || source.workstream_id !== workstream.id || source.point !== point
+    || source.project_root !== projectRoot || source.runtime !== 'codex'
+    || source.lease_owner !== loop.session_chain.lease.owner_run_id
+    || source.lease_generation !== loop.session_chain.lease.generation
+    || !SHA256.test(sourceClaimSha256 || '')
+    || sourceClaimSha256 !== sha256(Buffer.from(JSON.stringify(sourceWithoutDigest)))
+    || !same(canonicalArtifacts(source.artifacts), kernelContract)
+    || inputs.some(input => !same(canonicalArtifacts(input.artifacts), kernelContract)
+      || input.source_claim_sha256 !== sourceClaimSha256)
+    || aggregation.attempts.some(attempt => attempt.source_claim_sha256 !== sourceClaimSha256)
     || !same([...(maker.artifacts || [])].sort(byteSort), kernelContract.map(({ path }) => path))) {
-    fail('WSU1_F26_WORKTREE_K');
+    fail('WSU1_F26_DUAL_SOURCE_MISMATCH');
   }
-  const report = locateReport(runDirectory, input, claim, runId);
   const { eventBytes } = runEvidence;
   const events = eventLines(eventBytes);
   validateEventLog(events, loop.event_log_head);
-  const claimHash = sha256(Buffer.from(JSON.stringify(claim)));
-  const costs = events.filter((event) => event.type === 'cost'
-    && event.data?.source === 'codex-checker-measured'
-    && event.data?.process_kind === 'checker'
-    && event.data?.process_context?.checker_episode_id === input.checker_episode_id
-    && event.data?.process_context?.attempt_id === input.attempt_id
-    && event.data?.process_context?.target_maker === input.target_maker
-    && event.data?.process_context?.claim_hash === claimHash);
-  if (costs.length !== 1) fail('WSU1_F26_COST_EVENT_COUNT');
-  const processContext = costs[0].data.process_context;
-  if (!exactKeys(processContext, [
-    'origin_owner', 'origin_generation', 'checker_episode_id', 'attempt_id', 'target_maker', 'claim_hash',
-  ]) || processContext.origin_owner !== claim.lease_owner
-    || processContext.origin_generation !== claim.lease_generation) fail('WSU1_F26_CLAIM_CONTEXT');
+  const reports = [];
+  const receipts = [];
+  const attemptEvents = [];
+  const costs = [];
+  for (let index = 0; index < 2; index += 1) {
+    const attempt = aggregation.attempts[index];
+    const input = inputs[index];
+    receipts.push(validateProcessProof(projectRoot, runId, aggregation, attempt));
+    reports.push(validateReport(projectRoot, runId, aggregation, attempt, input));
+    const cost = events.filter(event => event.type === 'cost'
+      && event.seq === attempt.cost_proof.event_seq
+      && event.checksum === attempt.cost_proof.event_checksum
+      && event.data?.process_receipt_id === attempt.process_proof.receipt_id);
+    const expectedCost = {
+      turns: attempt.cost_proof.usage.num_turns,
+      tokens: attempt.cost_proof.usage.tokens,
+      reported_turns: attempt.cost_proof.usage.num_turns,
+      reported_tokens: attempt.cost_proof.usage.tokens,
+      input_tokens: attempt.cost_proof.usage.input_tokens,
+      output_tokens: attempt.cost_proof.usage.output_tokens,
+      owner: source.lease_owner,
+      generation: source.lease_generation,
+      source: `${attempt.provider_id}-dual-checker-measured`,
+      process_receipt_id: attempt.process_proof.receipt_id,
+      dual_checker_aggregation_id: aggregation.aggregation_id,
+      dual_checker_attempt_id: attempt.attempt_id,
+      provider_id: attempt.provider_id,
+      model_id: attempt.model_id,
+      session_id: attempt.session_id,
+    };
+    if (cost.length !== 1 || !same(cost[0].data, expectedCost)) fail('WSU1_F26_DUAL_COST_PROOF');
+    costs.push(cost[0]);
+    const expectedAttemptOutcome = {
+      episodeId: checker.id,
+      aggregation_id: aggregation.aggregation_id,
+      attempt_id: attempt.attempt_id,
+      reviewer_id: attempt.reviewer_id,
+      reviewer_adapter: attempt.reviewer_adapter,
+      provider_id: attempt.provider_id,
+      model_id: attempt.model_id,
+      session_id: attempt.session_id,
+      target_maker: maker.id,
+      verdict: 'APPROVE',
+      report: attempt.report_proof.report,
+      report_sha256: attempt.report_proof.report_sha256,
+      process_receipt_id: attempt.process_proof.receipt_id,
+      cost_event_seq: attempt.cost_proof.event_seq,
+      capture_sha256: attempt.capture_proof.record_sha256,
+      source_claim_sha256: sourceClaimSha256,
+    };
+    const outcomes = events.filter(event => event.type === 'review-attempt-outcome'
+      && event.seq === attempt.report_proof.event_seq
+      && event.checksum === attempt.report_proof.event_checksum);
+    if (outcomes.length !== 1 || !same(outcomes[0].data, expectedAttemptOutcome)) {
+      fail('WSU1_F26_DUAL_REPORT_PROOF');
+    }
+    attemptEvents.push(outcomes[0]);
+  }
 
-  const observationPath = resolve(args['--external-observation']);
-  const { bytes: observationBytes, value: observation } = regularJson(observationPath,
-    'WSU1_F26_OBSERVATION_MISSING', 'WSU1_F26_OBSERVATION_NON_REGULAR', 'WSU1_F26_OBSERVATION_SHAPE');
-  validateObservation(observation, {
-    projectRoot, worktreePrefix, worktree, runId, workstream, maker, checker, claim, point,
+  const distinctAxes = [
+    aggregation.attempts.map(attempt => attempt.capture_proof.capture_id),
+    aggregation.attempts.map(attempt => attempt.capture_proof.record_path),
+    aggregation.attempts.map(attempt => attempt.process_proof.receipt_id),
+    aggregation.attempts.map(attempt => attempt.report_proof.report_sha256),
+    aggregation.attempts.map(attempt => attempt.cost_proof.event_seq),
+  ];
+  if (distinctAxes.some(values => new Set(values).size !== 2)) {
+    fail('WSU1_F26_DUAL_IDENTITY_COLLISION');
+  }
+  const attempts = aggregation.attempts;
+  const aggregate = {
+    aggregation_id: aggregation.aggregation_id,
+    checker_episode_id: checker.id,
+    target_maker: maker.id,
+    source_claim_sha256: sourceClaimSha256,
+    attempt_ids: attempts.map(attempt => attempt.attempt_id),
+    reviewer_ids: attempts.map(attempt => attempt.reviewer_id),
+    reviewer_adapters: attempts.map(attempt => attempt.reviewer_adapter),
+    provider_ids: attempts.map(attempt => attempt.provider_id),
+    model_ids: attempts.map(attempt => attempt.model_id),
+    session_ids: attempts.map(attempt => attempt.session_id),
+    attempt_reports: attempts.map(attempt => attempt.report_proof.report),
+    report_hashes: attempts.map(attempt => attempt.report_proof.report_sha256),
+    process_receipts: attempts.map(attempt => attempt.process_proof.receipt),
+    process_receipt_ids: attempts.map(attempt => attempt.process_proof.receipt_id),
+    cost_event_seqs: attempts.map(attempt => attempt.cost_proof.event_seq),
+    capture_ids: attempts.map(attempt => attempt.capture_proof.capture_id),
+    capture_records: attempts.map(attempt => attempt.capture_proof.record_path),
+    capture_hashes: attempts.map(attempt => attempt.capture_proof.record_sha256),
+  };
+  const aggregateData = {
+    episodeId: checker.id,
+    verdict: 'APPROVE',
+    workstream_id: workstream.id,
+    point,
+    target_maker: maker.id,
+    reviewer_id: 'dual-checker-aggregate',
+    review_source: 'imported-stdin',
+    ...aggregate,
+  };
+  const aggregateProof = aggregation.aggregate_proof;
+  const proofKeys = [
+    'source_claim_sha256', 'attempt_ids', 'report_hashes', 'process_receipt_ids',
+    'cost_event_seqs', 'capture_hashes', 'final_event_seq', 'final_event_checksum',
+  ];
+  const aggregateEvents = events.filter(event => event.type === 'review-outcome'
+    && event.data?.episodeId === checker.id);
+  if (!exactKeys(aggregateProof, proofKeys) || aggregateEvents.length !== 1
+    || aggregateEvents[0].seq !== aggregateProof.final_event_seq
+    || aggregateEvents[0].checksum !== aggregateProof.final_event_checksum
+    || !same(aggregateEvents[0].data, aggregateData)
+    || !same(aggregateProof, {
+      source_claim_sha256: aggregate.source_claim_sha256,
+      attempt_ids: aggregate.attempt_ids,
+      report_hashes: aggregate.report_hashes,
+      process_receipt_ids: aggregate.process_receipt_ids,
+      cost_event_seqs: aggregate.cost_event_seqs,
+      capture_hashes: aggregate.capture_hashes,
+      final_event_seq: aggregateEvents[0].seq,
+      final_event_checksum: aggregateEvents[0].checksum,
+    }) || aggregateEvents[0].seq <= Math.max(...attemptEvents.map(event => event.seq), ...costs.map(event => event.seq))) {
+    fail('WSU1_F26_DUAL_AGGREGATE_ORDER');
+  }
+  if (events.filter(event => event.type === 'review-attempt-outcome'
+    && event.data?.episodeId === checker.id).length !== 2
+    || events.filter(event => event.type === 'cost'
+      && event.data?.dual_checker_aggregation_id === aggregation.aggregation_id).length !== 2) {
+    fail('WSU1_F26_DUAL_AGGREGATE_ORDER');
+  }
+  const reviewsDirectory = canonicalDirectory(join(runDirectory, 'reviews'), 'WSU1_F26_DUAL_REPORT_PROOF');
+  const reviewFiles = readdirSync(reviewsDirectory, { withFileTypes: true });
+  if (reviewFiles.length !== 2 || reviewFiles.some(entry => !entry.isFile()
+    || !attempts.some(attempt => entry.name === `${attempt.report_proof.report_sha256}.json`))
+    || Object.keys(aggregateEvents[0].data).some(key => ['report', 'report_sha256', 'report_body'].includes(key))) {
+    fail('WSU1_F26_SYNTHETIC_AGGREGATE');
+  }
+
+  const observations = observationPaths.map((observationPath, index) => {
+    const { bytes, value } = regularJson(
+      observationPath, 'WSU1_F26_DUAL_OBSERVATION', 'WSU1_F26_DUAL_OBSERVATION',
+      'WSU1_F26_DUAL_OBSERVATION',
+    );
+    validateObservation(value, {
+      projectRoot, worktreePrefix, worktree, runId, workstream, maker, checker, aggregation, point,
+    }, attempts[index]);
+    const digest = sha256(bytes);
+    const expected = process.env[`WSU1_F26_EXPECT_OBSERVATION_${index === 0 ? 'A' : 'B'}_SHA256`];
+    if (expected !== undefined && expected !== digest) fail('WSU1_F26_DUAL_OBSERVATION');
+    const reread = regularBytes(observationPath, 'WSU1_F26_DUAL_OBSERVATION');
+    if (!reread.equals(bytes) || sha256(reread) !== digest) fail('WSU1_F26_DUAL_OBSERVATION');
+    return { path: observationPath, bytes, value, sha256: digest };
   });
-  const observationSha = sha256(observationBytes);
-  if (process.env.WSU1_F26_EXPECT_OBSERVATION_SHA256 !== undefined
-    && process.env.WSU1_F26_EXPECT_OBSERVATION_SHA256 !== observationSha) fail('WSU1_F26_OBSERVATION_DIGEST');
-  const rereadObservation = regularBytes(observationPath, 'WSU1_F26_OBSERVATION_MISSING',
-    'WSU1_F26_OBSERVATION_NON_REGULAR');
-  if (!rereadObservation.equals(observationBytes) || sha256(rereadObservation) !== observationSha) {
-    fail('WSU1_F26_OBSERVATION_DIGEST');
+  if (new Set(observations.map(item => item.sha256)).size !== 2
+    || new Set(observations.map(item => item.value.observer_session_id)).size !== 2
+    || observations[0].value.stdout !== observations[1].value.stdout) {
+    fail('WSU1_F26_DUAL_OBSERVATION');
   }
 
   const evidence = JSON.parse(sources.find(({ path }) =>
@@ -572,19 +857,38 @@ function main() {
     live_classification_sha256: relativeContract.find(({ path }) =>
       path === 'tests/fixtures/activation-pending-classification.md').sha256,
     evidence_rows_sha256: sha256(Buffer.from(`${JSON.stringify(evidence.rows)}\n`)),
-    checker_cost_event: {
-      seq: costs[0].seq,
-      process_context: processContext,
-      claim_hash: claimHash,
+    source_claim_sha256: sourceClaimSha256,
+    attempts: attempts.map((attempt, index) => ({
+      slot: attempt.slot,
+      attempt_id: attempt.attempt_id,
+      reviewer_id: attempt.reviewer_id,
+      reviewer_adapter: attempt.reviewer_adapter,
+      provider_id: attempt.provider_id,
+      model_id: attempt.model_id,
+      session_id: attempt.session_id,
+      capture_id: attempt.capture_proof.capture_id,
+      capture_path: attempt.capture_proof.record_path,
+      capture_sha256: attempt.capture_proof.record_sha256,
+      process_receipt: attempt.process_proof.receipt,
+      process_receipt_id: attempt.process_proof.receipt_id,
+      cost_event_seq: attempt.cost_proof.event_seq,
+      cost_event_checksum: attempt.cost_proof.event_checksum,
+      report_path: attempt.report_proof.report,
+      report_sha256: attempt.report_proof.report_sha256,
+      attempt_outcome_seq: attempt.report_proof.event_seq,
+      attempt_outcome_checksum: attempt.report_proof.event_checksum,
+      external_observation: {
+        path: relative(projectRoot, observations[index].path).split(sep).join('/'),
+        sha256: observations[index].sha256,
+        observer_session_id: observations[index].value.observer_session_id,
+      },
+    })),
+    aggregate_event: {
+      seq: aggregateEvents[0].seq,
+      checksum: aggregateEvents[0].checksum,
+      source_claim_sha256: sourceClaimSha256,
     },
-    external_observation: {
-      path: relative(projectRoot, observationPath).split(sep).join('/'),
-      sha256: observationSha,
-      observer_session_id: observation.observer_session_id,
-    },
-    report_path: `.deep-loop/runs/${runId}/reviews/${report.sha}.json`,
-    report_sha256: report.sha,
-    envelope: report.report,
+    host_result_sha256: sha256(Buffer.from(observations[0].value.stdout)),
   };
   verifyRunEvidenceUnchanged(runEvidence);
   verifySourceArtifactsUnchanged(worktree, relativeContract); // K_BOUNDARY_PRE_PUBLICATION

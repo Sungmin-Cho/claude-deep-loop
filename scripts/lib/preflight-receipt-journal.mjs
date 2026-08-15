@@ -13,15 +13,20 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { makeCodexPreflightReceipt, makeCodexProcessReceipt } from './budget.mjs';
+import {
+  isMeasuredOneTurnUsage,
+  makeCodexPreflightReceipt,
+  makeCodexProcessReceipt,
+} from './budget.mjs';
 import { contentHash } from './envelope.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
-import { runDir } from './state.mjs';
+import { captureReconciledRunSnapshot, runDir } from './state.mjs';
 import { validCheckerImportDiagnostic } from './schema.mjs';
 import { flushDirectory } from './atomic-write.mjs';
 
 const RECEIPT_MAX_BYTES = 16 * 1024;
 const RECEIPT_MAX_FILES = 256;
+const DUAL_PROCESS_RECEIPT_NAME = /^([a-f0-9]{64})-dual-checker(-failed)?\.json$/;
 const DESCRIPTOR_KEYS = new Set([
   'journalPath',
   'root',
@@ -235,6 +240,154 @@ function exactProcessReceipt(descriptor, receipt) {
 
 function receiptBytes(receipt) {
   return Buffer.from(`${JSON.stringify(receipt)}\n`, 'utf8');
+}
+
+function exactKeys(value, keys) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function dualAttemptClaimHash(aggregation, attempt) {
+  return contentHash(JSON.stringify({
+    aggregation_id: aggregation.aggregation_id,
+    slot: attempt.slot,
+    attempt_id: attempt.attempt_id,
+    reviewer_id: attempt.reviewer_id,
+    reviewer_adapter: attempt.reviewer_adapter,
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    source_claim_sha256: attempt.source_claim_sha256,
+  }));
+}
+
+function exactDualCostEvent(snapshot, receiptId, expected) {
+  const matches = snapshot.logLines.filter(event => event.type === 'cost'
+    && event.data?.process_receipt_id === receiptId);
+  if (matches.length !== 1 || !sameJson(matches[0].data, expected)) {
+    throw new Error('dual process receipt cost proof mismatch');
+  }
+  return matches[0];
+}
+
+const DUAL_SUCCESS_KEYS = Object.freeze([
+  'contract', 'project_root', 'run_id', 'aggregation_id', 'slot', 'attempt_id',
+  'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'source_claim_sha256',
+  'session_id', 'claim_hash', 'capture', 'stdout_sha256', 'stderr_sha256', 'usage',
+  'receipt_id',
+]);
+const DUAL_FAILURE_KEYS = Object.freeze([
+  'contract', 'project_root', 'run_id', 'aggregation_id', 'attempt_id', 'reviewer_id',
+  'reviewer_adapter', 'expected_provider_id', 'expected_model_id', 'observed_provider_id',
+  'observed_model_id', 'observed_session_id', 'source_claim_sha256', 'claim_hash',
+  'failure_reason', 'usage', 'stdout_sha256', 'stderr_sha256', 'receipt_id',
+]);
+
+function validateSettledDualProcessReceipt({
+  canonicalRoot, runId, entry, parent, snapshot,
+}) {
+  const match = entry.name.match(DUAL_PROCESS_RECEIPT_NAME);
+  if (!match) return;
+  const journalPath = join(parent, entry.name);
+  const bytes = readTrustedReceiptBytes(journalPath, parent);
+  let receipt;
+  try { receipt = JSON.parse(bytes.toString('utf8')); }
+  catch { throw new Error('dual process receipt json invalid'); }
+  const failure = match[2] === '-failed';
+  const payload = { ...receipt };
+  delete payload.receipt_id;
+  if ((failure ? !exactKeys(receipt, DUAL_FAILURE_KEYS) : !exactKeys(receipt, DUAL_SUCCESS_KEYS))
+    || receipt.receipt_id !== match[1]
+    || receipt.receipt_id !== contentHash(JSON.stringify(payload))
+    || receipt.project_root !== canonicalRoot || receipt.run_id !== runId
+    || !isMeasuredOneTurnUsage(receipt.usage)
+    || !bytes.equals(Buffer.from(JSON.stringify(receipt, null, 2)))) {
+    throw new Error('dual process receipt payload invalid');
+  }
+  const checker = snapshot.data.episodes?.find(episode => (
+    episode.review_aggregation?.aggregation_id === receipt.aggregation_id
+  ));
+  const aggregation = checker?.review_aggregation;
+  const attempts = aggregation?.attempts?.filter(attempt => attempt.attempt_id === receipt.attempt_id);
+  if (snapshot.data.schema_version !== '0.5.0' || checker?.role !== 'checker'
+    || aggregation?.schema_version !== '2.0' || attempts?.length !== 1) {
+    throw new Error('dual process receipt state binding invalid');
+  }
+  const attempt = attempts[0];
+  const claimHash = dualAttemptClaimHash(aggregation, attempt);
+  if (receipt.reviewer_id !== attempt.reviewer_id
+    || receipt.reviewer_adapter !== attempt.reviewer_adapter
+    || receipt.source_claim_sha256 !== attempt.source_claim_sha256
+    || receipt.claim_hash !== claimHash) {
+    throw new Error('dual process receipt claim mismatch');
+  }
+  if (!failure) {
+    if (receipt.contract !== 'deep-loop-dual-checker-process-receipt-v1'
+      || receipt.slot !== attempt.slot || receipt.provider_id !== attempt.provider_id
+      || receipt.model_id !== attempt.model_id || receipt.session_id !== attempt.session_id
+      || receipt.receipt_id !== attempt.process_proof?.receipt_id
+      || receipt.claim_hash !== attempt.process_proof?.claim_hash
+      || receipt.stdout_sha256 !== attempt.process_proof?.stdout_sha256
+      || receipt.stderr_sha256 !== attempt.process_proof?.stderr_sha256
+      || !sameJson(receipt.capture, attempt.capture_proof)
+      || !sameJson(receipt.usage, attempt.cost_proof?.usage)) {
+      throw new Error('dual process receipt settled proof mismatch');
+    }
+    const event = exactDualCostEvent(snapshot, receipt.receipt_id, {
+      turns: receipt.usage.num_turns,
+      tokens: receipt.usage.tokens,
+      reported_turns: receipt.usage.num_turns,
+      reported_tokens: receipt.usage.tokens,
+      input_tokens: receipt.usage.input_tokens,
+      output_tokens: receipt.usage.output_tokens,
+      owner: aggregation.source_binding.lease_owner,
+      generation: aggregation.source_binding.lease_generation,
+      source: `${receipt.provider_id}-dual-checker-measured`,
+      process_receipt_id: receipt.receipt_id,
+      dual_checker_aggregation_id: aggregation.aggregation_id,
+      dual_checker_attempt_id: attempt.attempt_id,
+      provider_id: receipt.provider_id,
+      model_id: receipt.model_id,
+      session_id: receipt.session_id,
+    });
+    if (event.seq !== attempt.cost_proof.event_seq
+      || event.checksum !== attempt.cost_proof.event_checksum) {
+      throw new Error('dual process receipt event identity mismatch');
+    }
+    return;
+  }
+
+  if (receipt.contract !== 'deep-loop-dual-checker-failed-process-receipt-v1'
+    || receipt.expected_provider_id !== attempt.provider_id
+    || receipt.expected_model_id !== attempt.model_id || attempt.status !== 'blocked') {
+    throw new Error('dual failed process receipt state mismatch');
+  }
+  exactDualCostEvent(snapshot, receipt.receipt_id, {
+    turns: receipt.usage.num_turns,
+    tokens: receipt.usage.tokens,
+    reported_turns: receipt.usage.num_turns,
+    reported_tokens: receipt.usage.tokens,
+    input_tokens: receipt.usage.input_tokens,
+    output_tokens: receipt.usage.output_tokens,
+    owner: aggregation.source_binding.lease_owner,
+    generation: aggregation.source_binding.lease_generation,
+    source: `${attempt.provider_id}-dual-checker-failed-measured`,
+    process_receipt_id: receipt.receipt_id,
+    dual_checker_aggregation_id: aggregation.aggregation_id,
+    dual_checker_attempt_id: attempt.attempt_id,
+    provider_id: receipt.observed_provider_id,
+    model_id: receipt.observed_model_id,
+    session_id: receipt.observed_session_id,
+    expected_provider_id: receipt.expected_provider_id,
+    expected_model_id: receipt.expected_model_id,
+    dual_checker_failure_reason: receipt.failure_reason,
+  });
 }
 
 function checkerRecoveryEnvelope(receipt, importDiagnostic) {
@@ -501,7 +654,8 @@ export function listPreflightUsageReceipts({ root, runId, journalDir } = {}) {
     const candidates = entries.flatMap(entry => {
       const match = entry.name.match(/^([a-f0-9]{32,64})-(read|write)\.json$/);
       const processMatch = entry.name.match(/^[a-f0-9]{64}-(?:maker|checker|checker-unconfirmed)\.json$/);
-      if (!entry.isFile() || entry.isSymbolicLink() || (!match && !processMatch)) {
+      const dualProcessMatch = DUAL_PROCESS_RECEIPT_NAME.test(entry.name);
+      if (!entry.isFile() || entry.isSymbolicLink() || (!match && !processMatch && !dualProcessMatch)) {
         throw new Error('unexpected receipt entry');
       }
       return match ? [{ name: entry.name, attemptId: match[1], smokeKind: match[2] }] : [];
@@ -563,8 +717,17 @@ export function listProcessUsageReceipts({ root, runId, journalDir } = {}) {
     for (const entry of entries) {
       if (!entry.isFile() || entry.isSymbolicLink()
         || (!/^([a-f0-9]{32,64})-(read|write)\.json$/.test(entry.name)
-          && !/^[a-f0-9]{64}-(?:maker|checker|checker-unconfirmed)\.json$/.test(entry.name))) {
+          && !/^[a-f0-9]{64}-(?:maker|checker|checker-unconfirmed)\.json$/.test(entry.name)
+          && !DUAL_PROCESS_RECEIPT_NAME.test(entry.name))) {
         throw new Error('unexpected receipt entry');
+      }
+    }
+    const dualEntries = entries.filter(entry => DUAL_PROCESS_RECEIPT_NAME.test(entry.name));
+    if (dualEntries.length > 0) {
+      const parent = trustedJournalDirectory(expectedDir, canonicalRoot, runId);
+      const snapshot = captureReconciledRunSnapshot(canonicalRoot, runId);
+      for (const entry of dualEntries) {
+        validateSettledDualProcessReceipt({ canonicalRoot, runId, entry, parent, snapshot });
       }
     }
     const preflight = listPreflightUsageReceipts({

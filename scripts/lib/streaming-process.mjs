@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { createCodexJsonlParser, parseClaudeUsage, STREAM_LIMITS } from './usage-parser.mjs';
+import { createCodexJsonlParser, parseClaudeUsage, parseGrokJson, STREAM_LIMITS } from './usage-parser.mjs';
 import {
   readProcessUsageReceipt,
   validateProcessUsageReceiptDescriptor,
@@ -48,6 +48,20 @@ function withEmptyDiagnostic(result, enabled, reasonCode, processPhase) {
 
 function validTimeout(timeoutMs) {
   return Number.isInteger(timeoutMs) && timeoutMs >= 0 && timeoutMs <= NODE_TIMER_MAX_MS;
+}
+
+function exactCodexLaunchModel(argv) {
+  if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string'
+    || arg.startsWith('--model=') || /^model\s*=/.test(arg))) return null;
+  const positions = argv.flatMap((arg, index) => (
+    arg === '--model' || arg === '-m' ? [index] : []
+  ));
+  const optionTerminator = argv.indexOf('--');
+  if (positions.length !== 1
+    || (optionTerminator !== -1 && positions[0] > optionTerminator)) return null;
+  const model = argv[positions[0] + 1];
+  return typeof model === 'string' && model.length > 0 && model.length <= 128
+    && !/[\0\r\n]/.test(model) ? model : null;
 }
 
 function appendBounded(chunks, chunk, retainedBytes, limit) {
@@ -107,9 +121,19 @@ export function runStreamingProcess(entry, {
   }
 
   const usageKind = entry.usageOutputKind ?? 'claude-json';
-  if (usageKind !== 'claude-json' && usageKind !== 'codex-jsonl') {
+  if (!['claude-json', 'codex-jsonl', 'grok-json'].includes(usageKind)) {
     return Promise.resolve(withEmptyDiagnostic(
       { ok: false, reason: 'unsupported-usage-kind' }, captureProcessDiagnostic,
+      'process-config-invalid', 'request',
+    ));
+  }
+  const providerModel = usageKind === 'codex-jsonl' && entry.captureProviderIdentity === true
+    ? exactCodexLaunchModel(entry.argv)
+    : null;
+  if (usageKind === 'codex-jsonl' && entry.captureProviderIdentity === true
+    && providerModel === null) {
+    return Promise.resolve(withEmptyDiagnostic(
+      { ok: false, reason: 'codex-provider-model-invalid' }, captureProcessDiagnostic,
       'process-config-invalid', 'request',
     ));
   }
@@ -150,7 +174,11 @@ export function runStreamingProcess(entry, {
     let settled = false;
     let forceKillTimer = null;
     const codexParser = usageKind === 'codex-jsonl'
-      ? createCodexJsonlParser({ captureFinalMessage: entry.captureFinalMessage === true })
+      ? createCodexJsonlParser({
+          captureFinalMessage: entry.captureFinalMessage === true,
+          captureProviderIdentity: entry.captureProviderIdentity === true,
+          providerModel,
+        })
       : null;
 
     const timer = setTimeout(() => {
@@ -239,8 +267,20 @@ export function runStreamingProcess(entry, {
             ok: true,
             usage: parsed.usage,
             ...(Buffer.isBuffer(parsed.finalMessage) ? { finalMessage: parsed.finalMessage } : {}),
+            ...(parsed.providerIdentity ? { providerIdentity: parsed.providerIdentity } : {}),
           }
         ) : diagnostic(parsed, 'child-protocol-invalid', 'child-protocol'));
+        return;
+      }
+      if (usageKind === 'grok-json') {
+        if (claudeTotalBytes > STREAM_LIMITS.claudeOutputBytes) {
+          resolve(diagnostic({ ok: false, reason: 'grok-output-overflow' }, 'child-output-overflow', 'child-protocol'));
+          return;
+        }
+        const parsed = parseGrokJson(Buffer.concat(claudeChunks, claudeBytes));
+        resolve(parsed == null
+          ? diagnostic({ ok: false, reason: 'grok-json-invalid' }, 'child-protocol-invalid', 'child-protocol')
+          : success({ ok: true, ...parsed }));
         return;
       }
       if (claudeTotalBytes > STREAM_LIMITS.claudeOutputBytes) {
@@ -309,6 +349,7 @@ function decodeWorkerResult(stdout, usageReceiptDescriptor = null) {
     'process_diagnostic',
     'process_streams',
     'finalMessageBase64',
+    'providerIdentity',
   ]);
   if (result == null || typeof result !== 'object' || Array.isArray(result)
     || typeof result.ok !== 'boolean'
@@ -324,13 +365,25 @@ function decodeWorkerResult(stdout, usageReceiptDescriptor = null) {
         || Array.isArray(result.process_streams)
         || Object.keys(result.process_streams).sort().join(',') !== 'stderr,stdout'
         || !validProcessStreamMetadata(result.process_streams.stderr)
-        || !validProcessStreamMetadata(result.process_streams.stdout)))) {
+        || !validProcessStreamMetadata(result.process_streams.stdout)))
+    || (Object.hasOwn(result, 'providerIdentity')
+      && (result.providerIdentity == null || typeof result.providerIdentity !== 'object'
+        || Array.isArray(result.providerIdentity)
+        || JSON.stringify(Object.keys(result.providerIdentity).sort()) !== JSON.stringify(['model_id', 'session_id'])
+        || typeof result.providerIdentity.session_id !== 'string'
+        || result.providerIdentity.session_id.length === 0
+        || result.providerIdentity.session_id.length > 512
+        || /[\0\r\n]/.test(result.providerIdentity.session_id)
+        || typeof result.providerIdentity.model_id !== 'string'
+        || result.providerIdentity.model_id.length === 0
+        || result.providerIdentity.model_id.length > 128
+        || /[\0\r\n]/.test(result.providerIdentity.model_id)))) {
     return { ok: false, reason: 'worker-protocol-invalid' };
   }
   if (result.ok === false) {
     if (typeof result.reason !== 'string' || Object.hasOwn(result, 'usage')
       || Object.hasOwn(result, 'usageReceipt') || Object.hasOwn(result, 'finalMessageBase64')
-      || Object.hasOwn(result, 'process_streams')) {
+      || Object.hasOwn(result, 'process_streams') || Object.hasOwn(result, 'providerIdentity')) {
       return { ok: false, reason: 'worker-protocol-invalid' };
     }
     return result;

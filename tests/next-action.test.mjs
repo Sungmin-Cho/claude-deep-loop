@@ -553,6 +553,31 @@ test('in-progress→await_result, blocked→await_human, checker in_progress not
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
 });
 
+test('first nested dual import keeps next-action awaiting the same outer checker', () => {
+  const l = loop();
+  l.review.points = ['implementation'];
+  l.workstreams = [{
+    id: 'ws-01', status: 'ready', review_points_done: ['implementation'],
+    episodes: [], depends_on: [],
+  }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001-maker', role: 'maker', status: 'done', point: 'implementation', workstream_id: 'ws-01' },
+    {
+      id: '002-checker', role: 'checker', plugin: 'deep-review', status: 'in_progress',
+      point: 'implementation', workstream_id: 'ws-01', target_maker: '001-maker',
+      review_aggregation: {
+        aggregate_status: 'in_progress',
+        attempts: [{ status: 'imported' }, { status: 'claimed' }],
+      },
+    },
+  ];
+  l.current_episode = '002-checker';
+  const action = nextAction(l, { now: 0 }).action;
+  assert.equal(action.type, 'await_result');
+  assert.equal(action.episode_id, '002-checker');
+});
+
 test('unsupported legacy inline checker dispatch becomes blocked and nextAction routes to needs-human', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-legacy-checker-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-06-24T00:00:00Z') });

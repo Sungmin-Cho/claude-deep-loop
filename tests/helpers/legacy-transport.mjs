@@ -13,6 +13,7 @@ export function migrateAuthenticLegacyTransport(root, runId, policy = 'compact-i
   legacy.schema_version = '0.3.0';
   delete legacy.project.binding_generation;
   delete legacy.autonomy.attended_launch_approval;
+  delete legacy.autonomy.checker_executable_approvals;
   delete legacy.session_chain.lease.takeover_kind;
   legacy.autonomy.continuation_policy = policy;
   legacy.autonomy.milestone_predicate = ['workstream_status_change'];

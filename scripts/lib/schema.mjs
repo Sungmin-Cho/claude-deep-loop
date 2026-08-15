@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { normalizePortableRelativePath } from './fs-safe.mjs';
+import { contentHash } from './envelope.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
@@ -552,6 +553,233 @@ function validateEpisodeV040(ep, errors) {
   }
 }
 
+const DUAL_ATTEMPT_KEYS = Object.freeze([
+  'slot', 'attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id',
+  'session_id', 'source_claim_sha256', 'status', 'capture_proof', 'process_proof',
+  'report_proof', 'cost_proof',
+]);
+const DUAL_CAPTURE_KEYS = Object.freeze([
+  'capture_id', 'record_path', 'record_sha256', 'manifest_path',
+  'source_manifest_sha256', 'skill_path', 'source_skill_sha256',
+]);
+const DUAL_PROCESS_KEYS = Object.freeze([
+  'receipt_id', 'receipt', 'provider_id', 'model_id', 'session_id', 'claim_hash',
+  'stdout_sha256', 'stderr_sha256',
+]);
+const DUAL_REPORT_KEYS = Object.freeze([
+  'verdict', 'report', 'report_sha256', 'event_seq', 'event_checksum',
+]);
+const DUAL_COST_KEYS = Object.freeze([
+  'receipt_id', 'event_seq', 'event_checksum', 'usage',
+]);
+const DUAL_AGGREGATE_PROOF_KEYS = Object.freeze([
+  'source_claim_sha256', 'attempt_ids', 'report_hashes', 'process_receipt_ids',
+  'cost_event_seqs', 'capture_hashes', 'final_event_seq', 'final_event_checksum',
+]);
+const DUAL_ATTEMPT_ROUTES = Object.freeze([
+  Object.freeze({
+    reviewer_id: 'deep-review', reviewer_adapter: 'codex-checker',
+    provider_id: 'openai-codex', model_id: 'gpt-5.6-sol',
+  }),
+  Object.freeze({
+    reviewer_id: 'grok-review', reviewer_adapter: 'grok-checker',
+    provider_id: 'xai-grok', model_id: 'grok-4.6',
+  }),
+]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function validOneTurnUsage(usage) {
+  return exactObject(usage, ['num_turns', 'input_tokens', 'output_tokens', 'tokens'])
+    && usage.num_turns === 1
+    && [usage.input_tokens, usage.output_tokens, usage.tokens]
+      .every(value => Number.isSafeInteger(value) && value >= 0)
+    && usage.tokens === usage.input_tokens + usage.output_tokens;
+}
+
+function validDualCapture(proof) {
+  if (!exactObject(proof, DUAL_CAPTURE_KEYS)) return false;
+  const { capture_id: captureId, ...binding } = proof;
+  return SHA256.test(captureId || '')
+    && captureId === contentHash(JSON.stringify(binding))
+    && [proof.record_path, proof.manifest_path, proof.skill_path]
+      .every(path => portableRel(path, '.deep-loop/runs/'))
+    && new Set([proof.record_path, proof.manifest_path, proof.skill_path]).size === 3
+    && [proof.record_sha256, proof.source_manifest_sha256, proof.source_skill_sha256]
+      .every(hash => SHA256.test(hash || ''));
+}
+
+function validDualProcess(proof, attempt) {
+  return exactObject(proof, DUAL_PROCESS_KEYS)
+    && [proof.receipt_id, proof.claim_hash, proof.stdout_sha256, proof.stderr_sha256]
+      .every(hash => SHA256.test(hash || ''))
+    && portableRel(proof.receipt, '.deep-loop/runs/')
+    && proof.provider_id === attempt.provider_id && proof.model_id === attempt.model_id
+    && proof.session_id === attempt.session_id && UUID.test(proof.session_id || '');
+}
+
+function validDualReport(proof) {
+  return exactObject(proof, DUAL_REPORT_KEYS)
+    && ['APPROVE', 'REQUEST_CHANGES', 'CONCERN'].includes(proof.verdict)
+    && portableRel(proof.report, '.deep-loop/runs/') && SHA256.test(proof.report_sha256 || '')
+    && Number.isSafeInteger(proof.event_seq) && proof.event_seq > 0
+    && SHA256.test(proof.event_checksum || '');
+}
+
+function validDualCost(proof, processProof) {
+  return exactObject(proof, DUAL_COST_KEYS)
+    && proof.receipt_id === processProof?.receipt_id
+    && Number.isSafeInteger(proof.event_seq) && proof.event_seq > 0
+    && SHA256.test(proof.event_checksum || '') && validOneTurnUsage(proof.usage);
+}
+
+function validDualAttemptClaim(attempt) {
+  if (!exactObject(attempt, DUAL_ATTEMPT_KEYS)) return false;
+  if (![0, 1].includes(attempt.slot)
+    || !REVIEW_ATTEMPT_ID.test(attempt.attempt_id || '')) return false;
+  const route = DUAL_ATTEMPT_ROUTES[attempt.slot];
+  const identityValid = attempt.reviewer_id === route.reviewer_id
+    && attempt.reviewer_adapter === route.reviewer_adapter
+    && attempt.provider_id === route.provider_id
+    && attempt.model_id === route.model_id
+    && SHA256.test(attempt.source_claim_sha256 || '')
+    && ['claimed', 'imported', 'blocked'].includes(attempt.status);
+  if (!identityValid) return false;
+  const empty = attempt.session_id === null && attempt.capture_proof === null
+    && attempt.process_proof === null && attempt.report_proof === null
+    && attempt.cost_proof === null;
+  const proofed = UUID.test(attempt.session_id || '')
+    && validDualCapture(attempt.capture_proof)
+    && validDualProcess(attempt.process_proof, attempt)
+    && validDualCost(attempt.cost_proof, attempt.process_proof);
+  if (attempt.status === 'claimed') return empty || (proofed && attempt.report_proof === null);
+  if (attempt.status === 'imported') return proofed && validDualReport(attempt.report_proof);
+  return empty || (proofed && (attempt.report_proof === null || validDualReport(attempt.report_proof)));
+}
+
+function validDualSourceBinding(binding) {
+  if (!exactObject(binding, [
+    'run_id', 'checker_episode_id', 'target_maker', 'workstream_id', 'point',
+    'project_root', 'runtime', 'lease_owner', 'lease_generation', 'artifacts',
+    'source_claim_sha256',
+  ])) return false;
+  for (const key of ['run_id', 'checker_episode_id', 'target_maker', 'workstream_id', 'point', 'lease_owner']) {
+    if (!nonEmptyString(binding[key])) return false;
+  }
+  const { source_claim_sha256: digest, ...withoutDigest } = binding;
+  return portableAbsolute(binding.project_root) && !/[\0\r\n]/.test(binding.project_root)
+    && ['claude', 'codex'].includes(binding.runtime)
+    && Number.isSafeInteger(binding.lease_generation) && binding.lease_generation > 0
+    && validFrozenArtifacts(binding.artifacts) && binding.artifacts.length > 0
+    && SHA256.test(digest || '') && digest === contentHash(JSON.stringify(withoutDigest));
+}
+
+function validateReviewAggregation(ep, errors) {
+  const aggregation = ep.review_aggregation;
+  if (aggregation === undefined) return;
+  const fail = detail => errors.push(`episodes[].review_aggregation ${detail}`);
+  if (!exactObject(aggregation, [
+    'schema_version', 'policy', 'aggregation_id', 'required_attempt_count',
+    'aggregate_status', 'source_binding', 'attempts', 'aggregate_proof',
+  ])) {
+    fail('must have the exact aggregation shape');
+    return;
+  }
+  if (aggregation.schema_version !== '2.0') fail('schema_version must be 2.0');
+  if (aggregation.policy !== 'ALL_LITERAL_APPROVE_2') fail('policy must be ALL_LITERAL_APPROVE_2');
+  if (aggregation.required_attempt_count !== 2) fail('required_attempt_count must be 2');
+  if (!/^aggregation-[0-9a-f-]{36}$/.test(aggregation.aggregation_id || '')) {
+    fail('aggregation_id must be a generated aggregation UUID');
+  }
+  if (!['in_progress', 'approved', 'rejected', 'blocked'].includes(aggregation.aggregate_status)) {
+    fail('aggregate_status is invalid');
+  }
+  if (!validDualSourceBinding(aggregation.source_binding)) fail('source_binding is invalid');
+  if (!Array.isArray(aggregation.attempts) || aggregation.attempts.length !== 2
+    || aggregation.attempts.some(attempt => !validDualAttemptClaim(attempt))) {
+    fail('attempts must contain exactly two valid claims');
+  } else {
+    if (aggregation.attempts.some((attempt, index) => attempt.slot !== index)) {
+      fail('attempt slots must be canonical 0,1 order');
+    }
+    for (const key of ['attempt_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id']) {
+      if (new Set(aggregation.attempts.map(attempt => attempt[key])).size !== 2) {
+        fail(`attempts must have distinct ${key}`);
+      }
+    }
+    if (aggregation.attempts.some(attempt => (
+      attempt.source_claim_sha256 !== aggregation.source_binding.source_claim_sha256
+    ))) fail('attempt source claims must match the aggregation source claim');
+    for (const key of [
+      'session_id', 'capture_proof', 'process_proof', 'report_proof', 'cost_proof',
+    ]) {
+      const values = aggregation.attempts.map(attempt => {
+        const value = attempt[key];
+        if (value === null) return null;
+        if (key === 'session_id') return value;
+        if (key === 'capture_proof') return value.capture_id;
+        if (key === 'process_proof') return value.receipt_id;
+        if (key === 'report_proof') return value.report_sha256;
+        return value.event_seq;
+      }).filter(value => value !== null);
+      if (new Set(values).size !== values.length) fail(`attempts must have distinct ${key}`);
+    }
+    const captures = aggregation.attempts.map(attempt => attempt.capture_proof);
+    if (captures.every(capture => capture !== null)) {
+      if (captures[0].source_manifest_sha256 !== captures[1].source_manifest_sha256
+        || captures[0].source_skill_sha256 !== captures[1].source_skill_sha256) {
+        fail('attempt captures must bind byte-identical source semantics');
+      }
+      for (const key of ['record_path', 'record_sha256', 'manifest_path', 'skill_path']) {
+        if (captures[0][key] === captures[1][key]) {
+          fail(`attempt captures must have distinct ${key}`);
+        }
+      }
+    }
+  }
+  const allImported = Array.isArray(aggregation.attempts)
+    && aggregation.attempts.length === 2
+    && aggregation.attempts.every(attempt => attempt.status === 'imported');
+  const allProofedImported = allImported
+    && aggregation.attempts.every(attempt => validDualAttemptClaim(attempt));
+  if (aggregation.aggregate_status === 'in_progress') {
+    if (aggregation.aggregate_proof !== null) fail('in_progress aggregate_proof must be null');
+    if (allImported) fail('in_progress aggregate cannot have both attempts imported');
+    if (ep.status !== 'in_progress') fail('in_progress aggregate requires in_progress outer checker');
+  } else if (['approved', 'rejected'].includes(aggregation.aggregate_status)) {
+    const proof = aggregation.aggregate_proof;
+    const literalApprove = allProofedImported
+      && aggregation.attempts.every(attempt => attempt.report_proof?.verdict === 'APPROVE');
+    if (!allProofedImported
+      || (aggregation.aggregate_status === 'approved' && !literalApprove)
+      || (aggregation.aggregate_status === 'rejected' && literalApprove)) {
+      fail('terminal aggregate verdict does not match the two imported attempts');
+    }
+    if (!exactObject(proof, DUAL_AGGREGATE_PROOF_KEYS)
+      || proof.source_claim_sha256 !== aggregation.source_binding?.source_claim_sha256
+      || !Number.isSafeInteger(proof.final_event_seq) || proof.final_event_seq < 1
+      || !SHA256.test(proof.final_event_checksum || '')) {
+      fail('terminal aggregate_proof is invalid');
+    } else if (allProofedImported) {
+      const expected = {
+        attempt_ids: aggregation.attempts.map(attempt => attempt.attempt_id),
+        report_hashes: aggregation.attempts.map(attempt => attempt.report_proof.report_sha256),
+        process_receipt_ids: aggregation.attempts.map(attempt => attempt.process_proof.receipt_id),
+        cost_event_seqs: aggregation.attempts.map(attempt => attempt.cost_proof.event_seq),
+        capture_hashes: aggregation.attempts.map(attempt => attempt.capture_proof.record_sha256),
+      };
+      for (const [key, value] of Object.entries(expected)) {
+        if (JSON.stringify(proof[key]) !== JSON.stringify(value)) fail(`aggregate_proof ${key} mismatch`);
+      }
+    }
+    if (ep.status !== aggregation.aggregate_status) {
+      fail('terminal aggregate status must match the outer checker');
+    }
+  } else {
+    if (aggregation.aggregate_proof !== null) fail('blocked aggregate_proof must be null');
+    if (ep.status !== 'blocked') fail('blocked aggregate requires blocked outer checker');
+  }
+}
+
 const APPROVAL_PACKAGE_KEYS = Object.freeze([
   'wrapper_path', 'wrapper_name', 'wrapper_version', 'optional_name', 'optional_spec',
   'native_name', 'native_version', 'target_triple', 'os', 'cpu',
@@ -560,6 +788,14 @@ const LAUNCHER_APPROVAL_KEYS = Object.freeze([
   'kind', 'canonical_path', 'sha256', 'version', 'platform', 'arch', 'source',
   'authenticode', 'approved_by', 'approved_at',
 ]);
+const CHECKER_APPROVAL_KEYS = Object.freeze([
+  'checker', 'reviewer_adapter', 'provider_id', 'canonical_path', 'sha256', 'version',
+  'platform', 'arch', 'source', 'authenticode', 'approved_by', 'approved_at',
+]);
+const CHECKER_APPROVAL_ROUTES = Object.freeze({
+  codex: Object.freeze({ reviewer_adapter: 'codex-checker', provider_id: 'openai-codex' }),
+  grok: Object.freeze({ reviewer_adapter: 'grok-checker', provider_id: 'xai-grok' }),
+});
 const AUTHENTICODE_KEYS = Object.freeze(['status', 'signer', 'thumbprint']);
 
 function validateRuntimeExecutableApproval(approval, autonomy, errors) {
@@ -707,6 +943,101 @@ function validateLauncherExecutableApprovals(approvals, errors) {
   }
 }
 
+function validateCheckerExecutableApprovals(approvals, errors) {
+  const prefix = 'autonomy.checker_executable_approvals';
+  const fail = detail => errors.push(`${prefix} ${detail}`);
+  if (approvals === undefined) return;
+  if (approvals === null || typeof approvals !== 'object' || Array.isArray(approvals)) {
+    fail('must be an object when present');
+    return;
+  }
+  const kinds = Object.keys(CHECKER_APPROVAL_ROUTES);
+  const mapKeys = Object.keys(approvals).sort();
+  if (mapKeys.length !== kinds.length || !kinds.every(kind => mapKeys.includes(kind))) {
+    fail('must contain exactly codex and grok slots');
+  }
+
+  const populated = [];
+  for (const checker of kinds) {
+    if (!Object.hasOwn(approvals, checker) || approvals[checker] === null) continue;
+    const approval = approvals[checker];
+    const slotFail = detail => fail(`${checker} ${detail}`);
+    if (typeof approval !== 'object' || Array.isArray(approval)) {
+      slotFail('must be an exact object or null');
+      continue;
+    }
+    const keys = Object.keys(approval).sort();
+    if (keys.length !== CHECKER_APPROVAL_KEYS.length
+      || !CHECKER_APPROVAL_KEYS.every(key => keys.includes(key))) {
+      slotFail('fields are incomplete or unknown');
+    }
+    const route = CHECKER_APPROVAL_ROUTES[checker];
+    if (approval.checker !== checker) slotFail('checker must match its map key');
+    if (approval.reviewer_adapter !== route.reviewer_adapter) slotFail('reviewer_adapter is route-mismatched');
+    if (approval.provider_id !== route.provider_id) slotFail('provider_id is route-mismatched');
+    const path = approval.canonical_path;
+    const windows = approval.platform === 'win32';
+    if (!portableAbsolute(path) || /[\0\r\n]/.test(path || '')
+      || (windows && (/^[\\/]{2}/.test(path || '') || /^[\\/](?:\?\?|device)[\\/]/i.test(path || '')))
+      || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path || '')) {
+      slotFail('canonical_path must be a safe absolute native path');
+    } else {
+      const name = windows ? win32.basename(path).toLowerCase() : posix.basename(path);
+      if (name !== (windows ? `${checker}.exe` : checker)) {
+        slotFail('canonical_path filename does not match checker');
+      }
+    }
+    if (!/^[0-9a-f]{64}$/.test(approval.sha256 || '')) slotFail('sha256 must be lowercase 64-hex');
+    if (typeof approval.version !== 'string'
+      || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(approval.version)) {
+      slotFail('version must be a bounded semantic version');
+    }
+    if (!['linux', 'darwin', 'win32'].includes(approval.platform)) slotFail('platform is invalid');
+    if (typeof approval.arch !== 'string' || !/^[A-Za-z0-9_-]+$/.test(approval.arch)) {
+      slotFail('arch must be a non-empty safe string');
+    }
+    if (approval.source !== 'human-explicit') slotFail('source must be human-explicit');
+    if (approval.approved_by !== 'human') slotFail('approved_by must be human');
+    if (typeof approval.approved_at !== 'string') slotFail('approved_at must be canonical ISO-8601');
+    else {
+      const timestamp = new Date(approval.approved_at);
+      if (!Number.isFinite(timestamp.getTime()) || timestamp.toISOString() !== approval.approved_at) {
+        slotFail('approved_at must be canonical ISO-8601');
+      }
+    }
+    const authenticode = approval.authenticode;
+    if (!windows && authenticode !== null) {
+      slotFail('authenticode must be null outside win32');
+    } else if (authenticode !== null) {
+      if (typeof authenticode !== 'object' || Array.isArray(authenticode)) {
+        slotFail('authenticode must be an exact object or null');
+      } else {
+        const authKeys = Object.keys(authenticode).sort();
+        if (authKeys.length !== AUTHENTICODE_KEYS.length
+          || !AUTHENTICODE_KEYS.every(key => authKeys.includes(key))) {
+          slotFail('authenticode fields are incomplete or unknown');
+        }
+        if (authenticode.status !== 'valid') slotFail('authenticode.status must be valid');
+        if (typeof authenticode.signer !== 'string' || authenticode.signer.length === 0
+          || authenticode.signer.length > 512 || /[\0\r\n]/.test(authenticode.signer)) {
+          slotFail('authenticode.signer must be a non-empty safe string');
+        }
+        if (typeof authenticode.thumbprint !== 'string'
+          || !/^[0-9a-f]+$/.test(authenticode.thumbprint) || authenticode.thumbprint.length > 256) {
+          slotFail('authenticode.thumbprint must be lowercase hex');
+        }
+      }
+    }
+    populated.push(approval);
+  }
+  if (populated.length === 2) {
+    if (populated[0].canonical_path === populated[1].canonical_path) {
+      fail('canonical paths must be distinct');
+    }
+    if (populated[0].sha256 === populated[1].sha256) fail('executable hashes must be distinct');
+  }
+}
+
 export function validate(loopJson, schema = loadSchema()) {
   const errors = [];
   for (const f of schema.required) {
@@ -718,8 +1049,9 @@ export function validate(loopJson, schema = loadSchema()) {
   }
   // schema_version 정확 일치 (legacy는 readHashVerifiedState가 in-memory 마이그레이션 — validate에 구버전이
   // 도달하면 마이그레이션 누락 경로이므로 실패가 옳다)
-  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.4.0') {
-    errors.push(`schema_version must be 0.4.0, got ${loopJson.schema_version}`);
+  if (loopJson.schema_version !== undefined
+    && !['0.4.0', '0.5.0'].includes(loopJson.schema_version)) {
+    errors.push(`schema_version must be 0.4.0 or 0.5.0, got ${loopJson.schema_version}`);
   }
   // 배열 타입
   for (const arr of ['workstreams', 'episodes', 'active_workstreams', 'discovered_items']) {
@@ -754,6 +1086,7 @@ export function validate(loopJson, schema = loadSchema()) {
     if (!Object.hasOwn(autonomy, 'attended_launch_approval')) errors.push('missing required field: autonomy.attended_launch_approval');
     else validateAttendedLaunchApproval(autonomy.attended_launch_approval, errors);
     validateRuntimeExecutableApproval(autonomy.runtime_executable_approval, autonomy, errors);
+    validateCheckerExecutableApprovals(autonomy.checker_executable_approvals, errors);
     validateLauncherExecutableApprovals(autonomy.launcher_executable_approvals, errors);
   }
   // v1.10 continuation state belongs to session_chain and must remain validated even when autonomy is absent.
@@ -823,7 +1156,13 @@ export function validate(loopJson, schema = loadSchema()) {
   const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];
   for (const ep of (Array.isArray(loopJson.episodes) ? loopJson.episodes : [])) {
     if (ep?.status !== undefined && !epAllowed.includes(ep.status)) errors.push(`invalid episode status: ${ep.status}`);
-    if (ep && typeof ep === 'object' && !Array.isArray(ep)) validateEpisodeV040(ep, errors);
+    if (ep && typeof ep === 'object' && !Array.isArray(ep)) {
+      validateEpisodeV040(ep, errors);
+      if (loopJson.schema_version === '0.5.0') validateReviewAggregation(ep, errors);
+      else if (ep.review_aggregation !== undefined) {
+        errors.push('episodes[].review_aggregation requires schema_version 0.5.0');
+      }
+    }
   }
   const wsAllowed = [...(schema.workstream_status?.skill || []), ...(schema.workstream_status?.kernel || [])];
   for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {

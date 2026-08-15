@@ -155,17 +155,31 @@ function fixtureWithoutChecker({
 
 test('review import schema artifact is exact and closed', () => {
   const schema = JSON.parse(readFileSync(join(HERE, '..', 'schemas', 'review-import.schema.json'), 'utf8'));
-  assert.equal(schema.type, 'object');
-  assert.equal(schema.additionalProperties, false);
-  assert.deepEqual(schema.required, ['schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id', 'verdict', 'report_body', 'artifacts']);
-  assert.equal(schema.properties.attempt_id.maxLength, 128);
-  assert.equal(schema.properties.attempt_id.pattern, '^[A-Za-z0-9][A-Za-z0-9._-]*$');
-  assert.deepEqual(schema.properties.schema_version, { type: 'string', const: '1.0' });
-  assert.deepEqual(schema.properties.verdict.enum, ['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
-  assert.equal(schema.properties.report_body.maxLength, REVIEW_REPORT_BODY_MAX_BYTES);
-  assert.equal(schema.properties.artifacts.maxItems, REVIEW_IMPORT_MAX_ARTIFACTS);
-  assert.equal(schema.properties.artifacts.items.additionalProperties, false);
-  assert.equal(schema.properties.artifacts.items.properties.sha256.pattern, '^[0-9a-f]{64}$');
+  assert.equal(schema.oneOf.length, 2);
+  const [v1, v2] = schema.oneOf;
+  for (const branch of [v1, v2]) {
+    assert.equal(branch.type, 'object');
+    assert.equal(branch.additionalProperties, false);
+    assert.equal(branch.properties.attempt_id.maxLength, 128);
+    assert.equal(branch.properties.attempt_id.pattern, '^[A-Za-z0-9][A-Za-z0-9._-]*$');
+    assert.equal(branch.properties.report_body.maxLength, REVIEW_REPORT_BODY_MAX_BYTES);
+    assert.equal(branch.properties.artifacts.maxItems, REVIEW_IMPORT_MAX_ARTIFACTS);
+  }
+  assert.deepEqual(v1.required, [
+    'schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker',
+    'attempt_id', 'verdict', 'report_body', 'artifacts',
+  ]);
+  assert.deepEqual(v1.properties.schema_version, { type: 'string', const: '1.0' });
+  assert.deepEqual(v2.required, [
+    'schema_version', 'aggregation_id', 'reviewer_id', 'reviewer_adapter',
+    'provider_id', 'model_id', 'session_id', 'checker_episode_id', 'target_maker',
+    'attempt_id', 'source_claim_sha256', 'verdict', 'report_body', 'artifacts',
+  ]);
+  assert.deepEqual(v2.properties.schema_version, { type: 'string', const: '2.0' });
+  assert.equal(v2.properties.source_claim_sha256.pattern, '^[0-9a-f]{64}$');
+  assert.deepEqual(v2.properties.verdict.enum, ['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
+  assert.equal(schema.$defs.artifacts.items.additionalProperties, false);
+  assert.equal(schema.$defs.artifacts.items.properties.sha256.pattern, '^[0-9a-f]{64}$');
 });
 
 test('parseReviewImport pins body/artifact bounds and returns portable normalized paths', () => {

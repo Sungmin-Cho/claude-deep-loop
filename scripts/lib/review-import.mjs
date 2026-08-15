@@ -21,6 +21,11 @@ const TOP_LEVEL_KEYS = Object.freeze([
   'schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker',
   'attempt_id', 'verdict', 'report_body', 'artifacts',
 ]);
+const DUAL_TOP_LEVEL_KEYS = Object.freeze([
+  'schema_version', 'aggregation_id', 'reviewer_id', 'reviewer_adapter',
+  'provider_id', 'model_id', 'session_id', 'checker_episode_id', 'target_maker',
+  'attempt_id', 'source_claim_sha256', 'verdict', 'report_body', 'artifacts',
+]);
 const ARTIFACT_KEYS = Object.freeze(['path', 'sha256']);
 const REVIEWERS = new Set(['deep-review', 'subagent-checker']);
 const VERDICTS = new Set(['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
@@ -97,6 +102,76 @@ export function parseReviewImport(raw) {
       throw new Error(`REVIEW_IMPORT_ARTIFACT_HASH_INVALID: ${path} sha256 must be lowercase 64-hex`);
     }
     if (seen.has(path)) throw new Error(`REVIEW_IMPORT_ARTIFACT_DUPLICATE: ${path}`);
+    seen.add(path);
+    return { path, sha256: artifact.sha256 };
+  });
+  return { ...value, artifacts };
+}
+
+export function parseDualReviewImport(raw) {
+  if (typeof raw !== 'string') throw new Error('DUAL_REVIEW_IMPORT_RAW_INVALID: expected UTF-8 text');
+  if (Buffer.byteLength(raw, 'utf8') > REVIEW_IMPORT_MAX_BYTES) {
+    throw new Error(`DUAL_REVIEW_IMPORT_TOO_LARGE: input exceeds ${REVIEW_IMPORT_MAX_BYTES} bytes`);
+  }
+  let value;
+  try { value = JSON.parse(raw); }
+  catch (error) {
+    throw new Error('DUAL_REVIEW_IMPORT_JSON_INVALID: stdin must be one JSON document', { cause: error });
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('DUAL_REVIEW_IMPORT_OBJECT_INVALID: top level must be an object');
+  }
+  if (!exactKeys(value, DUAL_TOP_LEVEL_KEYS)) {
+    throw new Error('DUAL_REVIEW_IMPORT_PROPERTY_INVALID: exact top-level properties are required');
+  }
+  if (value.schema_version !== '2.0') {
+    throw new Error('DUAL_REVIEW_IMPORT_SCHEMA_INVALID: schema_version must be 2.0');
+  }
+  const safeIdentity = identity => typeof identity === 'string'
+    && identity.length > 0 && identity.length <= 512 && !/[\0\r\n]/.test(identity);
+  for (const key of [
+    'aggregation_id', 'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id',
+    'session_id', 'checker_episode_id', 'target_maker',
+  ]) {
+    if (!safeIdentity(value[key])) {
+      throw new Error(`DUAL_REVIEW_IMPORT_IDENTITY_INVALID: ${key}`);
+    }
+  }
+  if (!REVIEW_ATTEMPT_ID.test(value.attempt_id || '')) {
+    throw new Error('DUAL_REVIEW_IMPORT_ATTEMPT_INVALID: attempt_id must be a bounded safe identifier');
+  }
+  if (!SHA256.test(value.source_claim_sha256 || '')) {
+    throw new Error('DUAL_REVIEW_IMPORT_SOURCE_CLAIM_INVALID: source_claim_sha256 must be lowercase 64-hex');
+  }
+  if (!VERDICTS.has(value.verdict)) {
+    throw new Error(`DUAL_REVIEW_IMPORT_VERDICT_INVALID: ${String(value.verdict)}`);
+  }
+  if (typeof value.report_body !== 'string') {
+    throw new Error('DUAL_REVIEW_IMPORT_BODY_INVALID: report_body must be a string');
+  }
+  if (Buffer.byteLength(value.report_body, 'utf8') > REVIEW_REPORT_BODY_MAX_BYTES) {
+    throw new Error(`DUAL_REVIEW_IMPORT_BODY_TOO_LARGE: report_body exceeds ${REVIEW_REPORT_BODY_MAX_BYTES} UTF-8 bytes`);
+  }
+  if (!Array.isArray(value.artifacts)) {
+    throw new Error('DUAL_REVIEW_IMPORT_ARTIFACTS_INVALID: artifacts must be an array');
+  }
+  if (value.artifacts.length > REVIEW_IMPORT_MAX_ARTIFACTS) {
+    throw new Error(`DUAL_REVIEW_IMPORT_ARTIFACTS_TOO_MANY: artifacts exceeds ${REVIEW_IMPORT_MAX_ARTIFACTS}`);
+  }
+  const seen = new Set();
+  const artifacts = value.artifacts.map((artifact) => {
+    if (artifact === null || typeof artifact !== 'object' || Array.isArray(artifact)) {
+      throw new Error('DUAL_REVIEW_IMPORT_ARTIFACT_INVALID: each artifact must be an object');
+    }
+    if (!exactKeys(artifact, ARTIFACT_KEYS)) {
+      throw new Error('DUAL_REVIEW_IMPORT_ARTIFACT_PROPERTY_INVALID: exact artifact properties are required');
+    }
+    const path = normalizePortableRelativePath(artifact.path);
+    if (!path) throw new Error(`DUAL_REVIEW_IMPORT_ARTIFACT_PATH_INVALID: ${String(artifact.path)}`);
+    if (!SHA256.test(artifact.sha256 || '')) {
+      throw new Error(`DUAL_REVIEW_IMPORT_ARTIFACT_HASH_INVALID: ${path} sha256 must be lowercase 64-hex`);
+    }
+    if (seen.has(path)) throw new Error(`DUAL_REVIEW_IMPORT_ARTIFACT_DUPLICATE: ${path}`);
     seen.add(path);
     return { path, sha256: artifact.sha256 };
   });
@@ -292,6 +367,77 @@ export function prepareImportedReview(root, runId, input, binding, { now } = {})
   return {
     report, reportRel, reportAbs, reportBytes, reportSha256, bytes,
     generatedAt: generated, input, binding,
+  };
+}
+
+function prepareContentAddressedReviewArtifact(root, runId, object) {
+  const canonicalRoot = canonicalProjectRoot(root);
+  const run = runDir(canonicalRoot, runId);
+  const canonicalRun = canonicalNonSymlinkDirectory(run);
+  if (!canonicalRun || !pathWithin(canonicalRoot, canonicalRun)) {
+    throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: canonical run directory is unavailable');
+  }
+  const reviews = join(canonicalRun, 'reviews');
+  if (existsSync(reviews)) {
+    const canonicalReviews = canonicalNonSymlinkDirectory(reviews);
+    if (!canonicalReviews || !pathWithin(canonicalRun, canonicalReviews)) {
+      throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: reviews directory is unsafe');
+    }
+  }
+  const bytes = Buffer.from(JSON.stringify(object, null, 2));
+  const reportSha256 = sha256Bytes(bytes);
+  const name = `${reportSha256}.json`;
+  const reportRel = `reviews/${name}`;
+  const reportAbs = join(reviews, name);
+  const report = ['.deep-loop', 'runs', runId, 'reviews', name].join('/');
+  if (resolve(canonicalRoot, ...report.split('/')) !== reportAbs) {
+    throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: durable report path mismatch');
+  }
+  return {
+    report,
+    reportRel,
+    reportAbs,
+    reportBytes: bytes.length,
+    reportSha256,
+    bytes,
+  };
+}
+
+export function prepareImportedDualReview(root, runId, input, binding, { now } = {}) {
+  const generated = generatedAt(now);
+  const envelope = wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'review-attempt-report',
+    schema: { name: 'review-attempt-report', version: '2.0' },
+    run_id: runId,
+    provenance: {
+      source_artifacts: binding.artifacts.map(artifact => artifact.path),
+      tool_versions: {},
+      review_binding: {
+        aggregation_id: binding.aggregationId,
+        reviewer_id: binding.reviewerId,
+        reviewer_adapter: binding.reviewerAdapter,
+        provider_id: binding.providerId,
+        model_id: binding.modelId,
+        session_id: binding.sessionId,
+        checker_episode_id: binding.checkerEpisodeId,
+        target_maker: binding.targetMaker,
+        attempt_id: binding.attemptId,
+        source_claim_sha256: binding.sourceClaimSha256,
+        process_receipt_id: binding.processReceiptId,
+        cost_event_seq: binding.costEventSeq,
+        capture_sha256: binding.captureSha256,
+        artifacts: binding.artifacts.map(artifact => ({ ...artifact })),
+      },
+    },
+    payload: { verdict: input.verdict, report_body: input.report_body },
+    now: generated,
+  });
+  return {
+    ...prepareContentAddressedReviewArtifact(root, runId, envelope),
+    generatedAt: generated,
+    input,
+    binding,
   };
 }
 

@@ -66,6 +66,38 @@ function floorRun({ continuationPolicy = null } = {}) {
   if (continuationPolicy) persistLegacyContinuationFixture(root, runId, continuationPolicy);
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
+
+test('dual checker attempt costs reconcile as two distinct measured events', () => {
+  const { root, runId } = floorRun();
+  const attempts = [
+    { id: 'attempt-codex', provider: 'openai-codex', model: 'gpt-5.6-sol', session: '11111111-1111-4111-8111-111111111111' },
+    { id: 'attempt-grok', provider: 'xai-grok', model: 'grok-4.6', session: '22222222-2222-4222-8222-222222222222' },
+  ];
+  for (const [index, attempt] of attempts.entries()) {
+    const data = {
+      turns: 1, tokens: 5 + index, reported_turns: 1, reported_tokens: 5 + index,
+      input_tokens: 3 + index, output_tokens: 2,
+      owner: runId, generation: 1, source: `${attempt.provider}-dual-checker-measured`,
+      process_receipt_id: `${index + 1}`.repeat(64),
+      dual_checker_aggregation_id: 'aggregation-11111111-1111-4111-8111-111111111111',
+      dual_checker_attempt_id: attempt.id,
+      provider_id: attempt.provider, model_id: attempt.model, session_id: attempt.session,
+    };
+    appendAnchored(root, runId, { type: 'cost', data }, (loop, spent) => {
+      loop.budget.spent = spent.turns;
+      loop.budget.tokens_spent = spent.tokens;
+      loop.session_chain.sessions[0].turns += 1;
+    });
+  }
+  assert.doesNotThrow(() => reconcileBudget(root, runId));
+  const state = readState(root, runId).data;
+  assert.equal(state.budget.spent, 2);
+  assert.equal(state.budget.tokens_spent, 11);
+  const costs = readLines(root, runId).filter(event => event.type === 'cost'
+    && event.data?.dual_checker_attempt_id);
+  assert.equal(costs.length, 2);
+  assert.equal(new Set(costs.map(event => event.data.process_receipt_id)).size, 2);
+});
 function ownerSessionTurns(root, runId) {
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;

@@ -19,6 +19,13 @@ import { createHash } from 'node:crypto';
 import { contentHash, unwrap, wrap } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { dispatchReview } from '../scripts/lib/review.mjs';
+import {
+  claimDualIndependentReview,
+  importDualReviewOutcome,
+  settleDualAttemptProcess,
+} from '../scripts/lib/dual-checker.mjs';
 import {
   readState,
   readStateForRootRecovery,
@@ -226,6 +233,127 @@ function movedRun(prefix = 'dl-root-relocated-') {
   renameSync(originalRoot, candidateRoot);
   return { originalRoot, candidateRoot, runId, storedRoot };
 }
+
+function movedRunWithDualReceipts() {
+  const parent = freshRoot('dl-root-dual-accounting-');
+  const originalRoot = join(parent, 'old root');
+  const candidateRoot = join(parent, 'new root');
+  mkdirSync(originalRoot);
+  const { runId } = init(originalRoot, 'codex');
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const worktree = '.claude/worktrees/dual-root';
+  const artifact = `${worktree}/artifact.txt`;
+  mkdirSync(dirname(join(originalRoot, artifact)), { recursive: true });
+  writeFileSync(join(originalRoot, artifact), 'dual relocation artifact');
+  const workstreamId = newWorkstream(originalRoot, runId, {
+    title: 'dual relocation', branch: 'dual-relocation', worktree, fence,
+  }).id;
+  const makerId = newEpisode(originalRoot, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: workstreamId, expectedArtifacts: [artifact], fence,
+  }).id;
+  recordEpisode(originalRoot, runId, makerId, { status: 'in_progress', fence });
+  recordEpisode(originalRoot, runId, makerId, {
+    status: 'done', artifacts: [artifact], proof: {}, fence,
+  });
+  const checkerId = dispatchReview(originalRoot, runId, {
+    point: 'implementation', workstreamId, detected: { 'deep-review': true }, fence,
+  }).checkerEpisodeId;
+  const claim = claimDualIndependentReview(originalRoot, runId, {
+    episodeId: checkerId, fence,
+  });
+  const sessions = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+  ];
+  for (const [index, attempt] of claim.attempts.entries()) {
+    const base = `.deep-loop/runs/${runId}/checker-captures/${attempt.attempt_id}`;
+    const captureBinding = {
+      record_path: `${base}/capture.json`,
+      manifest_path: `${base}/plugin.json`,
+      skill_path: `${base}/SKILL.md`,
+    };
+    const captured = {
+      record_path: Buffer.from(`capture-${index}`),
+      manifest_path: Buffer.from('shared-manifest'),
+      skill_path: Buffer.from('shared-skill'),
+    };
+    for (const key of Object.keys(captureBinding)) {
+      mkdirSync(dirname(join(originalRoot, captureBinding[key])), { recursive: true });
+      writeFileSync(join(originalRoot, captureBinding[key]), captured[key]);
+    }
+    const proofBinding = {
+      record_path: captureBinding.record_path,
+      record_sha256: createHash('sha256').update(captured.record_path).digest('hex'),
+      manifest_path: captureBinding.manifest_path,
+      source_manifest_sha256: createHash('sha256').update(captured.manifest_path).digest('hex'),
+      skill_path: captureBinding.skill_path,
+      source_skill_sha256: createHash('sha256').update(captured.skill_path).digest('hex'),
+    };
+    settleDualAttemptProcess(originalRoot, runId, {
+      episodeId: checkerId,
+      attemptId: attempt.attempt_id,
+      capture: {
+        capture_id: contentHash(JSON.stringify(proofBinding)),
+        ...proofBinding,
+      },
+      process: {
+        provider_id: attempt.provider_id,
+        model_id: attempt.model_id,
+        session_id: sessions[index],
+        usage: { num_turns: 1, input_tokens: 3 + index, output_tokens: 2, tokens: 5 + index },
+        stdout_sha256: `${index + 1}`.repeat(64),
+        stderr_sha256: `${index + 3}`.repeat(64),
+      },
+      fence,
+    });
+  }
+  const first = claim.attempts[0];
+  importDualReviewOutcome(originalRoot, runId, {
+    raw: JSON.stringify({
+      schema_version: '2.0', aggregation_id: claim.aggregation_id,
+      reviewer_id: first.reviewer_id, reviewer_adapter: first.reviewer_adapter,
+      provider_id: first.provider_id, model_id: first.model_id, session_id: sessions[0],
+      checker_episode_id: checkerId, target_maker: makerId, attempt_id: first.attempt_id,
+      source_claim_sha256: first.source_claim_sha256, verdict: 'APPROVE',
+      report_body: '# first relocation review\n\nAPPROVE',
+      artifacts: claim.source_binding.artifacts,
+    }),
+    fence,
+  });
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  renameSync(originalRoot, candidateRoot);
+  return { originalRoot, candidateRoot, runId, storedRoot, checkerId, attemptIds: claim.attempts.map(a => a.attempt_id) };
+}
+
+test('root relocation preserves settled dual costs and blocks the root-bound aggregate', async () => {
+  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const moved = movedRunWithDualReceipts();
+  const beforeCosts = eventLines(moved.candidateRoot, moved.runId).filter(event => (
+    event.type === 'cost' && event.data?.dual_checker_attempt_id
+  ));
+  assert.equal(beforeCosts.length, 2);
+  assert.equal(diagnoseProjectRoot(moved.candidateRoot, moved.runId).action, 'relocation-recovery');
+
+  recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const state = readState(moved.candidateRoot, moved.runId).data;
+  const checker = state.episodes.find(episode => episode.id === moved.checkerId);
+  assert.equal(checker.status, 'blocked');
+  assert.equal(checker.review_aggregation.aggregate_status, 'blocked');
+  assert.equal(checker.review_aggregation.aggregate_proof, null);
+  assert.deepEqual(checker.review_aggregation.attempts.map(attempt => attempt.status), [
+    'imported', 'blocked',
+  ]);
+  const afterEvents = eventLines(moved.candidateRoot, moved.runId);
+  assert.equal(afterEvents.filter(event => event.type === 'cost'
+    && event.data?.dual_checker_attempt_id).length, 2);
+  const rebound = afterEvents.find(event => event.type === 'project-root-rebound');
+  assert.deepEqual(rebound.data.invalidated_review_attempt_ids, [...moved.attemptIds].sort());
+  assert.equal(rebound.data.settled_receipt_ids.length, 2);
+  assert.equal(readdirSync(join(
+    runDir(moved.candidateRoot, moved.runId), 'preflight', 'process-receipts',
+  )).filter(name => name.endsWith('-dual-checker.json')).length, 2);
+});
 
 function movedRunWithProcessReceipt({
   malformed = false,

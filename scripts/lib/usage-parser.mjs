@@ -35,16 +35,54 @@ export function parseClaudeUsage(stdout) {
   return { num_turns: turns, tokens };
 }
 
+export function parseGrokJson(stdout) {
+  const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout || ''), 'utf8');
+  if (bytes.length === 0 || bytes.length > STREAM_LIMITS.claudeOutputBytes) return null;
+  let parsed;
+  try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { return null; }
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)
+    || JSON.stringify(Object.keys(parsed).sort())
+      !== JSON.stringify(['model', 'num_turns', 'result', 'session_id', 'usage'])
+    || typeof parsed.session_id !== 'string' || parsed.session_id.length === 0
+    || parsed.session_id.length > 512 || /[\0\r\n]/.test(parsed.session_id)
+    || typeof parsed.model !== 'string' || parsed.model.length === 0
+    || parsed.model.length > 128 || /[\0\r\n]/.test(parsed.model)
+    || parsed.num_turns !== 1
+    || parsed.usage == null || typeof parsed.usage !== 'object' || Array.isArray(parsed.usage)
+    || JSON.stringify(Object.keys(parsed.usage).sort()) !== JSON.stringify(['input_tokens', 'output_tokens'])
+    || !safeTokenCount(parsed.usage.input_tokens) || !safeTokenCount(parsed.usage.output_tokens)
+    || !safeTokenCount(parsed.usage.input_tokens + parsed.usage.output_tokens)
+    || parsed.result == null || typeof parsed.result !== 'object' || Array.isArray(parsed.result)) return null;
+  const finalMessage = Buffer.from(JSON.stringify(parsed.result));
+  if (finalMessage.length === 0 || finalMessage.length > STREAM_LIMITS.finalMessageBytes) return null;
+  return {
+    usage: {
+      num_turns: 1,
+      input_tokens: parsed.usage.input_tokens,
+      output_tokens: parsed.usage.output_tokens,
+      tokens: parsed.usage.input_tokens + parsed.usage.output_tokens,
+    },
+    finalMessage,
+    providerIdentity: { session_id: parsed.session_id, model_id: parsed.model },
+  };
+}
+
 function safeTokenCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
-export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
+export function createCodexJsonlParser({
+  captureFinalMessage = false,
+  captureProviderIdentity = false,
+  providerModel = null,
+} = {}) {
   let decoder = new StringDecoder('utf8');
   let line = '';
   let lineBytes = 0;
   let terminal = null;
   let finalMessage = null;
+  let providerIdentity = null;
   let failure = null;
   let ended = false;
   let result = null;
@@ -67,6 +105,7 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
     resetCurrentLine();
     terminal = null;
     finalMessage = null;
+    providerIdentity = null;
   }
 
   function validUtf8(segment) {
@@ -127,6 +166,25 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
     }
     if (event?.type === 'turn.failed') {
       fail('codex-turn-failed');
+      return;
+    }
+    if (captureProviderIdentity && event?.type === 'thread.started') {
+      const emittedModel = Object.hasOwn(event, 'model') ? event.model : null;
+      const identityKeys = emittedModel === null
+        ? ['thread_id', 'type']
+        : ['model', 'thread_id', 'type'];
+      const boundModel = providerModel ?? emittedModel;
+      if (providerIdentity != null
+        || JSON.stringify(Object.keys(event).sort()) !== JSON.stringify(identityKeys)
+        || typeof event.thread_id !== 'string' || event.thread_id.length === 0
+        || event.thread_id.length > 512 || /[\0\r\n]/.test(event.thread_id)
+        || typeof boundModel !== 'string' || boundModel.length === 0
+        || boundModel.length > 128 || /[\0\r\n]/.test(boundModel)
+        || (emittedModel !== null && emittedModel !== boundModel)) {
+        fail('codex-provider-identity-invalid');
+        return;
+      }
+      providerIdentity = { session_id: event.thread_id, model_id: boundModel };
       return;
     }
     if (captureFinalMessage && event?.type === 'item.completed' && event.item?.type === 'agent_message') {
@@ -211,6 +269,9 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
           consumeLine();
         }
       }
+      if (failure == null && captureProviderIdentity && providerIdentity == null) {
+        fail('codex-provider-identity-missing');
+      }
       result = failure != null
         ? { ok: false, reason: failure }
         : terminal == null
@@ -219,6 +280,7 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
               ok: true,
               usage: terminal,
               ...(captureFinalMessage && finalMessage != null ? { finalMessage } : {}),
+              ...(captureProviderIdentity ? { providerIdentity } : {}),
             };
       return result;
     },

@@ -2,20 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "deep-loop/review-import.schema.json",
   "title": "deep-loop bounded independent review import",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schema_version", "reviewer_id", "checker_episode_id", "target_maker", "attempt_id", "verdict", "report_body", "artifacts"],
-  "properties": {
-    "schema_version": { "type": "string", "const": "1.0" },
-    "reviewer_id": { "type": "string", "minLength": 1 },
-    "checker_episode_id": { "type": "string", "minLength": 1 },
-    "target_maker": { "type": "string", "minLength": 1 },
-    "attempt_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
-    "verdict": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "CONCERN"] },
-    "report_body": { "type": "string", "maxLength": 262144 },
+  "$defs": {
     "artifacts": {
       "type": "array",
-      "maxItems": 256,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -26,5 +15,43 @@
         }
       }
     }
-  }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "reviewer_id", "checker_episode_id", "target_maker", "attempt_id", "verdict", "report_body", "artifacts"],
+      "properties": {
+        "schema_version": { "type": "string", "const": "1.0" },
+        "reviewer_id": { "type": "string", "minLength": 1 },
+        "checker_episode_id": { "type": "string", "minLength": 1 },
+        "target_maker": { "type": "string", "minLength": 1 },
+        "attempt_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "verdict": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "CONCERN"] },
+        "report_body": { "type": "string", "maxLength": 262144 },
+        "artifacts": { "$ref": "#/$defs/artifacts", "maxItems": 256 }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "aggregation_id", "reviewer_id", "reviewer_adapter", "provider_id", "model_id", "session_id", "checker_episode_id", "target_maker", "attempt_id", "source_claim_sha256", "verdict", "report_body", "artifacts"],
+      "properties": {
+        "schema_version": { "type": "string", "const": "2.0" },
+        "aggregation_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "reviewer_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reviewer_adapter": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "provider_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "session_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "checker_episode_id": { "type": "string", "minLength": 1 },
+        "target_maker": { "type": "string", "minLength": 1 },
+        "attempt_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "source_claim_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "verdict": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "CONCERN"] },
+        "report_body": { "type": "string", "maxLength": 262144 },
+        "artifacts": { "$ref": "#/$defs/artifacts", "maxItems": 256 }
+      }
+    }
+  ]
 }

@@ -40,6 +40,73 @@ test('Codex JSONL parser returns one measured turn from one terminal event', () 
   });
 });
 
+test('Codex JSONL parser binds provider-emitted thread and model identity when required', () => {
+  const identity = {
+    type: 'thread.started',
+    thread_id: '11111111-1111-4111-8111-111111111111',
+    model: 'gpt-5.6-sol',
+  };
+  assert.deepEqual(parseCodex([
+    JSON.stringify(identity),
+    completed({ input_tokens: 2, output_tokens: 3 }),
+  ], { captureProviderIdentity: true }), {
+    ok: true,
+    usage: { num_turns: 1, tokens: 5, input_tokens: 2, output_tokens: 3 },
+    providerIdentity: {
+      session_id: identity.thread_id,
+      model_id: identity.model,
+    },
+  });
+
+  for (const malformed of [
+    { ...identity, thread_id: '' },
+    { ...identity, model: '' },
+    { ...identity, thread_id: `${identity.thread_id}\n` },
+    { ...identity, extra: true },
+  ]) {
+    assert.deepEqual(parseCodex([
+      JSON.stringify(malformed),
+      completed(),
+    ], { captureProviderIdentity: true }), {
+      ok: false,
+      reason: 'codex-provider-identity-invalid',
+    });
+  }
+  assert.deepEqual(parseCodex([completed()], { captureProviderIdentity: true }), {
+    ok: false,
+    reason: 'codex-provider-identity-missing',
+  });
+});
+
+test('Codex JSONL parser binds the official model-less thread event to the exact launch model', () => {
+  const threadId = '11111111-1111-4111-8111-111111111111';
+  assert.deepEqual(parseCodex([
+    JSON.stringify({ type: 'thread.started', thread_id: threadId }),
+    completed({ input_tokens: 2, output_tokens: 3 }),
+  ], {
+    captureProviderIdentity: true,
+    providerModel: 'gpt-5.6-sol',
+  }), {
+    ok: true,
+    usage: { num_turns: 1, tokens: 5, input_tokens: 2, output_tokens: 3 },
+    providerIdentity: {
+      session_id: threadId,
+      model_id: 'gpt-5.6-sol',
+    },
+  });
+
+  assert.deepEqual(parseCodex([
+    JSON.stringify({ type: 'thread.started', thread_id: threadId, model: 'gpt-5.6-sol-mutant' }),
+    completed(),
+  ], {
+    captureProviderIdentity: true,
+    providerModel: 'gpt-5.6-sol',
+  }), {
+    ok: false,
+    reason: 'codex-provider-identity-invalid',
+  });
+});
+
 test('Codex JSONL parser preserves split UTF-8 agent-message bytes across CRLF chunk boundaries', () => {
   const message = '첫 줄\r\n둘째 줄 🙂';
   const stream = Buffer.from([

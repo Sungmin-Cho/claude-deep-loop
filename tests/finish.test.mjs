@@ -21,6 +21,29 @@ function seed() {
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 
+test('finish remains blocked after only the first nested dual attempt is imported', () => {
+  const loop = {
+    review: { points: ['implementation'] },
+    episodes: [
+      { id: '001-maker', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      {
+        id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation',
+        workstream_id: 'w', target_maker: '001-maker', status: 'in_progress',
+        review_aggregation: {
+          aggregate_status: 'in_progress',
+          attempts: [{ status: 'imported' }, { status: 'claimed' }],
+        },
+      },
+    ],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }],
+    active_workstreams: [],
+  };
+  const proof = finishProofState(loop);
+  assert.equal(proof.settled, false);
+  assert.ok(proof.missing.includes('unsettled-episodes'));
+  assert.ok(proof.missing.includes('no-independent-review'));
+});
+
 // 완전히 settled+reviewed+terminal 인 run 을 실제 lib 계약대로 조립 (completed proof 충족).
 // Codex r2 sf-2: recordEpisode('done')는 expected_artifacts 가 비어있지 않고 실제 파일이 root 하위에 존재해야 한다
 // (episode.mjs:89-112). recordWorkstreamTerminal('ready')는 전 review point coverage 필요(위 seed 가 1개로 축소).

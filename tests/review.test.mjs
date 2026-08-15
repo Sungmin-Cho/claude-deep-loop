@@ -44,6 +44,23 @@ function wsReport(root, worktreeRel, name = 'review.md', body = '# review report
   writeFileSync(join(root, rel), body);
   return rel;
 }
+
+test('one imported dual attempt never makes its target maker reviewed', () => {
+  const maker = { id: '001-deep-work', role: 'maker', status: 'done' };
+  const checker = {
+    id: '002-deep-review', role: 'checker', plugin: 'deep-review', status: 'in_progress',
+    target_maker: maker.id,
+    review_aggregation: {
+      aggregate_status: 'in_progress',
+      attempts: [{ status: 'imported' }, { status: 'claimed' }],
+    },
+  };
+  assert.equal(makerReviewed({ episodes: [maker, checker] }, maker), false);
+  checker.status = 'approved';
+  checker.review_aggregation.aggregate_status = 'approved';
+  checker.review_aggregation.attempts[1].status = 'imported';
+  assert.equal(makerReviewed({ episodes: [maker, checker] }, maker), true);
+});
 // A bound, pending checker ready to receive a verdict for (ws, point). Writes a distinct maker artifact.
 function boundChecker(root, runId, f, point) {
   const worktree = '.claude/worktrees/w-' + point;
