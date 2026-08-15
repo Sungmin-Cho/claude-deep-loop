@@ -53,6 +53,11 @@ function seed(runtime = 'claude', { label = runtime, now = '2026-08-05T00:00:00.
   return { root, runId, runtime, fence, containedCwd };
 }
 
+test('CHARACTERIZATION codex rejects max effort, claude accepts it', () => {
+  assert.throws(() => validateRuntimeProfile('codex', { effort: 'max' }), /UNSUPPORTED_RUNTIME_EFFORT/);
+  assert.deepEqual(validateRuntimeProfile('claude', { effort: 'max' }), { model: null, effort: 'max' });
+});
+
 test('CHARACTERIZATION entrypoint heuristic applies to claude only', () => {
   const env = { CLAUDE_CODE_ENTRYPOINT: 'sdk-py' };
   assert.equal(isHeadlessInvocation(env, 'claude'), true);

@@ -23,7 +23,7 @@ import {
   sep,
   win32,
 } from 'node:path';
-import { validateSessionRuntime } from './runtime.mjs';
+import { runtimeCapability, validateSessionRuntime } from './runtime.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { LAUNCHER_KINDS, validate as validateLoop } from './schema.mjs';
@@ -371,10 +371,17 @@ function probeExplicitClaudeVersion(executable, runVersion = spawnSync, expected
   return match[1];
 }
 
+const VERSION_PROBES = Object.freeze({
+  claude: probeExplicitClaudeVersion,
+  codex: probeExplicitCodexVersion,
+});
+
 function probeExplicitRuntimeVersion(runtime, executable, runVersion = spawnSync, expectedVersion = null) {
-  return runtime === 'claude'
-    ? probeExplicitClaudeVersion(executable, runVersion, expectedVersion)
-    : probeExplicitCodexVersion(executable, runVersion, expectedVersion);
+  const probe = VERSION_PROBES[runtimeCapability(runtime, 'version_probe')];
+  if (probe === undefined) {
+    throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', `no version probe for ${runtime}`);
+  }
+  return probe(executable, runVersion, expectedVersion);
 }
 
 function normalizeAuthenticode(executable, { platform, authenticodeProbe, authenticodePolicy } = {}) {
@@ -574,7 +581,7 @@ function assertIdentityShape(identity) {
 export function collectRuntimeExecutableCandidates(runtime, options = {}) {
   validateSessionRuntime(runtime);
   const platform = options.platform ?? process.platform;
-  const executableName = runtime === 'codex' ? 'codex' : 'claude';
+  const executableName = runtimeCapability(runtime, 'executable_name');
   const candidates = [];
   const add = (path, source) => {
     assertTrustedRuntimeNamespace(path, platform);
