@@ -17,7 +17,7 @@ import {
 } from './fs-safe.mjs';
 import { nextAction } from './next-action.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
-import { validateSessionRuntime, sessionRuntime } from './runtime.mjs';
+import { runtimeCapability, sessionRuntime, skillToken, validateSessionRuntime } from './runtime.mjs';
 import { validate } from './schema.mjs';
 import { isOpenScope, ownerSession } from './session-scope.mjs';
 import { runDir, withReconciledMutationLock } from './state.mjs';
@@ -843,9 +843,7 @@ function frozenSafeDescriptor(value) {
 }
 
 function restoreCommand(runtime) {
-  return runtime === 'claude'
-    ? '/deep-loop-compact restore'
-    : '$deep-loop:deep-loop-compact restore';
+  return skillToken(runtime, 'deep-loop-compact restore');
 }
 
 function successProjection(phase, candidate, {
@@ -1004,7 +1002,7 @@ function inspectLocked(root, runId, guard, snapshot, {
       && Object.keys(hostSessionEvidence).length === 1
       && typeof hostSessionEvidence.id === 'string'
       ? {
-        provider: selected.context.runtime === 'claude' ? 'claude-code' : 'codex',
+        provider: runtimeCapability(selected.context.runtime, 'provider_label'),
         id: hostSessionEvidence.id,
       }
       : hostSessionEvidence,

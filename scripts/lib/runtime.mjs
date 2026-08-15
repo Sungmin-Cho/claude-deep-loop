@@ -45,6 +45,14 @@ export function runtimeCapability(runtime, field) {
   return row[field];
 }
 
+// `deep-loop-compact restore`처럼 인자가 붙는 형태도 그대로 받는다.
+// 현행 출력과 문자 그대로 같아야 한다 — 특성화 테스트가 이를 고정한다.
+export function skillToken(runtime, skillWithArgs) {
+  return runtimeCapability(runtime, 'skill_token_style') === 'dollar'
+    ? `$deep-loop:${skillWithArgs}`
+    : `/${skillWithArgs}`;
+}
+
 export function validateSessionRuntime(value) {
   if (!SESSION_RUNTIMES.includes(value)) {
     throw new Error(`INVALID_RUNTIME: expected claude or codex, got ${String(value)}`);

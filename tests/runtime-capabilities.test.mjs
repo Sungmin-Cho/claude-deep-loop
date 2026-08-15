@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability } from '../scripts/lib/runtime.mjs';
+import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken } from '../scripts/lib/runtime.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -82,6 +82,17 @@ test('every capability field has at least one production consumer', { skip: true
   for (const field of FIELDS) {
     assert.ok(sources.includes(`'${field}'`), `capability ${field} has no consumer in scripts/`);
   }
+});
+
+test('skillToken renders the host-correct invocation', () => {
+  assert.equal(skillToken('claude', 'deep-loop-resume'), '/deep-loop-resume');
+  assert.equal(skillToken('codex', 'deep-loop-resume'), '$deep-loop:deep-loop-resume');
+  assert.equal(skillToken('claude', 'deep-loop-compact restore'), '/deep-loop-compact restore');
+  assert.equal(skillToken('codex', 'deep-loop-compact restore'), '$deep-loop:deep-loop-compact restore');
+});
+
+test('skillToken throws for an unknown runtime', () => {
+  assert.throws(() => skillToken('grok', 'deep-loop-resume'), /INVALID_RUNTIME/);
 });
 
 test('the table is deeply frozen', () => {

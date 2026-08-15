@@ -77,7 +77,7 @@ import {
   diagnoseLauncherExecutable,
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
-import { sessionRuntime, validateSessionRuntime } from './lib/runtime.mjs';
+import { runtimeCapability, sessionRuntime, validateSessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import { resolveRunPath } from './lib/path-resolve.mjs';
 import {
@@ -916,7 +916,7 @@ const handlers = {
           return 1;
         }
         hostSessionEvidence = {
-          provider: runtime === 'claude' ? 'claude-code' : 'codex',
+          provider: runtimeCapability(runtime, 'provider_label'),
           id: body.session_id,
         };
       }

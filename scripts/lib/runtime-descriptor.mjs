@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
 import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
-import { validateSessionRuntime } from './runtime.mjs';
+import { runtimeCapability, skillToken, validateSessionRuntime } from './runtime.mjs';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
 import { tomlBasicString } from './toml-safe.mjs';
@@ -120,13 +120,11 @@ function validateSpawnArgs({ parentRunId, childRunId, handoffRel }) {
 }
 
 export function resumeSkillToken(runtime = 'claude') {
-  return validateSessionRuntime(runtime) === 'codex'
-    ? '$deep-loop:deep-loop-resume'
-    : '/deep-loop-resume';
+  return skillToken(runtime, 'deep-loop-resume');
 }
 
 export function usageOutputKind(runtime = 'claude') {
-  return validateSessionRuntime(runtime) === 'codex' ? 'codex-jsonl' : 'claude-json';
+  return runtimeCapability(runtime, 'usage_output_kind');
 }
 
 function resumeInvocation(runtime, root, runId) {
