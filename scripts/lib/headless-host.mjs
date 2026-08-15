@@ -769,10 +769,49 @@ function validDualTransportResult(result, attempt) {
     && !Array.isArray(result.providerIdentity)
     && DUAL_PROVIDER_SESSION.test(result.providerIdentity.session_id || '')
     && result.providerIdentity.model_id === attempt.model_id
+    && validProviderLifecycle(result.process_lifecycle)
     && result.process_streams != null && typeof result.process_streams === 'object'
     && !Array.isArray(result.process_streams)
     && validProcessStreamMetadata(result.process_streams.stdout)
     && validProcessStreamMetadata(result.process_streams.stderr);
+}
+
+function validProviderLifecycle(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',')
+      !== 'exit_code,finished_at,signal,spawned,started_at,timed_out') return false;
+  const started = new Date(value.started_at);
+  const finished = new Date(value.finished_at);
+  return value.spawned === true && value.exit_code === 0 && value.signal === null
+    && value.timed_out === false
+    && Number.isFinite(started.getTime()) && started.toISOString() === value.started_at
+    && Number.isFinite(finished.getTime()) && finished.toISOString() === value.finished_at
+    && finished.getTime() >= started.getTime();
+}
+
+function checkerSecurityIdentity(approval) {
+  return {
+    checker: approval.checker,
+    reviewer_adapter: approval.reviewer_adapter,
+    provider_id: approval.provider_id,
+    model_id: approval.model_id,
+    canonical_path: approval.canonical_path,
+    sha256: approval.sha256,
+    version: approval.version,
+    platform: approval.platform,
+    arch: approval.arch,
+    source: approval.source,
+    authenticode: approval.authenticode ?? null,
+  };
+}
+
+function providerLaunch(entry) {
+  return {
+    bin: entry.bin,
+    argv: [...entry.argv],
+    cwd: entry.cwd,
+    shell: entry.shell,
+  };
 }
 
 function measurableDualFailureResult(result) {
@@ -981,28 +1020,42 @@ function driveDualIndependentChecker({
   let entries;
   try {
     entries = [
-      buildDualCodexEntryFn({
-        executable: executableApprovals[0].canonical_path,
-        projectRoot,
-        checkerSkillPath: join(projectRoot, captures[0].skill_path),
-        outputSchemaPath: join(deepLoopRoot, 'schemas', 'review-import.schema.json'),
-        contract: contracts[0],
-        env: codexEnv,
-        model: claim.attempts[0].model_id,
-        effort: 'xhigh',
-        captureProviderIdentity: true,
-      }),
-      buildDualGrokEntryFn({
-        executable: executableApprovals[1].canonical_path,
-        projectRoot,
-        checkerSkillPath: join(projectRoot, captures[1].skill_path),
-        outputSchema,
-        contract: contracts[1],
-        env: {},
-        model: claim.attempts[1].model_id,
-        effort: 'xhigh',
-      }),
+      {
+        ...buildDualCodexEntryFn({
+          executable: executableApprovals[0].canonical_path,
+          projectRoot,
+          checkerSkillPath: join(projectRoot, captures[0].skill_path),
+          outputSchemaPath: join(deepLoopRoot, 'schemas', 'review-import.schema.json'),
+          contract: contracts[0],
+          env: codexEnv,
+          model: claim.attempts[0].model_id,
+          effort: 'xhigh',
+          captureProviderIdentity: true,
+        }),
+        captureProcessLifecycle: true,
+      },
+      {
+        ...buildDualGrokEntryFn({
+          executable: executableApprovals[1].canonical_path,
+          projectRoot,
+          checkerSkillPath: join(projectRoot, captures[1].skill_path),
+          outputSchema,
+          contract: contracts[1],
+          env: {},
+          model: claim.attempts[1].model_id,
+          effort: 'xhigh',
+        }),
+        captureProcessLifecycle: true,
+      },
     ];
+    for (const [index, entry] of entries.entries()) {
+      if (entry.bin !== executableApprovals[index].canonical_path
+        || entry.cwd !== projectRoot || entry.shell !== false
+        || !Array.isArray(entry.argv) || entry.argv.some(value => typeof value !== 'string')
+        || entry.captureProcessLifecycle !== true) {
+        throw new Error('dual-checker-entry-binding-invalid');
+      }
+    }
   } catch {
     return block('dual-checker-entry-invalid');
   }
@@ -1058,9 +1111,11 @@ function driveDualIndependentChecker({
         provider_id: attempt.provider_id,
         model_id: attempt.model_id,
         session_id: results[index].providerIdentity.session_id,
+        executable: checkerSecurityIdentity(executableApprovals[index]),
+        launch: providerLaunch(entries[index]),
+        lifecycle: results[index].process_lifecycle,
+        streams: results[index].process_streams,
         usage: results[index].usage,
-        stdout_sha256: results[index].process_streams.stdout.sha256,
-        stderr_sha256: results[index].process_streams.stderr.sha256,
       },
       fence: { ...fence, intent: 'accounting' },
       now,

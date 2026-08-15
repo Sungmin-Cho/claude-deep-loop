@@ -84,7 +84,33 @@ function dualAggregationLoop({ approved = false } = {}) {
         receipt: `.deep-loop/runs/R/preflight/process-receipts/${suffix}.json`,
         provider_id: attempt.provider_id, model_id: attempt.model_id,
         session_id: attempt.session_id, claim_hash: (index === 0 ? '9' : 'b').repeat(64),
-        stdout_sha256: `${index + 1}`.repeat(64), stderr_sha256: `${index + 2}`.repeat(64),
+        executable: {
+          checker: index === 0 ? 'codex' : 'grok',
+          reviewer_adapter: attempt.reviewer_adapter,
+          provider_id: attempt.provider_id,
+          model_id: attempt.model_id,
+          canonical_path: index === 0 ? '/opt/codex/bin/codex' : '/opt/grok/bin/grok',
+          sha256: (index === 0 ? 'c' : 'd').repeat(64),
+          version: index === 0 ? '0.144.1' : '1.0.4',
+          platform: 'linux', arch: 'x64', source: 'human-explicit', authenticode: null,
+        },
+        launch: {
+          bin: index === 0 ? '/opt/codex/bin/codex' : '/opt/grok/bin/grok',
+          argv: index === 0
+            ? ['exec', '--json', '--model', attempt.model_id]
+            : ['--output-format', 'json', '--model', attempt.model_id],
+          cwd: '/repo/worktree', shell: false,
+        },
+        lifecycle: {
+          spawned: true,
+          started_at: `2026-08-15T00:00:0${index * 2}.000Z`,
+          finished_at: `2026-08-15T00:00:0${index * 2 + 1}.000Z`,
+          exit_code: 0, signal: null, timed_out: false,
+        },
+        streams: {
+          stdout: { sha256: `${index + 1}`.repeat(64), byte_count: 10, truncated: false },
+          stderr: { sha256: `${index + 2}`.repeat(64), byte_count: 0, truncated: false },
+        },
       };
       attempt.cost_proof = {
         receipt_id: attempt.process_proof.receipt_id,
@@ -218,6 +244,21 @@ test('approved dual aggregate binds two distinct exact capture/process/report/co
     ['session collision', value => { value.attempts[1].session_id = value.attempts[0].session_id; value.attempts[1].process_proof.session_id = value.attempts[0].session_id; }],
     ['capture collision', value => { value.attempts[1].capture_proof = structuredClone(value.attempts[0].capture_proof); }],
     ['process collision', value => { value.attempts[1].process_proof.receipt_id = value.attempts[0].process_proof.receipt_id; value.attempts[1].cost_proof.receipt_id = value.attempts[0].process_proof.receipt_id; }],
+    ['missing executable proof', value => { delete value.attempts[0].process_proof.executable; }],
+    ['executable model reversal', value => { value.attempts[0].process_proof.executable.model_id = 'gpt-5.6-sol-mutant'; }],
+    ['launch binary reversal', value => { value.attempts[0].process_proof.launch.bin = '/opt/other/bin/codex'; }],
+    ['launch model reversal', value => {
+      const argv = value.attempts[0].process_proof.launch.argv;
+      argv[argv.length - 1] = 'gpt-5.6-sol-mutant';
+    }],
+    ['launch cwd is not absolute', value => { value.attempts[0].process_proof.launch.cwd = 'relative'; }],
+    ['lifecycle reverse chronology', value => {
+      value.attempts[0].process_proof.lifecycle.finished_at = '2026-08-14T23:59:59.000Z';
+    }],
+    ['lifecycle nonzero exit', value => { value.attempts[0].process_proof.lifecycle.exit_code = 9; }],
+    ['lifecycle signal', value => { value.attempts[0].process_proof.lifecycle.signal = 'SIGTERM'; }],
+    ['lifecycle timeout', value => { value.attempts[0].process_proof.lifecycle.timed_out = true; }],
+    ['stream digest malformed', value => { value.attempts[0].process_proof.streams.stdout.sha256 = 'x'; }],
     ['report collision', value => { value.attempts[1].report_proof.report_sha256 = value.attempts[0].report_proof.report_sha256; }],
     ['cost collision', value => { value.attempts[1].cost_proof.event_seq = value.attempts[0].cost_proof.event_seq; }],
     ['missing cost', value => { value.attempts[1].cost_proof = null; }],

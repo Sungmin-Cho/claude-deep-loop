@@ -4,7 +4,7 @@ import {
   closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { flushDirectory } from './lib/atomic-write.mjs';
 import { verifyDualCaptureProof } from './lib/dual-checker.mjs';
 
@@ -33,8 +33,23 @@ const CAPTURE_KEYS = Object.freeze([
 ]);
 const PROCESS_PROOF_KEYS = Object.freeze([
   'receipt_id', 'receipt', 'provider_id', 'model_id', 'session_id', 'claim_hash',
-  'stdout_sha256', 'stderr_sha256',
+  'executable', 'launch', 'lifecycle', 'streams',
 ]);
+const PROCESS_EXECUTABLE_KEYS = Object.freeze([
+  'checker', 'reviewer_adapter', 'provider_id', 'model_id', 'canonical_path', 'sha256',
+  'version', 'platform', 'arch', 'source', 'authenticode',
+]);
+const CHECKER_APPROVAL_KEYS = Object.freeze([
+  ...PROCESS_EXECUTABLE_KEYS, 'approved_by', 'approved_at',
+]);
+const CHECKER_ROUTES = Object.freeze({
+  codex: Object.freeze({
+    reviewer_adapter: 'codex-checker', provider_id: 'openai-codex', model_id: 'gpt-5.6-sol',
+  }),
+  grok: Object.freeze({
+    reviewer_adapter: 'grok-checker', provider_id: 'xai-grok', model_id: 'grok-4.6',
+  }),
+});
 const COST_PROOF_KEYS = Object.freeze([
   'receipt_id', 'event_seq', 'event_checksum', 'usage',
 ]);
@@ -367,7 +382,94 @@ function validateCapture(projectRoot, runId, capture, attempt, aggregation) {
   }
 }
 
-function validateProcessProof(projectRoot, runId, aggregation, attempt) {
+function approvalSecurityIdentity(approval, checker) {
+  const route = CHECKER_ROUTES[checker];
+  const approvedAt = new Date(approval?.approved_at);
+  const windows = approval?.platform === 'win32';
+  const executableName = windows
+    ? win32.basename(approval?.canonical_path || '').toLowerCase()
+    : basename(approval?.canonical_path || '');
+  const authenticode = approval?.authenticode;
+  const validAuthenticode = windows
+    ? exactKeys(authenticode, ['status', 'signer', 'thumbprint'])
+      && authenticode.status === 'valid'
+      && typeof authenticode.signer === 'string' && authenticode.signer.length > 0
+      && authenticode.signer.length <= 512 && !/[\0\r\n]/.test(authenticode.signer)
+      && typeof authenticode.thumbprint === 'string'
+      && /^[0-9a-f]+$/.test(authenticode.thumbprint) && authenticode.thumbprint.length <= 256
+    : authenticode === null;
+  if (!exactKeys(approval, CHECKER_APPROVAL_KEYS) || route === undefined
+    || approval.checker !== checker || approval.reviewer_adapter !== route.reviewer_adapter
+    || approval.provider_id !== route.provider_id || approval.model_id !== route.model_id
+    || !absoluteSafe(approval.canonical_path) || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(approval.canonical_path)
+    || executableName !== (windows ? `${checker}.exe` : checker)
+    || !SHA256.test(approval.sha256 || '')
+    || typeof approval.version !== 'string'
+    || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(approval.version)
+    || !['linux', 'darwin', 'win32'].includes(approval.platform)
+    || typeof approval.arch !== 'string' || !/^[A-Za-z0-9_-]+$/.test(approval.arch)
+    || approval.source !== 'human-explicit' || approval.approved_by !== 'human'
+    || typeof approval.approved_at !== 'string' || !Number.isFinite(approvedAt.getTime())
+    || approvedAt.toISOString() !== approval.approved_at || !validAuthenticode) return null;
+  const identity = { ...approval };
+  delete identity.approved_by;
+  delete identity.approved_at;
+  return identity;
+}
+
+function absoluteSafe(value) {
+  return typeof value === 'string' && value.length > 0 && !/[\0\r\n]/.test(value)
+    && (isAbsolute(value) || win32.isAbsolute(value));
+}
+
+function validateProviderProcessDescriptor(process, attempt, approvals) {
+  const executable = process.executable;
+  const launch = process.launch;
+  const lifecycle = process.lifecycle;
+  const streams = process.streams;
+  const checker = attempt.slot === 0 ? 'codex' : 'grok';
+  const approval = approvalSecurityIdentity(approvals?.[checker], checker);
+  const other = approvalSecurityIdentity(approvals?.[checker === 'codex' ? 'grok' : 'codex'],
+    checker === 'codex' ? 'grok' : 'codex');
+  const started = Date.parse(lifecycle?.started_at);
+  const finished = Date.parse(lifecycle?.finished_at);
+  const modelPositions = Array.isArray(launch?.argv) ? launch.argv.flatMap((value, index) => (
+    value === '--model' || value === '-m' ? [index] : []
+  )) : [];
+  const argumentTerminator = Array.isArray(launch?.argv) ? launch.argv.indexOf('--') : -1;
+  if (!exactKeys(approvals, ['codex', 'grok']) || approval === null || other === null
+    || approval.canonical_path === other.canonical_path || approval.sha256 === other.sha256
+    || !exactKeys(executable, PROCESS_EXECUTABLE_KEYS)
+    || executable.checker !== checker
+    || executable.reviewer_adapter !== attempt.reviewer_adapter
+    || executable.provider_id !== attempt.provider_id || executable.model_id !== attempt.model_id
+    || !absoluteSafe(executable.canonical_path) || !SHA256.test(executable.sha256 || '')
+    || !same(executable, approval)
+    || !exactKeys(launch, ['bin', 'argv', 'cwd', 'shell'])
+    || launch.bin !== executable.canonical_path || !absoluteSafe(launch.bin)
+    || !absoluteSafe(launch.cwd) || launch.shell !== false
+    || !Array.isArray(launch.argv) || launch.argv.length === 0
+    || launch.argv.some(value => typeof value !== 'string' || /[\0\r\n]/.test(value)
+      || value.startsWith('--model=') || /^model\s*=/.test(value))
+    || modelPositions.length !== 1
+    || (argumentTerminator !== -1 && modelPositions[0] >= argumentTerminator)
+    || launch.argv[modelPositions[0] + 1] !== attempt.model_id
+    || !exactKeys(lifecycle, [
+      'spawned', 'started_at', 'finished_at', 'exit_code', 'signal', 'timed_out',
+    ]) || lifecycle.spawned !== true || lifecycle.exit_code !== 0 || lifecycle.signal !== null
+    || lifecycle.timed_out !== false || !Number.isFinite(started) || !Number.isFinite(finished)
+    || new Date(started).toISOString() !== lifecycle.started_at
+    || new Date(finished).toISOString() !== lifecycle.finished_at || finished < started
+    || !exactKeys(streams, ['stdout', 'stderr'])
+    || ![streams.stdout, streams.stderr].every(stream => exactKeys(
+      stream, ['sha256', 'byte_count', 'truncated'],
+    ) && SHA256.test(stream.sha256 || '') && Number.isSafeInteger(stream.byte_count)
+      && stream.byte_count >= 0 && typeof stream.truncated === 'boolean')) {
+    fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  }
+}
+
+function validateProcessProof(projectRoot, runId, aggregation, attempt, approvals) {
   const process = attempt.process_proof;
   const cost = attempt.cost_proof;
   validateCapture(projectRoot, runId, attempt.capture_proof, attempt, aggregation);
@@ -375,23 +477,26 @@ function validateProcessProof(projectRoot, runId, aggregation, attempt) {
     || !measuredUsage(cost.usage) || process.receipt_id !== cost.receipt_id
     || process.provider_id !== attempt.provider_id || process.model_id !== attempt.model_id
     || process.session_id !== attempt.session_id || !safeIdentity(process.session_id)
-    || ![process.receipt_id, process.claim_hash, process.stdout_sha256, process.stderr_sha256]
+    || ![process.receipt_id, process.claim_hash]
       .every(value => SHA256.test(value || ''))) fail('WSU1_F26_DUAL_PROCESS_PROOF');
+  validateProviderProcessDescriptor(process, attempt, approvals);
   const receiptPath = `.deep-loop/runs/${runId}/preflight/process-receipts/${process.receipt_id}-dual-checker.json`;
   if (process.receipt !== receiptPath) fail('WSU1_F26_DUAL_PROCESS_PROOF');
   const { bytes, value: receipt } = regularJson(
     resolve(projectRoot, ...receiptPath.split('/')), 'WSU1_F26_DUAL_PROCESS_PROOF',
   );
   const payload = {
-    contract: 'deep-loop-dual-checker-process-receipt-v1',
+    contract: 'deep-loop-dual-checker-process-receipt-v2',
     project_root: projectRoot,
     run_id: runId,
     ...attemptIdentity(aggregation, attempt),
     session_id: attempt.session_id,
     claim_hash: sha256(Buffer.from(JSON.stringify(attemptIdentity(aggregation, attempt)))),
     capture: attempt.capture_proof,
-    stdout_sha256: process.stdout_sha256,
-    stderr_sha256: process.stderr_sha256,
+    executable: process.executable,
+    launch: process.launch,
+    lifecycle: process.lifecycle,
+    streams: process.streams,
     usage: cost.usage,
   };
   const expected = { ...payload, receipt_id: sha256(Buffer.from(JSON.stringify(payload))) };
@@ -680,7 +785,9 @@ function main() {
   for (let index = 0; index < 2; index += 1) {
     const attempt = aggregation.attempts[index];
     const input = inputs[index];
-    receipts.push(validateProcessProof(projectRoot, runId, aggregation, attempt));
+    receipts.push(validateProcessProof(
+      projectRoot, runId, aggregation, attempt, loop.autonomy?.checker_executable_approvals,
+    ));
     reports.push(validateReport(projectRoot, runId, aggregation, attempt, input));
     const cost = events.filter(event => event.type === 'cost'
       && event.seq === attempt.cost_proof.event_seq
@@ -874,8 +981,10 @@ function main() {
       provider_id: receipt.provider_id,
       model_id: receipt.model_id,
       session_id: receipt.session_id,
-      stdout_sha256: receipt.stdout_sha256,
-      stderr_sha256: receipt.stderr_sha256,
+      executable: receipt.executable,
+      launch: receipt.launch,
+      lifecycle: receipt.lifecycle,
+      streams: receipt.streams,
     })),
     host_observation: {
       path: relative(projectRoot, hostObservationPath).split(sep).join('/'),

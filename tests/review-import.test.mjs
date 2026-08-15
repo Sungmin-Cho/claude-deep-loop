@@ -16,6 +16,7 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import {
   claimDualIndependentReview,
+  importDualReviewOutcome,
   settleDualAttemptProcess,
 } from '../scripts/lib/dual-checker.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -35,7 +36,11 @@ import {
   createDirectoryJunction,
   createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
-import { writeExactDualCapture } from './helpers/dual-capture.mjs';
+import {
+  checkerApprovalMap,
+  exactDualProcess,
+  writeExactDualCapture,
+} from './helpers/dual-capture.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -643,6 +648,9 @@ function dualPublicFixture() {
     idFactory: () => ids.shift(),
     now: FIXED_NOW,
   });
+  const claimedState = readState(f.root, f.runId).data;
+  claimedState.autonomy.checker_executable_approvals = checkerApprovalMap(claim.attempts);
+  writeState(f.root, f.runId, claimedState);
   const sessions = [
     '11111111-1111-4111-8111-111111111111',
     '22222222-2222-4222-8222-222222222222',
@@ -659,14 +667,14 @@ function dualPublicFixture() {
       episodeId: f.checkerId,
       attemptId: attempt.attempt_id,
       capture,
-      process: {
-        provider_id: attempt.provider_id,
-        model_id: attempt.model_id,
-        session_id: sessions[index],
+      process: exactDualProcess({
+        root: f.root,
+        attempt,
+        sessionId: sessions[index],
         usage: { num_turns: 1, input_tokens: 5 + index, output_tokens: 2, tokens: 7 + index },
-        stdout_sha256: `${index + 3}`.repeat(64),
-        stderr_sha256: `${index + 5}`.repeat(64),
-      },
+        stdout: `stdout:public-import:${index}`,
+        stderr: `stderr:public-import:${index}`,
+      }),
       fence: f.fence,
       now: FIXED_NOW,
     });
@@ -689,6 +697,30 @@ function dualPublicFixture() {
   });
   return { ...f, claim, inputs };
 }
+
+test('public review import has one immutable-input dispatcher and no unlocked run-marker selection', () => {
+  const source = readFileSync(CLI, 'utf8');
+  const start = source.indexOf("    if (verb === 'import') {");
+  const end = source.indexOf('    error(`unknown review verb:', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const publicImport = source.slice(start, end);
+  assert.doesNotMatch(publicImport,
+    /captureReconciledRunSnapshot|checker_executable_approvals|dualRequired/);
+  assert.match(publicImport, /importDualReviewOutcome\(root, runId/);
+  assert.doesNotMatch(publicImport, /importReviewOutcome\(root, runId/);
+});
+
+test('the single public dispatcher preserves authentic field-absent scalar v1 imports', () => {
+  const f = fixture();
+  const result = importDualReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  });
+  assert.equal(result.terminal, 'approved');
+  const checker = readState(f.root, f.runId).data.episodes.find(item => item.id === f.checkerId);
+  assert.equal(checker.status, 'approved');
+  assert.equal(checker.review_aggregation, undefined);
+});
 
 test('public review import fail-closes v1 on a fresh dual-required run without durable proof', async () => {
   const f = fixture({ claim: false, legacyScalar: false });

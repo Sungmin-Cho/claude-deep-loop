@@ -24,7 +24,7 @@ const RELOCATED_DUAL_RECEIPT = /^([a-f0-9]{64})-dual-checker(-failed)?\.json$/;
 const RELOCATED_DUAL_SUCCESS_KEYS = Object.freeze([
   'contract', 'project_root', 'run_id', 'aggregation_id', 'slot', 'attempt_id',
   'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'source_claim_sha256',
-  'session_id', 'claim_hash', 'capture', 'stdout_sha256', 'stderr_sha256', 'usage',
+  'session_id', 'claim_hash', 'capture', 'executable', 'launch', 'lifecycle', 'streams', 'usage',
   'receipt_id',
 ]);
 const RELOCATED_DUAL_FAILURE_KEYS = Object.freeze([
@@ -85,6 +85,13 @@ function inventoryRelocatedDualReceipt({
     throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
   }
   const attempt = attempts[0];
+  const approval = loop.autonomy?.checker_executable_approvals
+    ?.[attempt.slot === 0 ? 'codex' : 'grok'];
+  const approvalSecurity = approval == null ? null : { ...approval };
+  if (approvalSecurity) {
+    delete approvalSecurity.approved_by;
+    delete approvalSecurity.approved_at;
+  }
   if (receipt.reviewer_id !== attempt.reviewer_id
     || receipt.reviewer_adapter !== attempt.reviewer_adapter
     || receipt.source_claim_sha256 !== attempt.source_claim_sha256
@@ -96,13 +103,16 @@ function inventoryRelocatedDualReceipt({
   if (costs.length !== 1) throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
   let expectedCost;
   if (!failure) {
-    if (receipt.contract !== 'deep-loop-dual-checker-process-receipt-v1'
+    if (receipt.contract !== 'deep-loop-dual-checker-process-receipt-v2'
       || receipt.slot !== attempt.slot || receipt.provider_id !== attempt.provider_id
       || receipt.model_id !== attempt.model_id || receipt.session_id !== attempt.session_id
       || receipt.receipt_id !== attempt.process_proof?.receipt_id
       || receipt.claim_hash !== attempt.process_proof?.claim_hash
-      || receipt.stdout_sha256 !== attempt.process_proof?.stdout_sha256
-      || receipt.stderr_sha256 !== attempt.process_proof?.stderr_sha256
+      || JSON.stringify(receipt.executable) !== JSON.stringify(attempt.process_proof?.executable)
+      || JSON.stringify(receipt.executable) !== JSON.stringify(approvalSecurity)
+      || JSON.stringify(receipt.launch) !== JSON.stringify(attempt.process_proof?.launch)
+      || JSON.stringify(receipt.lifecycle) !== JSON.stringify(attempt.process_proof?.lifecycle)
+      || JSON.stringify(receipt.streams) !== JSON.stringify(attempt.process_proof?.streams)
       || JSON.stringify(receipt.capture) !== JSON.stringify(attempt.capture_proof)
       || !sameMeasuredUsage(receipt.usage, attempt.cost_proof?.usage)
       || costs[0].seq !== attempt.cost_proof?.event_seq

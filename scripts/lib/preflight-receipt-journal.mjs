@@ -279,7 +279,7 @@ function exactDualCostEvent(snapshot, receiptId, expected) {
 const DUAL_SUCCESS_KEYS = Object.freeze([
   'contract', 'project_root', 'run_id', 'aggregation_id', 'slot', 'attempt_id',
   'reviewer_id', 'reviewer_adapter', 'provider_id', 'model_id', 'source_claim_sha256',
-  'session_id', 'claim_hash', 'capture', 'stdout_sha256', 'stderr_sha256', 'usage',
+  'session_id', 'claim_hash', 'capture', 'executable', 'launch', 'lifecycle', 'streams', 'usage',
   'receipt_id',
 ]);
 const DUAL_FAILURE_KEYS = Object.freeze([
@@ -320,6 +320,13 @@ function validateSettledDualProcessReceipt({
     throw new Error('dual process receipt state binding invalid');
   }
   const attempt = attempts[0];
+  const approval = snapshot.data.autonomy?.checker_executable_approvals
+    ?.[attempt.slot === 0 ? 'codex' : 'grok'];
+  const approvalSecurity = approval == null ? null : { ...approval };
+  if (approvalSecurity) {
+    delete approvalSecurity.approved_by;
+    delete approvalSecurity.approved_at;
+  }
   const claimHash = dualAttemptClaimHash(aggregation, attempt);
   if (receipt.reviewer_id !== attempt.reviewer_id
     || receipt.reviewer_adapter !== attempt.reviewer_adapter
@@ -328,13 +335,16 @@ function validateSettledDualProcessReceipt({
     throw new Error('dual process receipt claim mismatch');
   }
   if (!failure) {
-    if (receipt.contract !== 'deep-loop-dual-checker-process-receipt-v1'
+    if (receipt.contract !== 'deep-loop-dual-checker-process-receipt-v2'
       || receipt.slot !== attempt.slot || receipt.provider_id !== attempt.provider_id
       || receipt.model_id !== attempt.model_id || receipt.session_id !== attempt.session_id
       || receipt.receipt_id !== attempt.process_proof?.receipt_id
       || receipt.claim_hash !== attempt.process_proof?.claim_hash
-      || receipt.stdout_sha256 !== attempt.process_proof?.stdout_sha256
-      || receipt.stderr_sha256 !== attempt.process_proof?.stderr_sha256
+      || !sameJson(receipt.executable, attempt.process_proof?.executable)
+      || !sameJson(receipt.executable, approvalSecurity)
+      || !sameJson(receipt.launch, attempt.process_proof?.launch)
+      || !sameJson(receipt.lifecycle, attempt.process_proof?.lifecycle)
+      || !sameJson(receipt.streams, attempt.process_proof?.streams)
       || !sameJson(receipt.capture, attempt.capture_proof)
       || !sameJson(receipt.usage, attempt.cost_proof?.usage)) {
       throw new Error('dual process receipt settled proof mismatch');

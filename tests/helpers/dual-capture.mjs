@@ -7,8 +7,87 @@ import {
   settleDualAttemptProcess,
 } from '../../scripts/lib/dual-checker.mjs';
 import { withReconciledMutationLock } from '../../scripts/lib/integrity.mjs';
+import { readState, writeState } from '../../scripts/lib/state.mjs';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+
+export function exactCheckerApproval(attempt, {
+  platform = process.platform,
+  arch = process.arch,
+} = {}) {
+  const checker = attempt.reviewer_adapter === 'codex-checker' ? 'codex' : 'grok';
+  return {
+    checker,
+    reviewer_adapter: attempt.reviewer_adapter,
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    canonical_path: `/opt/${checker}/bin/${checker}`,
+    sha256: (checker === 'codex' ? 'c' : 'd').repeat(64),
+    version: checker === 'codex' ? '0.144.1' : '1.0.4',
+    platform,
+    arch,
+    source: 'human-explicit',
+    authenticode: null,
+    approved_by: 'human',
+    approved_at: checker === 'codex'
+      ? '2026-08-15T00:00:01.000Z'
+      : '2026-08-15T00:00:02.000Z',
+  };
+}
+
+export function checkerApprovalMap(attempts, options = {}) {
+  return Object.fromEntries(attempts.map(attempt => {
+    const approval = exactCheckerApproval(attempt, options);
+    return [approval.checker, approval];
+  }));
+}
+
+export function exactDualProcess({
+  root,
+  attempt,
+  sessionId,
+  usage = { num_turns: 1, input_tokens: 3, output_tokens: 2, tokens: 5 },
+  stdout = `stdout:${attempt.attempt_id}`,
+  stderr = `stderr:${attempt.attempt_id}`,
+} = {}) {
+  const approval = exactCheckerApproval(attempt);
+  const executable = { ...approval };
+  delete executable.approved_by;
+  delete executable.approved_at;
+  const startedAt = attempt.slot === 0
+    ? '2026-08-15T00:01:00.000Z'
+    : '2026-08-15T00:01:02.000Z';
+  const finishedAt = attempt.slot === 0
+    ? '2026-08-15T00:01:01.000Z'
+    : '2026-08-15T00:01:03.000Z';
+  return {
+    provider_id: attempt.provider_id,
+    model_id: attempt.model_id,
+    session_id: sessionId,
+    executable,
+    launch: {
+      bin: approval.canonical_path,
+      argv: approval.checker === 'codex'
+        ? ['exec', '--json', '--model', attempt.model_id]
+        : ['--output-format', 'json', '--model', attempt.model_id],
+      cwd: root,
+      shell: false,
+    },
+    lifecycle: {
+      spawned: true,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      exit_code: 0,
+      signal: null,
+      timed_out: false,
+    },
+    streams: {
+      stdout: { sha256: sha256(stdout), byte_count: Buffer.byteLength(stdout), truncated: false },
+      stderr: { sha256: sha256(stderr), byte_count: Buffer.byteLength(stderr), truncated: false },
+    },
+    usage,
+  };
+}
 
 export function writeExactDualCapture({
   root,
@@ -16,8 +95,11 @@ export function writeExactDualCapture({
   checkerEpisodeId,
   attemptId,
   sourceClaimSha256,
-  manifest = Buffer.from('shared deep-review manifest'),
-  skill = Buffer.from('shared deep-review doctrine'),
+  manifest = Buffer.from(`${JSON.stringify({
+    name: 'deep-review', version: '2.4.0', skills: './skills/',
+  })}\n`),
+  skill = Buffer.from('---\nname: deep-review-loop\ndescription: exact retained review fixture\n---\n# Deep review\n'),
+  sourceOverrides = {},
 } = {}) {
   const base = `.deep-loop/runs/${runId}/checker-captures/${attemptId}`;
   const recordPath = `${base}/capture.json`;
@@ -29,6 +111,7 @@ export function writeExactDualCapture({
     skill_path: '/trusted/deep-review/skills/deep-review-loop/SKILL.md',
     plugin_name: 'deep-review',
     plugin_version: '2.4.0',
+    ...sourceOverrides,
     manifest_sha256: sha256(manifest),
     skill_sha256: sha256(skill),
   };
@@ -93,6 +176,9 @@ export function settleExactDualReview({
     idFactory: () => deterministicUuid(`${runId}:${checkerEpisodeId}:claim:${idIndex++}`),
     now,
   });
+  const state = readState(root, runId).data;
+  state.autonomy.checker_executable_approvals = checkerApprovalMap(claim.attempts);
+  writeState(root, runId, state);
   const results = claim.attempts.map((attempt, index) => {
     const sessionId = deterministicUuid(`${runId}:${checkerEpisodeId}:session:${index}`);
     const capture = writeExactDualCapture({
@@ -106,14 +192,14 @@ export function settleExactDualReview({
       episodeId: checkerEpisodeId,
       attemptId: attempt.attempt_id,
       capture,
-      process: {
-        provider_id: attempt.provider_id,
-        model_id: attempt.model_id,
-        session_id: sessionId,
+      process: exactDualProcess({
+        root,
+        attempt,
+        sessionId,
         usage: { num_turns: 1, input_tokens: 3 + index, output_tokens: 2, tokens: 5 + index },
-        stdout_sha256: sha256(`stdout:${runId}:${attempt.attempt_id}`),
-        stderr_sha256: sha256(`stderr:${runId}:${attempt.attempt_id}`),
-      },
+        stdout: `stdout:${runId}:${attempt.attempt_id}`,
+        stderr: `stderr:${runId}:${attempt.attempt_id}`,
+      }),
       fence,
       now,
     });

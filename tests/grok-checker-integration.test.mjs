@@ -58,6 +58,7 @@ test('synchronous dual worker starts both real transports before either result i
       captureFinalMessage: true,
       captureProviderIdentity: true,
       captureProcessDiagnostic: true,
+      captureProcessLifecycle: true,
     },
     {
       bin: process.execPath,
@@ -68,6 +69,7 @@ test('synchronous dual worker starts both real transports before either result i
       usageOutputKind: 'grok-json',
       captureFinalMessage: true,
       captureProcessDiagnostic: true,
+      captureProcessLifecycle: true,
     },
   ], { timeoutMs: 2_000 });
 
@@ -97,11 +99,12 @@ test('dual worker protocol rejects cardinality and malformed transport results',
       bin: process.execPath, argv: ['-e', 'process.exit(0)'], shell: false,
       usageOutputKind: 'codex-jsonl', captureFinalMessage: true,
       captureProviderIdentity: true, captureProcessDiagnostic: true,
+      captureProcessLifecycle: true,
     },
     {
       bin: process.execPath, argv: ['-e', 'process.exit(0)'], shell: false,
       usageOutputKind: 'grok-json', captureFinalMessage: true,
-      captureProcessDiagnostic: true,
+      captureProcessDiagnostic: true, captureProcessLifecycle: true,
     },
   ], {
     timeoutMs: 10,
@@ -216,6 +219,34 @@ function dualImportBytes(claim, attempt, verdict = 'APPROVE') {
   }));
 }
 
+function providerLifecycle(index) {
+  return {
+    spawned: true,
+    started_at: `2026-08-15T09:01:0${index * 2}.000Z`,
+    finished_at: `2026-08-15T09:01:0${index * 2 + 1}.000Z`,
+    exit_code: 0,
+    signal: null,
+    timed_out: false,
+  };
+}
+
+function fixtureDualEntry(kind, options) {
+  return {
+    bin: options.executable,
+    argv: kind === 'codex'
+      ? ['exec', '--json', '--model', options.model]
+      : ['--output-format', 'json', '--model', options.model],
+    cwd: options.projectRoot,
+    env: options.env,
+    shell: false,
+    usageOutputKind: kind === 'codex' ? 'codex-jsonl' : 'grok-json',
+    captureFinalMessage: true,
+    captureProviderIdentity: kind === 'codex',
+    captureProcessDiagnostic: true,
+    captureProcessLifecycle: true,
+  };
+}
+
 function dualHostDependencies(f, transport) {
   const idValues = [
     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -239,8 +270,8 @@ function dualHostDependencies(f, transport) {
     buildDualCodexEnvFn: () => ({}),
     resolveCheckerSkill: () => ({ source: 'trusted-deep-review' }),
     dualCaptureProofFn: ({ attempt }) => hostCaptureProof(f, attempt),
-    buildDualCodexEntryFn: options => ({ transport: 'codex', options }),
-    buildDualGrokEntryFn: options => ({ transport: 'grok', options }),
+    buildDualCodexEntryFn: options => fixtureDualEntry('codex', options),
+    buildDualGrokEntryFn: options => fixtureDualEntry('grok', options),
     dualRunFn: transport,
     dualIdFactory: () => idValues.shift(),
     dualSessionIdFactory: () => { throw new Error('host must not mint provider session identity'); },
@@ -254,10 +285,9 @@ test('headless dual route emits checker-complete only after both measured import
   const captureCalls = [];
   const importStates = [];
   const deps = dualHostDependencies(f, entries => {
-    assert.deepEqual(entries.map(entry => entry.transport), ['codex', 'grok']);
-    assert.equal(entries[0].options.contract.session_id, SESSION_PLACEHOLDER);
-    assert.equal(entries[1].options.contract.session_id, SESSION_PLACEHOLDER);
-    assert.equal(Object.hasOwn(entries[1].options, 'sessionId'), false);
+    assert.deepEqual(entries.map(entry => entry.bin), ['/opt/codex/bin/codex', '/opt/grok/bin/grok']);
+    assert.deepEqual(entries.map(entry => entry.shell), [false, false]);
+    assert.deepEqual(entries.map(entry => entry.captureProcessLifecycle), [true, true]);
     const state = readState(f.root, f.runId).data;
     const claim = state.episodes.find(episode => episode.id === f.checkerId).review_aggregation;
     return {
@@ -271,6 +301,7 @@ test('headless dual route emits checker-complete only after both measured import
           source_binding: claim.source_binding,
         }, attempt),
         providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
+        process_lifecycle: providerLifecycle(index),
         process_streams: {
           stdout: { sha256: sha256(`stdout:${attempt.attempt_id}`), byte_count: 1, truncated: false },
           stderr: { sha256: sha256(`stderr:${attempt.attempt_id}`), byte_count: 0, truncated: false },
@@ -313,6 +344,15 @@ test('headless dual route emits checker-complete only after both measured import
   const checker = readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId);
   assert.equal(checker.review_aggregation.attempts.every(attempt => attempt.status === 'imported'), true);
   assert.equal(checker.review_aggregation.aggregate_status, 'approved');
+  for (const [index, attempt] of checker.review_aggregation.attempts.entries()) {
+    const approval = readState(f.root, f.runId).data.autonomy.checker_executable_approvals
+      [index === 0 ? 'codex' : 'grok'];
+    assert.equal(attempt.process_proof.executable.canonical_path, approval.canonical_path);
+    assert.equal(attempt.process_proof.executable.sha256, approval.sha256);
+    assert.equal(attempt.process_proof.launch.bin, approval.canonical_path);
+    assert.deepEqual(attempt.process_proof.lifecycle, providerLifecycle(index));
+    assert.deepEqual(Object.keys(attempt.process_proof.streams).sort(), ['stderr', 'stdout']);
+  }
   const receiptDir = join(runDir(f.root, f.runId), 'preflight', 'process-receipts');
   const dualReceiptNames = readdirSync(receiptDir).filter(name => name.endsWith('-dual-checker.json'));
   assert.equal(dualReceiptNames.length, 2);
@@ -350,6 +390,7 @@ test('headless dual rejection emits no checker-complete and no continuation', ()
           source_binding: claim.source_binding,
         }, attempt, index === 0 ? 'APPROVE' : 'CONCERN'),
         providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
+        process_lifecycle: providerLifecycle(index),
         process_streams: {
           stdout: { sha256: sha256(`reject-out-${index}`), byte_count: 1, truncated: false },
           stderr: { sha256: sha256(`reject-err-${index}`), byte_count: 0, truncated: false },
@@ -390,6 +431,7 @@ test('headless dual route recovers either exact committed import after acknowled
             source_binding: claim.source_binding,
           }, attempt),
           providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
+          process_lifecycle: providerLifecycle(index),
           process_streams: {
             stdout: { sha256: sha256(`ack-out-${index}`), byte_count: 1, truncated: false },
             stderr: { sha256: sha256(`ack-err-${index}`), byte_count: 0, truncated: false },
@@ -440,6 +482,7 @@ test('headless partial transport failure preserves each measurable successful at
             source_binding: claim.source_binding,
           }, attempt),
           providerIdentity: { session_id: CODEX_SESSION, model_id: attempt.model_id },
+          process_lifecycle: providerLifecycle(0),
           process_streams: {
             stdout: { sha256: sha256('partial-stdout'), byte_count: 1, truncated: false },
             stderr: { sha256: sha256('partial-stderr'), byte_count: 0, truncated: false },
@@ -478,6 +521,7 @@ test('headless provider session collision charges both measured transports but i
           source_binding: claim.source_binding,
         }, attempt),
         providerIdentity: { session_id: CODEX_SESSION, model_id: attempt.model_id },
+        process_lifecycle: providerLifecycle(index),
         process_streams: {
           stdout: { sha256: sha256(`collision-out-${index}`), byte_count: 1, truncated: false },
           stderr: { sha256: sha256(`collision-err-${index}`), byte_count: 0, truncated: false },
@@ -519,6 +563,7 @@ test('headless actual-model mismatch is charged as failed process evidence and n
           session_id: sessions[index],
           model_id: index === 0 ? attempt.model_id : 'grok-untrusted-alias',
         },
+        process_lifecycle: providerLifecycle(index),
         process_streams: {
           stdout: { sha256: sha256(`model-out-${index}`), byte_count: 1, truncated: false },
           stderr: { sha256: sha256(`model-err-${index}`), byte_count: 0, truncated: false },
@@ -555,6 +600,7 @@ test('headless post-process capture drift charges both measured attempts and blo
           source_binding: claim.source_binding,
         }, attempt),
         providerIdentity: { session_id: sessions[index], model_id: attempt.model_id },
+        process_lifecycle: providerLifecycle(index),
         process_streams: {
           stdout: { sha256: sha256(`drift-out-${index}`), byte_count: 1, truncated: false },
           stderr: { sha256: sha256(`drift-err-${index}`), byte_count: 0, truncated: false },

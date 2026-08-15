@@ -59,7 +59,11 @@ import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from './helpers/acquire-and-activate.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
-import { writeExactDualCapture } from './helpers/dual-capture.mjs';
+import {
+  checkerApprovalMap,
+  exactDualProcess,
+  writeExactDualCapture,
+} from './helpers/dual-capture.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -263,6 +267,9 @@ function movedRunWithDualReceipts() {
   const claim = claimDualIndependentReview(originalRoot, runId, {
     episodeId: checkerId, fence,
   });
+  const claimedState = readState(originalRoot, runId).data;
+  claimedState.autonomy.checker_executable_approvals = checkerApprovalMap(claim.attempts);
+  writeState(originalRoot, runId, claimedState);
   const sessions = [
     '11111111-1111-4111-8111-111111111111',
     '22222222-2222-4222-8222-222222222222',
@@ -274,21 +281,19 @@ function movedRunWithDualReceipts() {
       checkerEpisodeId: checkerId,
       attemptId: attempt.attempt_id,
       sourceClaimSha256: attempt.source_claim_sha256,
-      manifest: Buffer.from('shared-manifest'),
-      skill: Buffer.from('shared-skill'),
     }).proof;
     settleDualAttemptProcess(originalRoot, runId, {
       episodeId: checkerId,
       attemptId: attempt.attempt_id,
       capture,
-      process: {
-        provider_id: attempt.provider_id,
-        model_id: attempt.model_id,
-        session_id: sessions[index],
+      process: exactDualProcess({
+        root: originalRoot,
+        attempt,
+        sessionId: sessions[index],
         usage: { num_turns: 1, input_tokens: 3 + index, output_tokens: 2, tokens: 5 + index },
-        stdout_sha256: `${index + 1}`.repeat(64),
-        stderr_sha256: `${index + 3}`.repeat(64),
-      },
+        stdout: `stdout:root-relocation:${index}`,
+        stderr: `stderr:root-relocation:${index}`,
+      }),
       fence,
     });
   }

@@ -565,7 +565,11 @@ const DUAL_CAPTURE_KEYS = Object.freeze([
 ]);
 const DUAL_PROCESS_KEYS = Object.freeze([
   'receipt_id', 'receipt', 'provider_id', 'model_id', 'session_id', 'claim_hash',
-  'stdout_sha256', 'stderr_sha256',
+  'executable', 'launch', 'lifecycle', 'streams',
+]);
+const DUAL_PROCESS_EXECUTABLE_KEYS = Object.freeze([
+  'checker', 'reviewer_adapter', 'provider_id', 'model_id', 'canonical_path', 'sha256',
+  'version', 'platform', 'arch', 'source', 'authenticode',
 ]);
 const DUAL_REPORT_KEYS = Object.freeze([
   'verdict', 'report', 'report_sha256', 'event_seq', 'event_checksum',
@@ -615,11 +619,57 @@ function validDualCapture(proof, attempt, sourceBinding) {
 
 function validDualProcess(proof, attempt) {
   return exactObject(proof, DUAL_PROCESS_KEYS)
-    && [proof.receipt_id, proof.claim_hash, proof.stdout_sha256, proof.stderr_sha256]
-      .every(hash => SHA256.test(hash || ''))
+    && [proof.receipt_id, proof.claim_hash].every(hash => SHA256.test(hash || ''))
     && portableRel(proof.receipt, '.deep-loop/runs/')
     && proof.provider_id === attempt.provider_id && proof.model_id === attempt.model_id
-    && proof.session_id === attempt.session_id && UUID.test(proof.session_id || '');
+    && proof.session_id === attempt.session_id && UUID.test(proof.session_id || '')
+    && validDualProcessExecutable(proof.executable, attempt)
+    && validDualProcessLaunch(proof.launch, proof.executable, attempt)
+    && validDualProcessLifecycle(proof.lifecycle)
+    && exactObject(proof.streams, ['stdout', 'stderr'])
+    && validProcessStreamMetadata(proof.streams.stdout)
+    && validProcessStreamMetadata(proof.streams.stderr);
+}
+
+function validDualProcessExecutable(value, attempt) {
+  const expectedChecker = attempt.slot === 0 ? 'codex' : 'grok';
+  return exactObject(value, DUAL_PROCESS_EXECUTABLE_KEYS)
+    && value.checker === expectedChecker
+    && value.reviewer_adapter === attempt.reviewer_adapter
+    && value.provider_id === attempt.provider_id
+    && value.model_id === attempt.model_id
+    && portableAbsolute(value.canonical_path) && SHA256.test(value.sha256 || '')
+    && [value.version, value.platform, value.arch]
+      .every(item => typeof item === 'string' && item.length > 0 && !/[\0\r\n]/.test(item))
+    && value.source === 'human-explicit'
+    && (value.authenticode === null
+      || (typeof value.authenticode === 'object' && !Array.isArray(value.authenticode)));
+}
+
+function validDualProcessLaunch(value, executable, attempt) {
+  if (!exactObject(value, ['bin', 'argv', 'cwd', 'shell'])
+    || value.bin !== executable.canonical_path || !portableAbsolute(value.bin)
+    || !portableAbsolute(value.cwd) || value.shell !== false
+    || !Array.isArray(value.argv) || value.argv.length === 0
+    || value.argv.some(arg => typeof arg !== 'string' || /[\0\r\n]/.test(arg)
+      || arg.startsWith('--model=') || /^model\s*=/.test(arg))) return false;
+  const positions = value.argv.flatMap((arg, index) => (
+    arg === '--model' || arg === '-m' ? [index] : []
+  ));
+  const terminator = value.argv.indexOf('--');
+  return positions.length === 1
+    && (terminator === -1 || positions[0] < terminator)
+    && value.argv[positions[0] + 1] === attempt.model_id;
+}
+
+function validDualProcessLifecycle(value) {
+  return exactObject(value, [
+    'spawned', 'started_at', 'finished_at', 'exit_code', 'signal', 'timed_out',
+  ])
+    && value.spawned === true && value.exit_code === 0 && value.signal === null
+    && value.timed_out === false
+    && canonicalIso(value.started_at) && canonicalIso(value.finished_at)
+    && Date.parse(value.finished_at) >= Date.parse(value.started_at);
 }
 
 function validDualReport(proof) {

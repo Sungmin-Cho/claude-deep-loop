@@ -853,7 +853,7 @@
             "budget.mjs#checkBudget"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:616"
+            "scripts/lib/budget.mjs:626"
           ]
         }
       ]
@@ -871,7 +871,7 @@
             "budget.mjs#checkHardBudget"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:605"
+            "scripts/lib/budget.mjs:615"
           ]
         }
       ]
@@ -889,7 +889,7 @@
             "budget.mjs#codexCheckerClaimHash"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:526"
+            "scripts/lib/budget.mjs:536"
           ]
         }
       ]
@@ -908,7 +908,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:938"
+            "scripts/lib/budget.mjs:948"
           ]
         },
         {
@@ -918,7 +918,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:938"
+            "scripts/lib/budget.mjs:948"
           ]
         }
       ]
@@ -936,7 +936,7 @@
             "budget.mjs#inventoryRelocatedProcessReceipts"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:163"
+            "scripts/lib/budget.mjs:173"
           ]
         }
       ]
@@ -954,7 +954,7 @@
             "budget.mjs#isCanonicalHandoffKey"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:423"
+            "scripts/lib/budget.mjs:433"
           ]
         }
       ]
@@ -972,7 +972,7 @@
             "budget.mjs#isMeasuredOneTurnUsage"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:376"
+            "scripts/lib/budget.mjs:386"
           ]
         }
       ]
@@ -990,7 +990,7 @@
             "budget.mjs#makeCodexPreflightReceipt"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:473"
+            "scripts/lib/budget.mjs:483"
           ]
         }
       ]
@@ -1008,7 +1008,7 @@
             "budget.mjs#makeCodexProcessReceipt"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:533"
+            "scripts/lib/budget.mjs:543"
           ]
         }
       ]
@@ -1026,7 +1026,7 @@
             "budget.mjs#reconcileBudget"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1800"
+            "scripts/lib/budget.mjs:1810"
           ]
         }
       ]
@@ -1046,7 +1046,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1028"
+            "scripts/lib/budget.mjs:1038"
           ]
         },
         {
@@ -1057,7 +1057,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1028"
+            "scripts/lib/budget.mjs:1038"
           ]
         }
       ]
@@ -1075,7 +1075,7 @@
             "budget.mjs#recoveryReservationKind"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:721"
+            "scripts/lib/budget.mjs:731"
           ]
         }
       ]
@@ -1095,7 +1095,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1168"
+            "scripts/lib/budget.mjs:1178"
           ]
         },
         {
@@ -1106,7 +1106,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1168"
+            "scripts/lib/budget.mjs:1178"
           ]
         }
       ]
@@ -1127,8 +1127,8 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1583",
-            "scripts/lib/budget.mjs:1168"
+            "scripts/lib/budget.mjs:1593",
+            "scripts/lib/budget.mjs:1178"
           ]
         },
         {
@@ -1140,8 +1140,8 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1583",
-            "scripts/lib/budget.mjs:1168"
+            "scripts/lib/budget.mjs:1593",
+            "scripts/lib/budget.mjs:1178"
           ]
         }
       ]
@@ -1161,7 +1161,7 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1695"
+            "scripts/lib/budget.mjs:1705"
           ]
         },
         {
@@ -1172,14 +1172,14 @@
             "state.mjs#writeState"
           ],
           "coordinates": [
-            "scripts/lib/budget.mjs:1695"
+            "scripts/lib/budget.mjs:1705"
           ]
         }
       ],
       "structural_precondition": {
         "kind": "state-precondition",
         "coordinates": [
-          "scripts/lib/budget.mjs:1702"
+          "scripts/lib/budget.mjs:1712"
         ]
       }
     },
@@ -1650,7 +1650,7 @@
             "codex-checker.mjs#buildCodexCheckerEntry"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:534"
+            "scripts/lib/codex-checker.mjs:578"
           ]
         }
       ]
@@ -1668,7 +1668,7 @@
             "codex-checker.mjs#buildCodexCheckerPrompt"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:511"
+            "scripts/lib/codex-checker.mjs:555"
           ]
         }
       ]
@@ -1686,7 +1686,7 @@
             "codex-checker.mjs#captureTrustedCheckerSkill"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:412"
+            "scripts/lib/codex-checker.mjs:456"
           ]
         }
       ]
@@ -1704,7 +1704,7 @@
             "codex-checker.mjs#importReviewViaCli"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:637"
+            "scripts/lib/codex-checker.mjs:681"
           ]
         }
       ]
@@ -1722,7 +1722,7 @@
             "codex-checker.mjs#inspectCheckerFileIdentity"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:102"
+            "scripts/lib/codex-checker.mjs:116"
           ]
         }
       ]
@@ -1740,7 +1740,7 @@
             "codex-checker.mjs#resolveTrustedCheckerSkill"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:210"
+            "scripts/lib/codex-checker.mjs:224"
           ]
         }
       ]
@@ -1758,7 +1758,7 @@
             "codex-checker.mjs#runIndependentCodexChecker"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:569"
+            "scripts/lib/codex-checker.mjs:613"
           ]
         }
       ]
@@ -1776,7 +1776,7 @@
             "codex-checker.mjs#sameCheckerIdentity"
           ],
           "coordinates": [
-            "scripts/lib/codex-checker.mjs:151"
+            "scripts/lib/codex-checker.mjs:165"
           ]
         }
       ]
@@ -2533,9 +2533,9 @@
           ],
           "coordinates": [
             "scripts/hooks-impl/drive-headless.mjs:44",
-            "scripts/lib/headless-host.mjs:2810",
-            "scripts/lib/headless-host.mjs:2762",
-            "scripts/lib/headless-host.mjs:2128",
+            "scripts/lib/headless-host.mjs:2865",
+            "scripts/lib/headless-host.mjs:2817",
+            "scripts/lib/headless-host.mjs:2183",
             "scripts/lib/review.mjs:247"
           ]
         },
@@ -2551,9 +2551,9 @@
           ],
           "coordinates": [
             "scripts/hooks-impl/drive-headless.mjs:44",
-            "scripts/lib/headless-host.mjs:2810",
-            "scripts/lib/headless-host.mjs:2762",
-            "scripts/lib/headless-host.mjs:2128",
+            "scripts/lib/headless-host.mjs:2865",
+            "scripts/lib/headless-host.mjs:2817",
+            "scripts/lib/headless-host.mjs:2183",
             "scripts/lib/review.mjs:247"
           ]
         }
@@ -2607,7 +2607,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:481"
+            "scripts/lib/dual-checker.mjs:575"
           ]
         },
         {
@@ -2617,7 +2617,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:481"
+            "scripts/lib/dual-checker.mjs:575"
           ]
         }
       ]
@@ -2636,7 +2636,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:351"
+            "scripts/lib/dual-checker.mjs:373"
           ]
         },
         {
@@ -2646,7 +2646,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:351"
+            "scripts/lib/dual-checker.mjs:373"
           ]
         }
       ]
@@ -2659,23 +2659,31 @@
       "reason": "leasecheck-dominated",
       "evidence": [
         {
-          "kind": "direct",
-          "path": [
-            "dual-checker.mjs#importDualReviewOutcome",
-            "integrity.mjs#appendAnchored"
-          ],
-          "coordinates": [
-            "scripts/lib/dual-checker.mjs:1147"
-          ]
-        },
-        {
           "kind": "dominance",
           "path": [
             "dual-checker.mjs#importDualReviewOutcome",
+            "review.mjs#importReviewOutcome",
+            "review.mjs#commitReviewOutcome",
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:1147"
+            "scripts/lib/dual-checker.mjs:1252",
+            "scripts/lib/review.mjs:853",
+            "scripts/lib/review.mjs:691"
+          ]
+        },
+        {
+          "kind": "transitive",
+          "path": [
+            "dual-checker.mjs#importDualReviewOutcome",
+            "review.mjs#importReviewOutcome",
+            "review.mjs#commitReviewOutcome",
+            "integrity.mjs#appendAnchored"
+          ],
+          "coordinates": [
+            "scripts/lib/dual-checker.mjs:1252",
+            "scripts/lib/review.mjs:853",
+            "scripts/lib/review.mjs:691"
           ]
         }
       ]
@@ -2693,7 +2701,7 @@
             "dual-checker.mjs#runDualCheckerProcesses"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:40"
+            "scripts/lib/dual-checker.mjs:42"
           ]
         }
       ]
@@ -2711,7 +2719,7 @@
             "dual-checker.mjs#runDualStreamingProcessesSync"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:207"
+            "scripts/lib/dual-checker.mjs:229"
           ]
         }
       ]
@@ -2730,7 +2738,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:753"
+            "scripts/lib/dual-checker.mjs:861"
           ]
         },
         {
@@ -2740,7 +2748,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:753"
+            "scripts/lib/dual-checker.mjs:861"
           ]
         }
       ]
@@ -2759,7 +2767,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:610"
+            "scripts/lib/dual-checker.mjs:710"
           ]
         },
         {
@@ -2769,7 +2777,7 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:610"
+            "scripts/lib/dual-checker.mjs:710"
           ]
         }
       ]
@@ -2787,7 +2795,7 @@
             "dual-checker.mjs#verifyDualCaptureProof"
           ],
           "coordinates": [
-            "scripts/lib/dual-checker.mjs:470"
+            "scripts/lib/dual-checker.mjs:564"
           ]
         }
       ]
@@ -3439,9 +3447,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2810",
-            "scripts/lib/headless-host.mjs:2762",
-            "scripts/lib/headless-host.mjs:2128",
+            "scripts/lib/headless-host.mjs:2865",
+            "scripts/lib/headless-host.mjs:2817",
+            "scripts/lib/headless-host.mjs:2183",
             "scripts/lib/review.mjs:247"
           ]
         },
@@ -3455,9 +3463,9 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2810",
-            "scripts/lib/headless-host.mjs:2762",
-            "scripts/lib/headless-host.mjs:2128",
+            "scripts/lib/headless-host.mjs:2865",
+            "scripts/lib/headless-host.mjs:2817",
+            "scripts/lib/headless-host.mjs:2183",
             "scripts/lib/review.mjs:247"
           ]
         }
@@ -3479,8 +3487,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2762",
-            "scripts/lib/headless-host.mjs:2128",
+            "scripts/lib/headless-host.mjs:2817",
+            "scripts/lib/headless-host.mjs:2183",
             "scripts/lib/review.mjs:247"
           ]
         },
@@ -3493,8 +3501,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/headless-host.mjs:2762",
-            "scripts/lib/headless-host.mjs:2128",
+            "scripts/lib/headless-host.mjs:2817",
+            "scripts/lib/headless-host.mjs:2183",
             "scripts/lib/review.mjs:247"
           ]
         }
@@ -5143,7 +5151,7 @@
             "preflight-receipt-journal.mjs#listPreflightUsageReceipts"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:643"
+            "scripts/lib/preflight-receipt-journal.mjs:653"
           ]
         }
       ]
@@ -5161,7 +5169,7 @@
             "preflight-receipt-journal.mjs#listProcessUsageReceipts"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:700"
+            "scripts/lib/preflight-receipt-journal.mjs:710"
           ]
         }
       ]
@@ -5197,7 +5205,7 @@
             "preflight-receipt-journal.mjs#markCheckerImportUnconfirmed"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:533"
+            "scripts/lib/preflight-receipt-journal.mjs:543"
           ]
         }
       ]
@@ -5215,7 +5223,7 @@
             "preflight-receipt-journal.mjs#readPreflightUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:424"
+            "scripts/lib/preflight-receipt-journal.mjs:434"
           ]
         }
       ]
@@ -5233,7 +5241,7 @@
             "preflight-receipt-journal.mjs#readProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:491"
+            "scripts/lib/preflight-receipt-journal.mjs:501"
           ]
         }
       ]
@@ -5251,7 +5259,7 @@
             "preflight-receipt-journal.mjs#removeProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:786"
+            "scripts/lib/preflight-receipt-journal.mjs:796"
           ]
         }
       ]
@@ -5305,7 +5313,7 @@
             "preflight-receipt-journal.mjs#writePreflightUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:449"
+            "scripts/lib/preflight-receipt-journal.mjs:459"
           ]
         }
       ]
@@ -5323,7 +5331,7 @@
             "preflight-receipt-journal.mjs#writeProcessUsageReceipt"
           ],
           "coordinates": [
-            "scripts/lib/preflight-receipt-journal.mjs:600"
+            "scripts/lib/preflight-receipt-journal.mjs:610"
           ]
         }
       ]
@@ -6470,8 +6478,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:841",
-            "scripts/lib/review.mjs:679"
+            "scripts/lib/review.mjs:853",
+            "scripts/lib/review.mjs:691"
           ]
         },
         {
@@ -6482,8 +6490,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:841",
-            "scripts/lib/review.mjs:679"
+            "scripts/lib/review.mjs:853",
+            "scripts/lib/review.mjs:691"
           ]
         }
       ]
@@ -6539,8 +6547,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:805",
-            "scripts/lib/review.mjs:679"
+            "scripts/lib/review.mjs:817",
+            "scripts/lib/review.mjs:691"
           ]
         },
         {
@@ -6551,8 +6559,8 @@
             "integrity.mjs#appendAnchored"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:805",
-            "scripts/lib/review.mjs:679"
+            "scripts/lib/review.mjs:817",
+            "scripts/lib/review.mjs:691"
           ]
         }
       ]
@@ -6624,7 +6632,7 @@
             "review.mjs#unsatisfiedReviewPoints"
           ],
           "coordinates": [
-            "scripts/lib/review.mjs:857"
+            "scripts/lib/review.mjs:869"
           ]
         }
       ]
@@ -7307,7 +7315,7 @@
             "schema.mjs#validate"
           ],
           "coordinates": [
-            "scripts/lib/schema.mjs:1051"
+            "scripts/lib/schema.mjs:1101"
           ]
         }
       ]
@@ -8388,7 +8396,7 @@
             "streaming-process.mjs#runStreamingProcessSync"
           ],
           "coordinates": [
-            "scripts/lib/streaming-process.mjs:433"
+            "scripts/lib/streaming-process.mjs:449"
           ]
         }
       ]

@@ -2,13 +2,15 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { isAbsolute, win32 } from 'node:path';
 
 import { contentHash } from './envelope.mjs';
 import { appendAnchored, readLines } from './integrity.mjs';
-import { deriveIndependentReviewClaim } from './review.mjs';
+import { deriveIndependentReviewClaim, importReviewOutcome } from './review.mjs';
 import {
   deriveReviewArtifactContract,
   parseDualReviewImport,
+  parseReviewImport,
   prepareImportedDualReview,
   sha256File,
 } from './review-import.mjs';
@@ -64,6 +66,7 @@ function encodeWorkerEntry(entry, index) {
     || !Array.isArray(entry.argv) || entry.argv.some(arg => typeof arg !== 'string')
     || entry.shell !== false || entry.usageOutputKind !== expectedKind
     || entry.captureFinalMessage !== true || entry.captureProcessDiagnostic !== true
+    || entry.captureProcessLifecycle !== true
     || (index === 0 && entry.captureProviderIdentity !== true)
     || (Object.hasOwn(entry, 'cwd') && typeof entry.cwd !== 'string')
     || (Object.hasOwn(entry, 'env') && (entry.env == null || typeof entry.env !== 'object'
@@ -83,6 +86,7 @@ function encodeWorkerEntry(entry, index) {
     captureFinalMessage: true,
     captureProviderIdentity: index === 0,
     captureProcessDiagnostic: true,
+    captureProcessLifecycle: true,
     stdin,
   };
 }
@@ -90,7 +94,7 @@ function encodeWorkerEntry(entry, index) {
 function decodeWorkerEntry(value, index) {
   const expectedKeys = [
     'argv', 'bin', 'captureFinalMessage', 'captureProcessDiagnostic',
-    'captureProviderIdentity', 'shell', 'stdin', 'usageOutputKind',
+    'captureProcessLifecycle', 'captureProviderIdentity', 'shell', 'stdin', 'usageOutputKind',
     ...(Object.hasOwn(value || {}, 'cwd') ? ['cwd'] : []),
     ...(Object.hasOwn(value || {}, 'env') ? ['env'] : []),
   ].sort();
@@ -131,6 +135,23 @@ function validWorkerStream(value) {
     && value.byte_count >= 0 && typeof value.truncated === 'boolean';
 }
 
+function validWorkerLifecycle(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)
+    || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([
+      'exit_code', 'finished_at', 'signal', 'spawned', 'started_at', 'timed_out',
+    ])) return false;
+  const started = new Date(value.started_at);
+  const finished = new Date(value.finished_at);
+  return value.spawned === true
+    && Number.isSafeInteger(value.exit_code)
+    && value.exit_code === 0
+    && value.signal === null
+    && value.timed_out === false
+    && Number.isFinite(started.getTime()) && started.toISOString() === value.started_at
+    && Number.isFinite(finished.getTime()) && finished.toISOString() === value.finished_at
+    && finished.getTime() >= started.getTime();
+}
+
 function encodeTransportResult(result) {
   if (result == null || typeof result !== 'object' || Array.isArray(result)) {
     return { ok: false, reason: 'transport-result-invalid' };
@@ -146,7 +167,7 @@ function encodeTransportResult(result) {
 function decodeTransportResult(result) {
   const allowed = new Set([
     'ok', 'reason', 'usage', 'stderr', 'stderrTruncated', 'process_diagnostic',
-    'process_streams', 'finalMessageBase64', 'providerIdentity',
+    'process_lifecycle', 'process_streams', 'finalMessageBase64', 'providerIdentity',
   ]);
   if (result == null || typeof result !== 'object' || Array.isArray(result)
     || typeof result.ok !== 'boolean' || Object.keys(result).some(key => !allowed.has(key))) {
@@ -168,6 +189,7 @@ function decodeTransportResult(result) {
       !== JSON.stringify(['model_id', 'session_id'])
     || !safeWorkerIdentity(result.providerIdentity.session_id, 512)
     || !safeWorkerIdentity(result.providerIdentity.model_id, 128)
+    || !validWorkerLifecycle(result.process_lifecycle)
     || result.process_streams == null || typeof result.process_streams !== 'object'
     || Array.isArray(result.process_streams)
     || JSON.stringify(Object.keys(result.process_streams).sort())
@@ -414,8 +436,19 @@ const CAPTURE_KEYS = Object.freeze([
   'source_manifest_sha256', 'skill_path', 'source_skill_sha256',
 ]);
 const PROCESS_KEYS = Object.freeze([
-  'provider_id', 'model_id', 'session_id', 'usage', 'stdout_sha256', 'stderr_sha256',
+  'provider_id', 'model_id', 'session_id', 'executable', 'launch', 'lifecycle', 'streams',
+  'usage',
 ]);
+const PROCESS_EXECUTABLE_KEYS = Object.freeze([
+  'checker', 'reviewer_adapter', 'provider_id', 'model_id', 'canonical_path', 'sha256',
+  'version', 'platform', 'arch', 'source', 'authenticode',
+]);
+const PROCESS_LAUNCH_KEYS = Object.freeze(['bin', 'argv', 'cwd', 'shell']);
+const PROCESS_LIFECYCLE_KEYS = Object.freeze([
+  'spawned', 'started_at', 'finished_at', 'exit_code', 'signal', 'timed_out',
+]);
+const PROCESS_STREAM_KEYS = Object.freeze(['stdout', 'stderr']);
+const PROCESS_STREAM_METADATA_KEYS = Object.freeze(['sha256', 'byte_count', 'truncated']);
 
 function exactKeys(value, keys) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -425,6 +458,67 @@ function exactKeys(value, keys) {
 function safeIdentity(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 512
     && !/[\0\r\n]/.test(value);
+}
+
+function safeAbsolute(value) {
+  return safeIdentity(value) && (isAbsolute(value) || win32.isAbsolute(value));
+}
+
+function validProcessStream(value) {
+  return exactKeys(value, PROCESS_STREAM_METADATA_KEYS)
+    && SHA256.test(value.sha256 || '')
+    && Number.isSafeInteger(value.byte_count) && value.byte_count >= 0
+    && typeof value.truncated === 'boolean';
+}
+
+function processSecurityIdentity(approval) {
+  if (approval == null || typeof approval !== 'object' || Array.isArray(approval)) return null;
+  const identity = { ...approval };
+  delete identity.approved_by;
+  delete identity.approved_at;
+  return identity;
+}
+
+function validProcessExecutable(value, attempt) {
+  const expectedChecker = attempt.slot === 0 ? 'codex' : 'grok';
+  return exactKeys(value, PROCESS_EXECUTABLE_KEYS)
+    && value.checker === expectedChecker
+    && value.reviewer_adapter === attempt.reviewer_adapter
+    && value.provider_id === attempt.provider_id
+    && value.model_id === attempt.model_id
+    && safeAbsolute(value.canonical_path)
+    && SHA256.test(value.sha256 || '')
+    && safeIdentity(value.version) && safeIdentity(value.platform) && safeIdentity(value.arch)
+    && value.source === 'human-explicit'
+    && (value.authenticode === null
+      || (typeof value.authenticode === 'object' && !Array.isArray(value.authenticode)));
+}
+
+function validProcessLaunch(value, executable, attempt) {
+  if (!exactKeys(value, PROCESS_LAUNCH_KEYS)
+    || value.bin !== executable.canonical_path || !safeAbsolute(value.bin)
+    || !safeAbsolute(value.cwd) || value.shell !== false
+    || !Array.isArray(value.argv) || value.argv.length === 0
+    || value.argv.some(arg => typeof arg !== 'string' || /[\0\r\n]/.test(arg)
+      || arg.startsWith('--model=') || /^model\s*=/.test(arg))) return false;
+  const positions = value.argv.flatMap((arg, index) => (
+    arg === '--model' || arg === '-m' ? [index] : []
+  ));
+  const terminator = value.argv.indexOf('--');
+  return positions.length === 1
+    && (terminator === -1 || positions[0] < terminator)
+    && value.argv[positions[0] + 1] === attempt.model_id;
+}
+
+function validProcessLifecycle(value) {
+  if (!exactKeys(value, PROCESS_LIFECYCLE_KEYS)) return false;
+  const started = new Date(value.started_at);
+  const finished = new Date(value.finished_at);
+  return value.spawned === true && value.exit_code === 0 && value.signal === null
+    && value.timed_out === false
+    && Number.isFinite(started.getTime()) && started.toISOString() === value.started_at
+    && Number.isFinite(finished.getTime()) && finished.toISOString() === value.finished_at
+    && finished.getTime() >= started.getTime();
 }
 
 function attemptIdentity(aggregation, attempt) {
@@ -515,8 +609,12 @@ function validateProcessInput(process, attempt) {
     || process.model_id !== attempt.model_id
     || !safeIdentity(process.session_id)
     || !isMeasuredOneTurnUsage(process.usage)
-    || !SHA256.test(process.stdout_sha256 || '')
-    || !SHA256.test(process.stderr_sha256 || '')) {
+    || !validProcessExecutable(process.executable, attempt)
+    || !validProcessLaunch(process.launch, process.executable, attempt)
+    || !validProcessLifecycle(process.lifecycle)
+    || !exactKeys(process.streams, PROCESS_STREAM_KEYS)
+    || !validProcessStream(process.streams.stdout)
+    || !validProcessStream(process.streams.stderr)) {
     throw new Error('DUAL_REVIEW_PROCESS_INVALID');
   }
   return structuredClone(process);
@@ -524,15 +622,17 @@ function validateProcessInput(process, attempt) {
 
 function processReceiptPayload(root, runId, aggregation, attempt, capture, process) {
   return {
-    contract: 'deep-loop-dual-checker-process-receipt-v1',
+    contract: 'deep-loop-dual-checker-process-receipt-v2',
     project_root: canonicalProjectRoot(root),
     run_id: runId,
     ...attemptIdentity(aggregation, attempt),
     session_id: process.session_id,
     claim_hash: attemptClaimHash(aggregation, attempt),
     capture,
-    stdout_sha256: process.stdout_sha256,
-    stderr_sha256: process.stderr_sha256,
+    executable: process.executable,
+    launch: process.launch,
+    lifecycle: process.lifecycle,
+    streams: process.streams,
     usage: process.usage,
   };
 }
@@ -619,8 +719,10 @@ export function settleDualAttemptProcess(root, runId, options = {}) {
       model_id: exactProcess.model_id,
       session_id: exactProcess.session_id,
       claim_hash: payload.claim_hash,
-      stdout_sha256: exactProcess.stdout_sha256,
-      stderr_sha256: exactProcess.stderr_sha256,
+      executable: exactProcess.executable,
+      launch: exactProcess.launch,
+      lifecycle: exactProcess.lifecycle,
+      streams: exactProcess.streams,
     };
     attempt.cost_proof = {
       receipt_id: receipt.receipt_id,
@@ -651,6 +753,12 @@ export function settleDualAttemptProcess(root, runId, options = {}) {
       sourceClaimSha256: locked.attempt.source_claim_sha256,
     });
     validateProcessInput(exactProcess, locked.attempt);
+    const approval = locked.checker?.review_aggregation?.schema_version === '2.0'
+      ? loop.autonomy?.checker_executable_approvals?.[exactProcess.executable.checker]
+      : null;
+    if (!sameJson(processSecurityIdentity(approval), exactProcess.executable)) {
+      throw new Error('DUAL_REVIEW_PROCESS_APPROVAL_MISMATCH');
+    }
     const collision = locked.aggregation.attempts.some(attempt => (
       attempt !== locked.attempt && attempt.session_id === exactProcess.session_id
     ));
@@ -789,7 +897,7 @@ function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function verifyStoredProcessProof(root, runId, aggregation, attempt, lines) {
+function verifyStoredProcessProof(root, runId, aggregation, attempt, lines, approvals) {
   if (!['claimed', 'imported'].includes(attempt.status)) {
     throw new Error('DUAL_REVIEW_PROCESS_PROOF_MISSING');
   }
@@ -803,14 +911,13 @@ function verifyStoredProcessProof(root, runId, aggregation, attempt, lines) {
   });
   if (!exactKeys(process, [
     'receipt_id', 'receipt', 'provider_id', 'model_id', 'session_id', 'claim_hash',
-    'stdout_sha256', 'stderr_sha256',
+    'executable', 'launch', 'lifecycle', 'streams',
   ]) || !exactKeys(cost, ['receipt_id', 'event_seq', 'event_checksum', 'usage'])
     || process.receipt_id !== cost.receipt_id
     || process.provider_id !== attempt.provider_id || process.model_id !== attempt.model_id
     || process.session_id !== attempt.session_id || !safeIdentity(process.session_id)
     || !SHA256.test(process.receipt_id || '')
-    || !SHA256.test(process.claim_hash || '') || !SHA256.test(process.stdout_sha256 || '')
-    || !SHA256.test(process.stderr_sha256 || '') || !isMeasuredOneTurnUsage(cost.usage)) {
+    || !SHA256.test(process.claim_hash || '') || !isMeasuredOneTurnUsage(cost.usage)) {
     throw new Error('DUAL_REVIEW_PROCESS_PROOF_INVALID');
   }
   const receiptPrefix = `.deep-loop/runs/${runId}/preflight/process-receipts/`;
@@ -824,10 +931,17 @@ function verifyStoredProcessProof(root, runId, aggregation, attempt, lines) {
     provider_id: process.provider_id,
     model_id: process.model_id,
     session_id: process.session_id,
+    executable: process.executable,
+    launch: process.launch,
+    lifecycle: process.lifecycle,
+    streams: process.streams,
     usage: cost.usage,
-    stdout_sha256: process.stdout_sha256,
-    stderr_sha256: process.stderr_sha256,
   };
+  validateProcessInput(processInput, attempt);
+  if (!sameJson(
+    processSecurityIdentity(approvals?.[process.executable.checker]),
+    process.executable,
+  )) throw new Error('DUAL_REVIEW_PROCESS_APPROVAL_MISMATCH');
   const expected = receiptWithId(processReceiptPayload(
     root, runId, aggregation, attempt, capture, processInput,
   ));
@@ -902,7 +1016,9 @@ function validateDualImportBinding(root, runId, loop, input, lines) {
   if (!sameJson(currentArtifacts, source.artifacts) || !sameJson(input.artifacts, source.artifacts)) {
     throw new Error('DUAL_REVIEW_ARTIFACT_MISMATCH');
   }
-  verifyStoredProcessProof(root, runId, aggregation, attempt, lines);
+  verifyStoredProcessProof(
+    root, runId, aggregation, attempt, lines, loop.autonomy?.checker_executable_approvals,
+  );
   validateDualCaptureSet(aggregation);
   const sessionIds = aggregation.attempts.map(item => item.session_id).filter(Boolean);
   if (new Set(sessionIds).size !== sessionIds.length) throw new Error('DUAL_REVIEW_SESSION_COLLISION');
@@ -1063,7 +1179,10 @@ function recoverImportedDualOutcome(root, runId, snapshot, input, binding, initi
     || imported.length !== 2) throw new Error('DUAL_REVIEW_AGGREGATION_INVALID');
   for (const attempt of imported) {
     verifyImportedAttemptArtifact(root, runId, attempt);
-    verifyStoredProcessProof(root, runId, initial.aggregation, attempt, snapshot.logLines);
+    verifyStoredProcessProof(
+      root, runId, initial.aggregation, attempt, snapshot.logLines,
+      snapshot.data.autonomy?.checker_executable_approvals,
+    );
   }
   const aggregate = aggregateBinding(initial.aggregation, initial.checker, imported);
   const aggregateData = aggregateOutcomeData(initial, aggregate, imported);
@@ -1096,6 +1215,30 @@ function recoverImportedDualOutcome(root, runId, snapshot, input, binding, initi
   };
 }
 
+function publicReviewImportSchema(raw) {
+  let scalarError;
+  try {
+    parseReviewImport(raw);
+    return '1.0';
+  } catch (error) {
+    scalarError = error;
+  }
+  let dualError;
+  try {
+    parseDualReviewImport(raw);
+    return '2.0';
+  } catch (error) {
+    dualError = error;
+  }
+  if (typeof raw !== 'string'
+    || String(scalarError?.message || scalarError).startsWith('REVIEW_IMPORT_TOO_LARGE')) {
+    throw scalarError;
+  }
+  let declared;
+  try { declared = JSON.parse(raw)?.schema_version; } catch { declared = null; }
+  throw declared === '2.0' ? dualError : scalarError;
+}
+
 export function importDualReviewOutcome(root, runId, options = {}) {
   if (!exactOptions(options)) throw new Error('DUAL_REVIEW_IMPORT_INPUT_INVALID');
   for (const key of [
@@ -1105,6 +1248,9 @@ export function importDualReviewOutcome(root, runId, options = {}) {
     if (Object.hasOwn(options, key)) throw new Error(`REVIEW_METADATA_FORBIDDEN: import derives ${key}`);
   }
   const { raw, fence, now } = options;
+  if (publicReviewImportSchema(raw) === '1.0') {
+    return importReviewOutcome(root, runId, { raw, fence, now });
+  }
   const input = parseDualReviewImport(raw);
   const snapshot = captureReconciledRunSnapshot(root, runId);
   const binding = validateDualImportBinding(root, runId, snapshot.data, input, snapshot.logLines);
@@ -1228,7 +1374,10 @@ export function importDualReviewOutcome(root, runId, options = {}) {
     if (completes) {
       if (imported.length !== 1) throw new Error('DUAL_REVIEW_AGGREGATION_INCOMPLETE');
       verifyImportedAttemptArtifact(root, runId, imported[0]);
-      verifyStoredProcessProof(root, runId, locked.aggregation, imported[0], readLines(root, runId));
+      verifyStoredProcessProof(
+        root, runId, locked.aggregation, imported[0], readLines(root, runId),
+        loop.autonomy?.checker_executable_approvals,
+      );
       const prospective = structuredClone(locked.aggregation.attempts);
       const prospectiveAttempt = prospective.find(attempt => attempt.attempt_id === input.attempt_id);
       prospectiveAttempt.status = 'imported';

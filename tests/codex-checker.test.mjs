@@ -6,6 +6,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { writeExactDualCapture } from './helpers/dual-capture.mjs';
 
 async function checkerModule() {
   try {
@@ -377,4 +378,40 @@ test('trusted checker capture rejects byte-identical capture replacement', async
     root, runId, checkerEpisodeId: '002-deep-review', attemptId: 'attempt-01',
     sourceClaimSha256, source, expected: captured,
   }), /checker-capture-integrity-drift:skill/);
+});
+
+test('retained capture consumer derives exact manifest, skill, version, and source topology semantics', async () => {
+  const { captureTrustedCheckerSkill } = await checkerModule();
+  const runId = 'RUN-H2';
+  const checkerEpisodeId = '002-deep-review';
+  const sourceClaimSha256 = 'c'.repeat(64);
+  const cases = [
+    ['manifest-json', { manifest: Buffer.from('caller-authored manifest bytes') }],
+    ['manifest-name', { manifest: Buffer.from('{"name":"other","version":"2.4.0","skills":"./skills/"}\n') }],
+    ['manifest-skills', { manifest: Buffer.from('{"name":"deep-review","version":"2.4.0","skills":"./elsewhere/"}\n') }],
+    ['manifest-version', { manifest: Buffer.from('{"name":"deep-review","version":"9.9.9","skills":"./skills/"}\n') }],
+    ['skill-frontmatter', { skill: Buffer.from('---\nname: other-review\n---\n# forged\n') }],
+    ['skill-utf8', { skill: Buffer.from([0xff, 0xfe, 0xfd]) }],
+    ['manifest-topology', { sourceOverrides: { manifest_path: '/trusted/deep-review/elsewhere/plugin.json' } }],
+    ['skill-topology', { sourceOverrides: { skill_path: '/trusted/deep-review/skills/other/SKILL.md' } }],
+  ];
+  for (const [name, options] of cases) {
+    const root = canonicalRealpath(mkdtempSync(join(tmpdir(), `dl-retained-${name}-`)));
+    const attemptId = `attempt-${name}`;
+    const { proof } = writeExactDualCapture({
+      root, runId, checkerEpisodeId, attemptId, sourceClaimSha256, ...options,
+    });
+    assert.throws(() => captureTrustedCheckerSkill({
+      root, runId, checkerEpisodeId, attemptId, sourceClaimSha256, proof,
+    }), /checker-capture-/, name);
+  }
+
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-retained-authentic-')));
+  const attemptId = 'attempt-authentic';
+  const { proof } = writeExactDualCapture({
+    root, runId, checkerEpisodeId, attemptId, sourceClaimSha256,
+  });
+  assert.deepEqual(captureTrustedCheckerSkill({
+    root, runId, checkerEpisodeId, attemptId, sourceClaimSha256, proof,
+  }), proof);
 });

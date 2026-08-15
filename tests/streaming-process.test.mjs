@@ -148,6 +148,40 @@ test('empty stdin can succeed even when no flush callback arrives before child c
   assert.deepEqual(await pending, { ok: true, usage: { num_turns: 1, tokens: null } });
 });
 
+test('provider process lifecycle is captured from the real child start and terminal close', async () => {
+  const { runStreamingProcess } = await streamingModule();
+  const child = controlledChild();
+  const moments = [
+    Date.parse('2026-08-16T00:00:00.000Z'),
+    Date.parse('2026-08-16T00:00:01.000Z'),
+  ];
+  const pending = runStreamingProcess({
+    bin: process.execPath,
+    argv: [],
+    usageOutputKind: 'claude-json',
+    captureProcessLifecycle: true,
+    captureProcessDiagnostic: true,
+  }, {
+    timeoutMs: 2_000,
+    nowFn: () => moments.shift(),
+    spawnImpl: () => child,
+  });
+  child.stdout.emit('data', Buffer.from('{"num_turns":1}'));
+  child.emit('close', 0, null);
+
+  const result = await pending;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.process_lifecycle, {
+    spawned: true,
+    started_at: '2026-08-16T00:00:00.000Z',
+    finished_at: '2026-08-16T00:00:01.000Z',
+    exit_code: 0,
+    signal: null,
+    timed_out: false,
+  });
+  assert.deepEqual(Object.keys(result.process_streams).sort(), ['stderr', 'stdout']);
+});
+
 test('runStreamingProcess fails closed when a non-empty stdin request is not delivered', async () => {
   const { runStreamingProcess } = await streamingModule();
   const result = await runStreamingProcess({

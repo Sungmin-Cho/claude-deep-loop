@@ -99,8 +99,10 @@ function withDiagnostic(result, stderrChunks, stderrTruncated, processDiagnostic
 export function runStreamingProcess(entry, {
   timeoutMs = 30 * 60 * 1000,
   spawnImpl = spawn,
+  nowFn = () => Date.now(),
 } = {}) {
   const captureProcessDiagnostic = entry?.captureProcessDiagnostic === true;
+  const captureProcessLifecycle = entry?.captureProcessLifecycle === true;
   if (!validTimeout(timeoutMs)) {
     return Promise.resolve(withEmptyDiagnostic(
       { ok: false, reason: 'invalid-timeout' }, captureProcessDiagnostic,
@@ -158,6 +160,7 @@ export function runStreamingProcess(entry, {
       ));
       return;
     }
+    const startedAt = captureProcessLifecycle ? new Date(nowFn()).toISOString() : null;
 
     const stderrChunks = [];
     let stderrBytes = 0;
@@ -215,11 +218,19 @@ export function runStreamingProcess(entry, {
     child.on('error', (error) => {
       spawnError = error;
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
+      const lifecycle = captureProcessLifecycle ? {
+        spawned: true,
+        started_at: startedAt,
+        finished_at: new Date(nowFn()).toISOString(),
+        exit_code: code,
+        signal: signal ?? null,
+        timed_out: timedOut,
+      } : null;
       const streams = captureProcessDiagnostic ? {
         stderr: {
           sha256: stderrHash.digest('hex'),
@@ -232,13 +243,18 @@ export function runStreamingProcess(entry, {
           truncated: !codexParser && claudeTotalBytes > STREAM_LIMITS.claudeOutputBytes,
         },
       } : null;
+      const withLifecycle = result => lifecycle == null
+        ? result
+        : { ...result, process_lifecycle: lifecycle };
       const diagnostic = (result, reasonCode, processPhase) => withDiagnostic(
-        result,
+        withLifecycle(result),
         stderrChunks,
         stderrTotalBytes > STREAM_LIMITS.stderrBytes,
         streams == null ? null : { reason_code: reasonCode, process_phase: processPhase, ...streams },
       );
-      const success = (result) => streams == null ? diagnostic(result) : { ...result, process_streams: streams };
+      const success = (result) => streams == null
+        ? diagnostic(result)
+        : { ...withLifecycle(result), process_streams: streams };
 
       if (spawnError) {
         resolve(diagnostic(

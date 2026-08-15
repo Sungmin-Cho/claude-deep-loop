@@ -10,7 +10,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tokenize } from './helpers/wsu1-f26-static-analyzer.mjs';
-import { writeExactDualCapture } from './helpers/dual-capture.mjs';
+import {
+  checkerApprovalMap,
+  exactDualProcess,
+  writeExactDualCapture,
+} from './helpers/dual-capture.mjs';
 import {
   createDirectoryJunction, createFileSymlink, createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
@@ -82,6 +86,7 @@ function baselineNode20TraversalViolations(source, file = '<source>') {
 
 function fixture({
   scriptDecoy = null, ignoredRuntime = false, includeIgnoredArtifact = true, testContext = null,
+  captureOptions = null, processOptions = null,
 } = {}) {
   const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), 'wsu1-f26-verifier-')));
   const runId = '01WSU1F26TESTACTUALRUN0001';
@@ -188,8 +193,7 @@ function fixture({
       checkerEpisodeId: checkerId,
       attemptId: route.attempt_id,
       sourceClaimSha256,
-      manifest: Buffer.from(`manifest:${route.reviewer_id}`),
-      skill: Buffer.from(`skill:${route.reviewer_adapter}`),
+      ...(captureOptions?.(route) || {}),
     });
     const identity = {
       aggregation_id: aggregationId,
@@ -201,16 +205,27 @@ function fixture({
       model_id: route.model_id,
       source_claim_sha256: sourceClaimSha256,
     };
+    const process = exactDualProcess({
+      root: worktree,
+      attempt: route,
+      sessionId: route.session_id,
+      usage: usage[route.slot],
+      stdout: `stdout:${route.attempt_id}`,
+      stderr: `stderr:${route.attempt_id}`,
+    });
+    processOptions?.(process, route);
     const receiptPayload = {
-      contract: 'deep-loop-dual-checker-process-receipt-v1',
+      contract: 'deep-loop-dual-checker-process-receipt-v2',
       project_root: projectRoot,
       run_id: runId,
       ...identity,
       session_id: route.session_id,
       claim_hash: sha256(Buffer.from(JSON.stringify(identity))),
       capture: captureProof,
-      stdout_sha256: sha256(Buffer.from(`stdout:${route.attempt_id}`)),
-      stderr_sha256: sha256(Buffer.from(`stderr:${route.attempt_id}`)),
+      executable: process.executable,
+      launch: process.launch,
+      lifecycle: process.lifecycle,
+      streams: process.streams,
       usage: usage[route.slot],
     };
     const receipt = {
@@ -248,8 +263,10 @@ function fixture({
         model_id: route.model_id,
         session_id: route.session_id,
         claim_hash: receipt.claim_hash,
-        stdout_sha256: receipt.stdout_sha256,
-        stderr_sha256: receipt.stderr_sha256,
+        executable: process.executable,
+        launch: process.launch,
+        lifecycle: process.lifecycle,
+        streams: process.streams,
       },
       report_proof: null,
       cost_proof: {
@@ -409,6 +426,7 @@ function fixture({
     project: { root: projectRoot },
     autonomy: {
       session_runtime: 'codex', runtime_source: 'skill-asserted', continuation_policy: 'workstream-session',
+      checker_executable_approvals: checkerApprovalMap(routes),
     },
     session_chain: { lease: { owner_run_id: 'owner-010', generation: 1, resume_policy: 'auto' } },
     workstreams: [{ id: workstreamId, worktree: worktreePrefix }],
@@ -878,11 +896,43 @@ negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects caller substitution of one p
     const second = join(fx.projectRoot, ...attempts[1].process_proof.receipt.split('/'));
     writeFileSync(second, readFileSync(first));
   });
+negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects executable identity not equal to locked approval',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    fx.loop.autonomy.checker_executable_approvals.codex.sha256 = 'e'.repeat(64);
+    fx.writeLoop();
+  });
+negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects an incomplete locked approval envelope',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    delete fx.loop.autonomy.checker_executable_approvals.codex.approved_by;
+    fx.writeLoop();
+  });
+negative('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects lifecycle drift from the immutable receipt',
+  'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
+    const attempt = fx.loop.episodes[1].review_aggregation.attempts[0];
+    attempt.process_proof.lifecycle.exit_code = 9;
+    fx.writeLoop();
+  });
+test('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects self-consistent unvalidated model argv', () => {
+  const fx = fixture({
+    processOptions: (process, route) => {
+      if (route.slot === 0) process.launch.argv.push('--model=caller-substitution');
+    },
+  });
+  const result = invokeWithoutReceipt(fx);
+  assert.equal(result.stderr, 'WSU1_F26_DUAL_PROCESS_PROOF\n');
+});
 negative('F26-ACTUAL-NEG-DUAL-CAPTURE rejects arbitrary capture record bytes',
   'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
     const capture = fx.loop.episodes[1].review_aggregation.attempts[0].capture_proof;
     writeFileSync(join(fx.projectRoot, ...capture.record_path.split('/')), '{}');
   });
+test('F26-ACTUAL-NEG-DUAL-CAPTURE rejects self-consistent retained bytes without manifest semantics', () => {
+  const fx = fixture({
+    captureOptions: () => ({ manifest: Buffer.from('caller-authored manifest bytes') }),
+  });
+  const result = invokeWithoutReceipt(fx);
+  assert.equal(result.stderr, 'WSU1_F26_DUAL_PROCESS_PROOF\n');
+});
 negative('F26-ACTUAL-NEG-DUAL-CAPTURE rejects a proof copied across attempts',
   'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {
     const attempts = fx.loop.episodes[1].review_aggregation.attempts;
@@ -1247,6 +1297,11 @@ test('STEP0-3 coherent synthetic verifier fixture reaches exact success and atom
     fx.loop.episodes[1].review_aggregation.attempts.map(item => item.process_proof.receipt_id));
   assert.equal(receipt.provider_process_proofs.length, 2);
   assert.equal(new Set(receipt.provider_process_proofs.map(item => item.receipt_sha256)).size, 2);
+  assert.equal(receipt.provider_process_proofs.every(item => (
+    item.executable && item.launch && item.lifecycle && item.streams
+  )), true);
+  assert.equal(receipt.provider_process_proofs.every(item => item.lifecycle.exit_code === 0
+    && item.lifecycle.signal === null && item.lifecycle.timed_out === false), true);
   assert.equal(receipt.host_observation.sha256, sha256(readFileSync(fx.observationPath)));
   assert.equal(receipt.aggregate_event.seq,
     fx.loop.episodes[1].review_aggregation.aggregate_proof.final_event_seq);

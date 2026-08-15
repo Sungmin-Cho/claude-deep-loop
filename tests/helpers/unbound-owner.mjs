@@ -15,8 +15,12 @@ import {
 } from '../../scripts/lib/dual-checker.mjs';
 import { emitHandoff } from '../../scripts/lib/handoff.mjs';
 import { acquireLease } from './acquire-and-activate.mjs';
-import { readState } from '../../scripts/lib/state.mjs';
-import { writeExactDualCapture } from './dual-capture.mjs';
+import { readState, writeState } from '../../scripts/lib/state.mjs';
+import {
+  checkerApprovalMap,
+  exactDualProcess,
+  writeExactDualCapture,
+} from './dual-capture.mjs';
 
 const NOW = Date.parse('2026-07-25T00:00:00.000Z');
 
@@ -60,6 +64,9 @@ export function reviewedMakerThenHandoff({ runtime = 'claude' } = {}) {
     idFactory: () => ids.shift(),
     now: NOW,
   });
+  const claimedState = readState(root, runId).data;
+  claimedState.autonomy.checker_executable_approvals = checkerApprovalMap(claim.attempts);
+  writeState(root, runId, claimedState);
   const sessions = [
     '11111111-1111-4111-8111-111111111111',
     '22222222-2222-4222-8222-222222222222',
@@ -76,14 +83,14 @@ export function reviewedMakerThenHandoff({ runtime = 'claude' } = {}) {
       episodeId: checkerId,
       attemptId: attempt.attempt_id,
       capture,
-      process: {
-        provider_id: attempt.provider_id,
-        model_id: attempt.model_id,
-        session_id: sessions[index],
+      process: exactDualProcess({
+        root,
+        attempt,
+        sessionId: sessions[index],
         usage: { num_turns: 1, input_tokens: 4 + index, output_tokens: 2, tokens: 6 + index },
-        stdout_sha256: `${index + 3}`.repeat(64),
-        stderr_sha256: `${index + 5}`.repeat(64),
-      },
+        stdout: `stdout:unbound-owner:${index}`,
+        stderr: `stderr:unbound-owner:${index}`,
+      }),
       fence: parentFence,
       now: NOW + index + 1,
     });

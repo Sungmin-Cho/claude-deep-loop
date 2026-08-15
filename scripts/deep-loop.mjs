@@ -27,7 +27,6 @@ import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import {
   configureReviewFlags,
   dispatchReview,
-  importReviewOutcome,
   recordReviewOutcome,
 } from './lib/review.mjs';
 import { importDualReviewOutcome } from './lib/dual-checker.mjs';
@@ -1671,10 +1670,7 @@ const handlers = {
       if (f.stdin !== true) { error('STDIN_REQUIRED: review import requires --stdin'); return 2; }
       try {
         const raw = await readBoundedText(process.stdin);
-        const snapshot = captureReconciledRunSnapshot(root, runId).data;
-        const dualRequired = snapshot.autonomy != null && typeof snapshot.autonomy === 'object'
-          && Object.hasOwn(snapshot.autonomy, 'checker_executable_approvals');
-        json((dualRequired ? importDualReviewOutcome : importReviewOutcome)(root, runId, {
+        json(importDualReviewOutcome(root, runId, {
           raw, fence, now: parseNow(f),
         }));
         return 0;
