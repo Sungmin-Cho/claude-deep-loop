@@ -13,7 +13,7 @@ import { checkBreaker } from './breaker.mjs';
 import { boundaryHandoffTopologyError } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { runtimeCapability, sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import {
   defaultProbeRun, deriveTmuxSessionByAncestry, listTmuxPanes, probeTmuxSocket,
@@ -194,7 +194,7 @@ export function isHeadlessInvocation(env = process.env, runtime = 'claude') {
   if (!env || typeof env !== 'object') return false;
   const truthy = (v) => v === '1' || v === 'true' || v === true;
   if (truthy(env.DEEP_LOOP_UNATTENDED) || truthy(env.DEEP_LOOP_HEADLESS)) return true;
-  if (runtime === 'codex') return false;
+  if (runtimeCapability(runtime, 'entrypoint_heuristic') !== 'claude-code') return false;
   const ep = String(env.CLAUDE_CODE_ENTRYPOINT || '').toLowerCase();
   if (!ep || ep === 'cli') return false;   // interactive TUI (or unset) → not headless
   if (ep.startsWith('sdk') || ep.includes('print') || ep.includes('headless') || ep.includes('noninteractive') || ep.includes('non-interactive')) return true;
@@ -487,17 +487,19 @@ export function respawn(root, runId, {
   let launcherIdentity = null;
   let launcherAuthoritySnapshot = null;
   let posixLauncherSnapshot = null;
-  const requiresPosixCodexLauncher = ['linux', 'darwin'].includes(platform) && runtime === 'codex'
+  const requiresPosixVisibleTrust = ['linux', 'darwin'].includes(platform)
+    && runtimeCapability(runtime, 'requires_posix_visible_executable_trust')
     && ['cmux', 'iterm2', 'terminal-app', 'tmux'].includes(mode);
   const requiresPosixTmuxLauncher = ['linux', 'darwin'].includes(platform) && mode === 'tmux';
   // The shared headless host owns Codex executable preflight and post-CAS
   // revalidation. This local authority path is for auto-visible continuation;
   // Windows keeps its existing direct runtime requirement for every non-App mode.
   const requiresRuntime = (platform === 'win32' && mode !== 'desktop')
-    || requiresPosixCodexLauncher;
+    || requiresPosixVisibleTrust;
   const requiresWindowsLauncher = platform === 'win32'
-    && (mode === 'wt' || mode === 'powershell' || (runtime === 'claude' && mode === 'desktop'));
-  if (requiresRuntime || requiresWindowsLauncher || requiresPosixCodexLauncher || requiresPosixTmuxLauncher) {
+    && (mode === 'wt' || mode === 'powershell'
+      || (runtimeCapability(runtime, 'desktop_transport') && mode === 'desktop'));
+  if (requiresRuntime || requiresWindowsLauncher || requiresPosixVisibleTrust || requiresPosixTmuxLauncher) {
     let identityStage = requiresRuntime ? 'runtime' : 'launcher';
     let identityReason = null;
     try {
@@ -558,7 +560,7 @@ export function respawn(root, runId, {
           identityReason = 'launcher-session-unverified';
           throw new Error('launcher session unavailable');
         }
-      } else if (requiresPosixCodexLauncher) {
+      } else if (requiresPosixVisibleTrust) {
         identityStage = 'launcher';
         posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
         if (posixLauncherSnapshot == null) throw new Error('launcher session unavailable');
@@ -581,7 +583,8 @@ export function respawn(root, runId, {
   // Codex and other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
   // unverified/failed probe (dt.ok===false) yields null → buildLaunchCommand's unavailable entry →
   // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
-  const dt = runtime === 'claude' && mode === 'desktop' ? desktopProbe({ platform }) : null;
+  const dt = runtimeCapability(runtime, 'desktop_transport') && mode === 'desktop'
+    ? desktopProbe({ platform }) : null;
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.

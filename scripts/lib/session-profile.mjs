@@ -1,7 +1,7 @@
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { withReconciledMutationLock } from './state.mjs';
-import { sessionRuntime, validateSessionRuntime } from './runtime.mjs';
+import { runtimeCapability, sessionRuntime, validateSessionRuntime } from './runtime.mjs';
 
 // Session model/effort continuity (WS1). Validation is the write-boundary defense (init-run + this setter);
 // buildLaunchCommand later threads already-validated strings into child --model/--effort argv.
@@ -24,7 +24,7 @@ export function validateRuntimeProfile(runtime, { model = null, effort = null } 
   const selectedRuntime = validateSessionRuntime(runtime);
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
-  if (selectedRuntime === 'codex' && effort === 'max') {
+  if (effort === 'max' && !runtimeCapability(selectedRuntime, 'max_effort_supported')) {
     throw Object.assign(new Error('UNSUPPORTED_RUNTIME_EFFORT: codex max'), { code: 'UNSUPPORTED_RUNTIME_EFFORT' });
   }
   return { model, effort };

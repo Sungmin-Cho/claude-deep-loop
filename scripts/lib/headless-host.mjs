@@ -39,7 +39,7 @@ import {
 } from './runtime-executable.mjs';
 import { buildMinimalCodexEnv } from './codex-runtime.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { runtimeCapability, sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import {
   blockIndependentReview,
@@ -409,7 +409,7 @@ function driveIndependentChecker({
     };
   }
   const pending = findPendingIndependentChecker(initialLoop);
-  if (!pending || runtime !== 'codex') return null;
+  if (!pending || !runtimeCapability(runtime, 'unattended_checker')) return null;
   if (initialLoop.session_chain?.lease?.resume_policy === 'human') {
     return { ok: true, skipped: true, reason: 'human-resume-policy' };
   }
@@ -1059,7 +1059,7 @@ function driveHeadlessRunLocked({
   const key = initialLease.handoff_idempotency_key;
   const initialApproval = initialLoop.autonomy?.runtime_executable_approval;
 
-  if (runtime === 'codex') {
+  if (runtimeCapability(runtime, 'requires_process_receipt_settlement')) {
     let pendingReceipts;
     try {
       pendingReceipts = listProcessReceiptsFn({ root: projectRoot, runId });
@@ -1184,7 +1184,7 @@ function driveHeadlessRunLocked({
   let projectDirectorySnapshot = null;
   let pluginDirectorySnapshot = null;
   let resumeSkillSnapshot = null;
-  if (runtime === 'codex' && preliminaryGate.ok) {
+  if (runtimeCapability(runtime, 'requires_process_preflight') && preliminaryGate.ok) {
     try {
       executable = revalidateExecutable(initialLoop.autonomy?.runtime_executable_approval);
     } catch {
@@ -1316,7 +1316,7 @@ function driveHeadlessRunLocked({
     spawnCalls += 1;
     if (spawnCalls !== 1) return { ok: false, reason: 'maker-spawn-reentry' };
     let enriched = entry;
-    if (runtime === 'codex') {
+    if (runtimeCapability(runtime, 'requires_process_preflight')) {
       try {
         let freshProjectDirectory;
         let freshPluginDirectory;
@@ -1365,7 +1365,7 @@ function driveHeadlessRunLocked({
           return { ok: false, reason: 'post-cas-env-drift' };
         }
         const expectedEntry = launchCommandBuilder({
-          runtime: 'codex',
+          runtime,
           root: projectRoot,
           parentRunId: runId,
           childRunId,
@@ -1427,7 +1427,7 @@ function driveHeadlessRunLocked({
     } else if (captured.ok === false
       && (typeof captured.reason !== 'string' || captured.reason.length === 0)) {
       captured = { ok: false, reason: 'worker-protocol-invalid' };
-    } else if (runtime === 'codex' && captured.ok === true && !isMeasuredOneTurnUsage(captured.usage)) {
+    } else if (runtimeCapability(runtime, 'usage_output_kind') === 'codex-jsonl' && captured.ok === true && !isMeasuredOneTurnUsage(captured.usage)) {
       captured = { ok: false, reason: 'worker-protocol-invalid' };
     }
     return captured;
@@ -1488,7 +1488,7 @@ function driveHeadlessRunLocked({
   if (captured?.ok === true && !terminal(freshLoop) && !childAcquired) {
     let recorded = false;
     let accountingReason = null;
-    if (runtime === 'codex' && captured.usage) {
+    if (runtimeCapability(runtime, 'usage_output_kind') === 'codex-jsonl' && captured.usage) {
       try {
         if (captured.usageReceipt != null) {
           const settlement = settleProcessCostFn(projectRoot, runId, {
@@ -1534,7 +1534,7 @@ function driveHeadlessRunLocked({
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'resumed-unconfirmed',
       reason: 'child-did-not-acquire',
-      ...(runtime === 'codex' ? {
+      ...(runtimeCapability(runtime, 'usage_output_kind') === 'codex-jsonl' ? {
         usage: captured.usage,
         recorded,
         ...(accountingReason ? { accounting_reason: accountingReason } : {}),
@@ -1554,7 +1554,7 @@ function driveHeadlessRunLocked({
   if (captured?.usage) {
     try {
       const accountingFence = { owner: childRunId, generation: parentGeneration + 1, intent: 'accounting' };
-      if (runtime === 'codex' && captured.usageReceipt != null) {
+      if (runtimeCapability(runtime, 'usage_output_kind') === 'codex-jsonl' && captured.usageReceipt != null) {
         const settlement = settleProcessCostFn(projectRoot, runId, {
           receipt: captured.usageReceipt,
           fence: accountingFence,

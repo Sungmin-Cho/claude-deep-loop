@@ -14,6 +14,7 @@ import {
   captureStableFileIdentity,
   matchingStableFileIdentity,
 } from './fs-safe.mjs';
+import { SESSION_RUNTIMES } from './runtime.mjs';
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -151,7 +152,7 @@ export function compactRestoreRequestBinding(input) {
     || !SHA256.test(value.context_sha256 || '')
     || typeof value.owner_run_id !== 'string' || value.owner_run_id.length === 0
     || !Number.isSafeInteger(value.generation) || value.generation < 1
-    || !['claude', 'codex'].includes(value.runtime)
+    || !SESSION_RUNTIMES.includes(value.runtime)
     || !['postcompact-observation', 'human-attested'].includes(value.admission_kind)
     || !['sessionstart', 'external-controller', 'direct-human-skill'].includes(value.source)
     || typeof value.confirm_manual_compact !== 'boolean'
@@ -199,7 +200,7 @@ function validateIntentEnvelope(value, runId) {
     || !SHA256.test(payload.pre_restore_loop_hash || '')
     || typeof payload.owner_run_id !== 'string' || payload.owner_run_id.length === 0
     || !Number.isSafeInteger(payload.generation) || payload.generation < 1
-    || !['claude', 'codex'].includes(payload.runtime)
+    || !SESSION_RUNTIMES.includes(payload.runtime)
     || typeof payload.workstream_id !== 'string' || payload.workstream_id.length === 0
     || typeof payload.episode_id !== 'string' || payload.episode_id.length === 0
     || !Number.isSafeInteger(payload.baseline_turns) || payload.baseline_turns < 0

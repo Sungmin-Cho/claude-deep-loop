@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
 import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
-import { validateSessionRuntime } from './runtime.mjs';
+import { runtimeCapability, skillToken, validateSessionRuntime } from './runtime.mjs';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
 import { tomlBasicString } from './toml-safe.mjs';
@@ -120,13 +120,11 @@ function validateSpawnArgs({ parentRunId, childRunId, handoffRel }) {
 }
 
 export function resumeSkillToken(runtime = 'claude') {
-  return validateSessionRuntime(runtime) === 'codex'
-    ? '$deep-loop:deep-loop-resume'
-    : '/deep-loop-resume';
+  return skillToken(runtime, 'deep-loop-resume');
 }
 
 export function usageOutputKind(runtime = 'claude') {
-  return validateSessionRuntime(runtime) === 'codex' ? 'codex-jsonl' : 'claude-json';
+  return runtimeCapability(runtime, 'usage_output_kind');
 }
 
 function resumeInvocation(runtime, root, runId) {
@@ -625,6 +623,18 @@ function buildClaudeEntries({
   };
 }
 
+const ENTRY_BUILDERS = Object.freeze({
+  claude: buildClaudeEntries,
+  codex: buildCodexEntries,
+});
+
+const RESUME_PROMPTS = Object.freeze({
+  claude: ({ parentRunId, handoffRel }) =>
+    `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`,
+  codex: ({ platform, root, parentRunId, handoffRel, invocation }) =>
+    `Read ${JSON.stringify(pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel))} first; then run ${invocation}`,
+});
+
 export function buildRuntimeResumeDescriptor({
   runtime = 'claude', root, parentRunId, childRunId, handoffRel,
   launcher, launcherBin, launcherSocket, launcherSession,
@@ -637,12 +647,19 @@ export function buildRuntimeResumeDescriptor({
   validateRuntimeProfile(selectedRuntime, { model, effort });
   validateSpawnArgs({ parentRunId, childRunId, handoffRel });
   const invocation = resumeInvocation(selectedRuntime, root, parentRunId);
-  const resumePrompt = selectedRuntime === 'claude'
-    ? `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`
-    : `Read ${JSON.stringify(pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel))} first; then run ${invocation}`;
-  const entries = selectedRuntime === 'claude'
-    ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, launcherSession, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
-    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, launcherSession, exists, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
+  const buildPrompt = RESUME_PROMPTS[selectedRuntime];
+  const buildEntries = ENTRY_BUILDERS[selectedRuntime];
+  if (buildPrompt === undefined || buildEntries === undefined) {
+    throw new Error(`INVALID_RUNTIME: no descriptor strategy for ${selectedRuntime}`);
+  }
+  const resumePrompt = buildPrompt({ platform, root, parentRunId, handoffRel, invocation });
+  const entries = buildEntries({
+    root, parentRunId, childRunId, handoffRel,
+    launcher, launcherBin, launcherSocket, launcherSession,
+    platform, desktopTarget, exists, model, effort,
+    codexExecutable, deepLoopRoot,
+    runtimeExecutableIdentity, launcherIdentity,
+  });
   return {
     runtime: selectedRuntime,
     projectRoot: root,

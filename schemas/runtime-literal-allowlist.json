@@ -1,0 +1,65 @@
+{
+  "$comment": "런타임 리터럴을 그대로 두는 지점의 선언. 등재는 '이 리터럴은 능력이 되어서는 안 된다'는 주장이며 리뷰 대상이다. docs/는 gitignore라 이 파일을 schemas/에 둔다.",
+  "entries": [
+    {
+      "file": "scripts/lib/runtime.mjs",
+      "line": 1,
+      "literal": "['claude', 'codex']",
+      "reason": "정경 SESSION_RUNTIMES 정의. 능력 테이블의 키가 여기서 파생되므로 리터럴 자체는 남아야 한다"
+    },
+    {
+      "file": "scripts/lib/headless-host.mjs",
+      "line": 640,
+      "literal": "sessionRuntime(postCostLoop) !== 'codex'",
+      "reason": "fresh-loop 드리프트 fence — 능력이 아니라 '시작할 때와 같은 런타임인가'를 묻는다"
+    },
+    {
+      "file": "scripts/lib/headless-host.mjs",
+      "line": 771,
+      "literal": "sessionRuntime(freshLoop) === 'codex'",
+      "reason": "fresh-loop 드리프트 fence (identityFresh)"
+    },
+    {
+      "file": "scripts/lib/headless-host.mjs",
+      "line": 1350,
+      "literal": "sessionRuntime(freshLoop) !== 'codex'",
+      "reason": "post-CAS 드리프트 fence — 극성을 바꾸면 드리프트 탐지가 사라진다"
+    },
+    {
+      "file": "scripts/lib/headless-host.mjs",
+      "line": 1568,
+      "literal": "runtime === 'codex' && terminal(freshLoop) && childAcquired",
+      "reason": "settleTerminalCodexMakerCost의 호출부. 불변식 6이 결제를 codex에 바인딩하므로 피호출부와 함께 정체성으로 남긴다"
+    },
+    {
+      "file": "scripts/lib/headless-host.mjs",
+      "line": 1598,
+      "literal": "runtime === 'codex' && terminal(freshLoop) && childAcquired",
+      "reason": "위와 같은 결제 경로의 오류 처리"
+    },
+    {
+      "file": "scripts/lib/budget.mjs",
+      "line": 1000,
+      "literal": "sessionRuntime(loop) !== 'codex'",
+      "reason": "codex preflight 계상 fence — 계약 문자열이 codex 버전에 묶여 있다"
+    },
+    {
+      "file": "scripts/lib/budget.mjs",
+      "line": 1334,
+      "literal": "claim.runtime !== 'codex'",
+      "reason": "codex checker claim 계약"
+    },
+    {
+      "file": "scripts/lib/budget.mjs",
+      "line": 1423,
+      "literal": "sessionRuntime(loop) !== 'codex'",
+      "reason": "deep-loop-codex-process-accounting-receipt-v1 계약에 묶임"
+    },
+    {
+      "file": "scripts/lib/budget.mjs",
+      "line": 1531,
+      "literal": "sessionRuntime(loop) !== 'codex'",
+      "reason": "불변식 6 — terminal maker settlement는 codex 바인딩이다"
+    }
+  ]
+}

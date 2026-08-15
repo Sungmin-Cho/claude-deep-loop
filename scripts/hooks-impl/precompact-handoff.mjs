@@ -9,7 +9,7 @@ import {
 import { emitHandoff } from '../lib/handoff.mjs';
 import { rollbackHandoff } from '../lib/lease.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
-import { sessionRuntime } from '../lib/runtime.mjs';
+import { runtimeCapability, sessionRuntime } from '../lib/runtime.mjs';
 import { isOpenScope, ownerSession } from '../lib/session-scope.mjs';
 
 /**
@@ -37,7 +37,7 @@ function strictHostSessionEvidence(input, runtime) {
     throw new Error('host-evidence-invalid');
   }
   return {
-    provider: runtime === 'claude' ? 'claude-code' : 'codex',
+    provider: runtimeCapability(runtime, 'provider_label'),
     id: input.session_id,
   };
 }

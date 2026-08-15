@@ -17,6 +17,7 @@ import {
 } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
+import { skillToken } from '../lib/runtime.mjs';
 import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
 
 const CAP = 3072;
@@ -196,12 +197,8 @@ function compactCapsule(runId, descriptor) {
 }
 
 function strictRejectedContext(runtime) {
-  const restoreCommand = runtime === 'claude'
-    ? '/deep-loop-compact restore'
-    : '$deep-loop:deep-loop-compact restore';
-  const statusCommand = runtime === 'claude'
-    ? '/deep-loop-status'
-    : '$deep-loop:deep-loop-status';
+  const restoreCommand = skillToken(runtime, 'deep-loop-compact restore');
+  const statusCommand = skillToken(runtime, 'deep-loop-status');
   return clamp(
     'deep-loop-compact-preserve-pause-only '
     + 'checkpoint-unavailable-with-trusted-evidence provider-evidence-mismatch: '
@@ -210,9 +207,7 @@ function strictRejectedContext(runtime) {
 }
 
 function strictMissingContext(runtime) {
-  const statusCommand = runtime === 'claude'
-    ? '/deep-loop-status'
-    : '$deep-loop:deep-loop-status';
+  const statusCommand = skillToken(runtime, 'deep-loop-status');
   return clamp(`deep-loop checkpoint-unavailable: run ${statusCommand} for bounded diagnostics; no restore was authorized.`);
 }
 
