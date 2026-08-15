@@ -13,7 +13,7 @@ import {
 } from './lease.mjs';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { runtimeCapability, sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './runtime-descriptor.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
@@ -27,7 +27,8 @@ const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), 
 
 function descriptorLauncherIdentity(loop, runtime, platform) {
   const sessionIdentity = loop.session_spawn?.launcher_identity ?? null;
-  if (runtime !== 'claude' || platform !== 'win32' || loop.autonomy?.spawn_style !== 'desktop') {
+  if (!runtimeCapability(runtime, 'desktop_transport') || platform !== 'win32'
+    || loop.autonomy?.spawn_style !== 'desktop') {
     return sessionIdentity;
   }
   const approvals = loop.autonomy?.launcher_executable_approvals;
@@ -97,7 +98,7 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
     `## Session continuity`,
     `- model: ${loop.autonomy?.session_model || '(미지정 — CLI 기본값)'}`,
     `- effort: ${loop.autonomy?.session_effort || '(미지정 — CLI 기본값)'}`,
-    descriptor.runtime === 'claude'
+    runtimeCapability(descriptor.runtime, 'desktop_transport')
       ? `> desktop transport는 URL로 model/effort를 전달할 수 없으니, desktop 재개 시 이 값으로 세션을 맞추세요.`
       : `> Codex model과 low/medium/high/xhigh effort 매핑은 격리 descriptor에 고정되며 max effort는 fail-closed다. 실행은 별도 executable 승인·preflight 전까지 비활성이다.`, '',
     `## Episodes`, `- completed: ${doneEp}`, `- abandoned: ${abandonedEp}`, `- current: ${loop.current_episode || '(none)'}`, '',
@@ -229,7 +230,7 @@ function buildBoundaryArtifacts(loop, {
     effort: loop.autonomy?.session_effort ?? null,
   });
   let dt = null;
-  if (runtime === 'claude' && loop.autonomy?.spawn_style === 'desktop') {
+  if (runtimeCapability(runtime, 'desktop_transport') && loop.autonomy?.spawn_style === 'desktop') {
     try { dt = desktopProbe({ platform }); } catch { dt = null; }
   }
   const descriptor = descriptorBuilder({
@@ -262,7 +263,7 @@ function buildBoundaryArtifacts(loop, {
   const meNote = (loop.autonomy?.session_model || loop.autonomy?.session_effort)
     ? ` [model=${loop.autonomy?.session_model || 'default'} effort=${loop.autonomy?.session_effort || 'default'}]`
     : '';
-  const desktopLine = runtime === 'codex'
+  const desktopLine = !runtimeCapability(runtime, 'desktop_transport')
     ? cmds.desktop.display
     : (cmds.desktop.available
       ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
@@ -529,7 +530,7 @@ export function emitHandoff(root, runId, {
   // Claude Desktop probing is transport-specific. Codex App continuation is
   // manual in Slice 1 and must never construct or probe a private URL handler.
   let dt = null;
-  if (runtime === 'claude' && loop.autonomy?.spawn_style === 'desktop') {
+  if (runtimeCapability(runtime, 'desktop_transport') && loop.autonomy?.spawn_style === 'desktop') {
     try { dt = desktopProbe({ platform }); } catch { dt = null; }
   }
   let descriptor;
@@ -582,7 +583,7 @@ export function emitHandoff(root, runId, {
   const meNote = (loop.autonomy?.session_model || loop.autonomy?.session_effort)
     ? ` [model=${loop.autonomy?.session_model || 'default'} effort=${loop.autonomy?.session_effort || 'default'}]`
     : '';
-  const desktopLine = runtime === 'codex'
+  const desktopLine = !runtimeCapability(runtime, 'desktop_transport')
     ? cmds.desktop.display
     : (cmds.desktop.available
       ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
