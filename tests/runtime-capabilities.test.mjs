@@ -88,3 +88,21 @@ test('the table is deeply frozen', () => {
   assert.ok(Object.isFrozen(RUNTIME_CAPABILITIES));
   for (const runtime of SESSION_RUNTIMES) assert.ok(Object.isFrozen(RUNTIME_CAPABILITIES[runtime]));
 });
+
+test('loop-run.schema.json runtime enum matches SESSION_RUNTIMES', () => {
+  const schema = JSON.parse(readFileSync(join(repoRoot, 'schemas/loop-run.schema.json'), 'utf8'));
+  assert.deepEqual(
+    [...schema.enums['autonomy.session_runtime']].sort(),
+    [...SESSION_RUNTIMES].sort(),
+  );
+});
+
+test('the CI workflow WAL validator enum matches SESSION_RUNTIMES', () => {
+  const yml = readFileSync(join(repoRoot, 'recipes/automation/github-actions-loop.yml'), 'utf8');
+  const expected = SESSION_RUNTIMES.map(r => `'${r}'`).join(', ');
+  assert.ok(
+    yml.includes(`![${expected}].includes(manifest.runtime)`),
+    'recipes/automation/github-actions-loop.yml duplicates the WAL manifest runtime check; '
+    + 'it must be updated whenever SESSION_RUNTIMES changes',
+  );
+});

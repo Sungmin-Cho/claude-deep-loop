@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { normalizePortableRelativePath } from './fs-safe.mjs';
+import { SESSION_RUNTIMES } from './runtime.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
@@ -88,7 +89,7 @@ function validInvalidatedReviewClaim(claim) {
   return ['deep-review', 'subagent-checker'].includes(claim.reviewer_id)
     && REVIEW_ATTEMPT_ID.test(claim.attempt_id || '')
     && portableAbsolute(claim.project_root) && !/[\0\r\n]/.test(claim.project_root)
-    && ['claude', 'codex'].includes(claim.runtime)
+    && SESSION_RUNTIMES.includes(claim.runtime)
     && Number.isSafeInteger(claim.lease_generation) && claim.lease_generation > 0
     && validFrozenArtifacts(claim.artifacts)
     && claim.reason === 'project-root-relocated'
@@ -181,7 +182,7 @@ function validateCompactCursor(cursor, session, errors) {
   }
   if (cursor.owner_run_id !== session.run_id) fail('owner_run_id must match containing session run_id');
   if (!Number.isSafeInteger(cursor.generation) || cursor.generation < 1) fail('generation must be a positive integer');
-  if (!['claude', 'codex'].includes(cursor.runtime)) fail('runtime must be claude or codex');
+  if (!SESSION_RUNTIMES.includes(cursor.runtime)) fail('runtime must be claude or codex');
   for (const field of ['workstream_id', 'episode_id']) {
     if (!nonEmptyString(cursor[field])) fail(`${field} must be a non-empty safe string`);
   }
@@ -382,7 +383,7 @@ function validateRuntimeExecutableApproval(approval, autonomy, errors) {
 
   const runtime = approval.runtime;
   const storedRuntime = autonomy.session_runtime ?? 'claude';
-  if (!['claude', 'codex'].includes(runtime)) fail('runtime must be claude or codex');
+  if (!SESSION_RUNTIMES.includes(runtime)) fail('runtime must be claude or codex');
   else if (runtime !== storedRuntime) fail('runtime must match immutable autonomy.session_runtime');
   if (!portableAbsolute(approval.canonical_path)) fail('canonical_path must be absolute');
   if (!/^[0-9a-f]{64}$/.test(approval.sha256 || '')) fail('sha256 must be lowercase 64-hex');

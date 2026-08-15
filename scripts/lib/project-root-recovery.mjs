@@ -23,7 +23,7 @@ import {
   readLines,
 } from './integrity.mjs';
 import { contentHash, unwrap, wrap } from './envelope.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { SESSION_RUNTIMES, sessionRuntime } from './runtime.mjs';
 import { buildRootRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
 import {
   checkHardBudget,
@@ -993,7 +993,7 @@ export function acquireRootRecovery(candidateRoot, runId, {
     || typeof owner !== 'string' || owner.length === 0
     || !Number.isSafeInteger(expectGeneration) || expectGeneration < 1
     || !Number.isSafeInteger(bindingGeneration) || bindingGeneration < 1
-    || !['claude', 'codex'].includes(runtime)) {
+    || !SESSION_RUNTIMES.includes(runtime)) {
     throw new Error('ROOT_RECOVERY_ACQUIRE_INPUT_INVALID');
   }
   return withReconciledRootRecoveryLock(root, runId, (guard, snapshot) => {

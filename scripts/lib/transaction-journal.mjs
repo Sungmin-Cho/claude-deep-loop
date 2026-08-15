@@ -18,6 +18,7 @@ import {
   matchingStableFileIdentity,
   normalizePortableRelativePath,
 } from './fs-safe.mjs';
+import { SESSION_RUNTIMES } from './runtime.mjs';
 import { projectRootDigest } from './project-root.mjs';
 
 const MANIFEST_KEYS = [
@@ -444,7 +445,7 @@ function validateAndMaterialize(manifest, inputStages) {
     || typeof manifest.kind !== 'string' || !manifest.kind
     || !manifest.expect || typeof manifest.expect.owner !== 'string'
     || !Number.isSafeInteger(manifest.expect.generation) || manifest.expect.generation < 1
-    || !['claude', 'codex'].includes(manifest.runtime)
+    || !SESSION_RUNTIMES.includes(manifest.runtime)
     || typeof manifest.projectRoot !== 'string' || !manifest.projectRoot
     || !SHA256.test(manifest.preLoopHash || '') || !SHA256.test(manifest.candidateLoopHash || '')
     || !Array.isArray(manifest.eventLines) || !Array.isArray(manifest.targets)
