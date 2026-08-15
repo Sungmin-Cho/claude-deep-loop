@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { resumeSkillToken, usageOutputKind } from '../scripts/lib/runtime-descriptor.mjs';
+import { buildRuntimeResumeDescriptor, resumeSkillToken, usageOutputKind } from '../scripts/lib/runtime-descriptor.mjs';
 import { isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
 import { validateRuntimeProfile } from '../scripts/lib/session-profile.mjs';
 import {
@@ -64,6 +64,15 @@ test('CHARACTERIZATION entrypoint heuristic applies to claude only', () => {
   assert.equal(isHeadlessInvocation(env, 'codex'), false);
   assert.equal(isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'claude'), false);
   assert.equal(isHeadlessInvocation({ DEEP_LOOP_HEADLESS: '1' }, 'codex'), true);
+});
+
+test('an unknown runtime cannot reach an entry builder', () => {
+  assert.throws(
+    () => buildRuntimeResumeDescriptor({
+      runtime: 'grok', root: '/tmp/x', parentRunId: 'A', childRunId: 'B', handoffRel: 'handoffs/h.md',
+    }),
+    /INVALID_RUNTIME/,
+  );
 });
 
 test('CHARACTERIZATION resumeSkillToken current mapping', () => {

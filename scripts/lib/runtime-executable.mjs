@@ -626,6 +626,11 @@ export function collectRuntimeExecutableCandidates(runtime, options = {}) {
   return candidates;
 }
 
+const NATIVE_TRUST_RESOLVERS = Object.freeze({
+  codex: resolveOfficialCodex,
+  // claude에는 자동 native trust 해석기가 없다. 현행과 같다.
+});
+
 export function resolveTrustedRuntimeExecutable(runtime, options = {}) {
   validateSessionRuntime(runtime);
   if (options.approval !== undefined) {
@@ -634,7 +639,8 @@ export function resolveTrustedRuntimeExecutable(runtime, options = {}) {
     }
     return revalidateTrustedRuntimeExecutable(options.approval, options);
   }
-  if (runtime !== 'codex') {
+  const resolveNative = NATIVE_TRUST_RESOLVERS[runtime];
+  if (resolveNative === undefined) {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', `${runtime} native trust is not implemented on this platform slice`);
   }
   const platform = options.platform ?? process.platform;
@@ -644,7 +650,7 @@ export function resolveTrustedRuntimeExecutable(runtime, options = {}) {
   const failures = [];
   for (const candidate of candidates) {
     try {
-      const identity = resolveOfficialCodex(candidate.path, {
+      const identity = resolveNative(candidate.path, {
         platform,
         arch,
         runVersion: options.runVersion ?? spawnSync,
