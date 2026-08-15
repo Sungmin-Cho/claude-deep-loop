@@ -23,6 +23,7 @@ import { sessionRuntime } from './runtime.mjs';
 import { runStreamingProcess } from './streaming-process.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 import { captureTrustedCheckerSkill } from './codex-checker.mjs';
+import { validDualCheckerLaunch } from './checker-launch.mjs';
 
 export const DUAL_CHECKER_ROUTES = Object.freeze([
   Object.freeze({
@@ -494,20 +495,13 @@ function validProcessExecutable(value, attempt) {
       || (typeof value.authenticode === 'object' && !Array.isArray(value.authenticode)));
 }
 
-function validProcessLaunch(value, executable, attempt) {
-  if (!exactKeys(value, PROCESS_LAUNCH_KEYS)
-    || value.bin !== executable.canonical_path || !safeAbsolute(value.bin)
-    || !safeAbsolute(value.cwd) || value.shell !== false
-    || !Array.isArray(value.argv) || value.argv.length === 0
-    || value.argv.some(arg => typeof arg !== 'string' || /[\0\r\n]/.test(arg)
-      || arg.startsWith('--model=') || /^model\s*=/.test(arg))) return false;
-  const positions = value.argv.flatMap((arg, index) => (
-    arg === '--model' || arg === '-m' ? [index] : []
-  ));
-  const terminator = value.argv.indexOf('--');
-  return positions.length === 1
-    && (terminator === -1 || positions[0] < terminator)
-    && value.argv[positions[0] + 1] === attempt.model_id;
+function validProcessLaunch(value, executable, attempt, projectRoot) {
+  return exactKeys(value, PROCESS_LAUNCH_KEYS) && validDualCheckerLaunch({
+    launch: value,
+    executable,
+    attempt,
+    projectRoot,
+  });
 }
 
 function validProcessLifecycle(value) {
@@ -603,14 +597,16 @@ export function blockDualIndependentReview(root, runId, options = {}) {
   return { ok: true, status: 'blocked', checker_episode_id: episodeId, reason };
 }
 
-function validateProcessInput(process, attempt) {
+function validateProcessInput(root, process, attempt) {
   if (!exactKeys(process, PROCESS_KEYS)
     || process.provider_id !== attempt.provider_id
     || process.model_id !== attempt.model_id
     || !safeIdentity(process.session_id)
     || !isMeasuredOneTurnUsage(process.usage)
     || !validProcessExecutable(process.executable, attempt)
-    || !validProcessLaunch(process.launch, process.executable, attempt)
+    || !validProcessLaunch(
+      process.launch, process.executable, attempt, canonicalProjectRoot(root),
+    )
     || !validProcessLifecycle(process.lifecycle)
     || !exactKeys(process.streams, PROCESS_STREAM_KEYS)
     || !validProcessStream(process.streams.stdout)
@@ -681,7 +677,7 @@ export function settleDualAttemptProcess(root, runId, options = {}) {
     attemptId: initial.attempt.attempt_id,
     sourceClaimSha256: initial.attempt.source_claim_sha256,
   });
-  const exactProcess = validateProcessInput(process, initial.attempt);
+  const exactProcess = validateProcessInput(root, process, initial.attempt);
   const payload = processReceiptPayload(
     root, runId, initial.aggregation, initial.attempt, exactCapture, exactProcess,
   );
@@ -752,7 +748,7 @@ export function settleDualAttemptProcess(root, runId, options = {}) {
       attemptId: locked.attempt.attempt_id,
       sourceClaimSha256: locked.attempt.source_claim_sha256,
     });
-    validateProcessInput(exactProcess, locked.attempt);
+    validateProcessInput(root, exactProcess, locked.attempt);
     const approval = locked.checker?.review_aggregation?.schema_version === '2.0'
       ? loop.autonomy?.checker_executable_approvals?.[exactProcess.executable.checker]
       : null;
@@ -937,7 +933,7 @@ function verifyStoredProcessProof(root, runId, aggregation, attempt, lines, appr
     streams: process.streams,
     usage: cost.usage,
   };
-  validateProcessInput(processInput, attempt);
+  validateProcessInput(root, processInput, attempt);
   if (!sameJson(
     processSecurityIdentity(approvals?.[process.executable.checker]),
     process.executable,

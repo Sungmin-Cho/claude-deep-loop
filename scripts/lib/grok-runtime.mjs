@@ -1,4 +1,5 @@
 import { posix, win32 } from 'node:path';
+import { buildGrokHeadlessArgv } from './checker-launch.mjs';
 
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
@@ -39,22 +40,13 @@ export function buildGrokHeadlessEntry({
   }
   return {
     bin,
-    argv: [
-      '--no-auto-update',
-      '--verbatim',
-      '--cwd', cwd,
-      '--model', model,
-      '--effort', effort,
-      '--output-format', 'json',
-      '--json-schema', encodedSchema,
-      '--max-turns', '1',
-      '--sandbox', 'read-only',
-      '--no-plan',
-      '--no-subagents',
-      '--no-memory',
-      '--disable-web-search',
-      '-p', prompt,
-    ],
+    argv: buildGrokHeadlessArgv({
+      projectRoot: cwd,
+      model,
+      effort,
+      schemaJson: encodedSchema,
+      prompt,
+    }),
     cwd,
     env: { ...env },
     shell: false,

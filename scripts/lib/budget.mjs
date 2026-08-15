@@ -15,6 +15,7 @@ import { sessionRuntime } from './runtime.mjs';
 import { contentHash } from './envelope.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 import { isOpenScope } from './session-scope.mjs';
+import { validDualCheckerLaunch } from './checker-launch.mjs';
 
 // #3: re-exported from integrity.mjs (the floor mechanism's home) so call sites/tests can import it from budget.mjs
 // while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
@@ -111,6 +112,12 @@ function inventoryRelocatedDualReceipt({
       || JSON.stringify(receipt.executable) !== JSON.stringify(attempt.process_proof?.executable)
       || JSON.stringify(receipt.executable) !== JSON.stringify(approvalSecurity)
       || JSON.stringify(receipt.launch) !== JSON.stringify(attempt.process_proof?.launch)
+      || !validDualCheckerLaunch({
+        launch: receipt.launch,
+        executable: receipt.executable,
+        attempt,
+        projectRoot: receipt.project_root,
+      })
       || JSON.stringify(receipt.lifecycle) !== JSON.stringify(attempt.process_proof?.lifecycle)
       || JSON.stringify(receipt.streams) !== JSON.stringify(attempt.process_proof?.streams)
       || JSON.stringify(receipt.capture) !== JSON.stringify(attempt.capture_proof)

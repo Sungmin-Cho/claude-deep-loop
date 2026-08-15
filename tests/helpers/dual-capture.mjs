@@ -1,15 +1,22 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildCodexCheckerEntry } from '../../scripts/lib/codex-checker.mjs';
 import {
   claimDualIndependentReview,
   importDualReviewOutcome,
   settleDualAttemptProcess,
 } from '../../scripts/lib/dual-checker.mjs';
+import { buildGrokHeadlessEntry } from '../../scripts/lib/grok-runtime.mjs';
+import { canonicalProjectRoot } from '../../scripts/lib/project-root.mjs';
 import { withReconciledMutationLock } from '../../scripts/lib/integrity.mjs';
 import { readState, writeState } from '../../scripts/lib/state.mjs';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+const REPOSITORY_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const REVIEW_SCHEMA_PATH = join(REPOSITORY_ROOT, 'schemas', 'review-import.schema.json');
+const REVIEW_SCHEMA = JSON.parse(readFileSync(REVIEW_SCHEMA_PATH, 'utf8'));
 
 export function exactCheckerApproval(attempt, {
   platform = process.platform,
@@ -54,6 +61,31 @@ export function exactDualProcess({
   const executable = { ...approval };
   delete executable.approved_by;
   delete executable.approved_at;
+  let launchRoot = root;
+  try { launchRoot = canonicalProjectRoot(root); } catch { /* schema-only fixtures use virtual roots */ }
+  const checkerSkillPath = join(
+    launchRoot, '.deep-loop', 'runs', 'fixture', 'checker-captures', attempt.attempt_id, 'SKILL.md',
+  );
+  const entry = approval.checker === 'codex'
+    ? buildCodexCheckerEntry({
+        executable: approval.canonical_path,
+        projectRoot: launchRoot,
+        checkerSkillPath,
+        outputSchemaPath: REVIEW_SCHEMA_PATH,
+        contract: {},
+        env: {},
+        model: attempt.model_id,
+        effort: 'xhigh',
+      })
+    : buildGrokHeadlessEntry({
+        executable: approval.canonical_path,
+        projectRoot: launchRoot,
+        prompt: `Authentic fixture prompt for ${attempt.attempt_id}`,
+        schema: REVIEW_SCHEMA,
+        model: attempt.model_id,
+        effort: 'xhigh',
+        env: {},
+      });
   const startedAt = attempt.slot === 0
     ? '2026-08-15T00:01:00.000Z'
     : '2026-08-15T00:01:02.000Z';
@@ -66,12 +98,10 @@ export function exactDualProcess({
     session_id: sessionId,
     executable,
     launch: {
-      bin: approval.canonical_path,
-      argv: approval.checker === 'codex'
-        ? ['exec', '--json', '--model', attempt.model_id]
-        : ['--output-format', 'json', '--model', attempt.model_id],
-      cwd: root,
-      shell: false,
+      bin: entry.bin,
+      argv: [...entry.argv],
+      cwd: entry.cwd,
+      shell: entry.shell,
     },
     lifecycle: {
       spawned: true,

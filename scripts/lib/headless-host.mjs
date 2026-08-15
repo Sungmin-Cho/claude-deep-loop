@@ -58,6 +58,7 @@ import {
 } from './codex-checker.mjs';
 import { buildGrokCheckerPrompt } from './grok-checker.mjs';
 import { buildGrokHeadlessEntry } from './grok-runtime.mjs';
+import { validDualCheckerLaunch } from './checker-launch.mjs';
 import {
   blockDualIndependentReview,
   claimDualIndependentReview,
@@ -1049,9 +1050,12 @@ function driveDualIndependentChecker({
       },
     ];
     for (const [index, entry] of entries.entries()) {
-      if (entry.bin !== executableApprovals[index].canonical_path
-        || entry.cwd !== projectRoot || entry.shell !== false
-        || !Array.isArray(entry.argv) || entry.argv.some(value => typeof value !== 'string')
+      if (!validDualCheckerLaunch({
+        launch: providerLaunch(entry),
+        executable: checkerSecurityIdentity(executableApprovals[index]),
+        attempt: claim.attempts[index],
+        projectRoot,
+      })
         || entry.captureProcessLifecycle !== true) {
         throw new Error('dual-checker-entry-binding-invalid');
       }

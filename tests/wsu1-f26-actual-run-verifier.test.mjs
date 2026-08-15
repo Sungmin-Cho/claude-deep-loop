@@ -24,6 +24,7 @@ const ROOT = dirname(HERE);
 const VERIFIER = join(ROOT, 'scripts', 'verify-wsu1-f26-actual-run.mjs');
 const ATOMIC_WRITE = join(ROOT, 'scripts', 'lib', 'atomic-write.mjs');
 const DUAL_CHECKER = join(ROOT, 'scripts', 'lib', 'dual-checker.mjs');
+const CHECKER_LAUNCH = join(ROOT, 'scripts', 'lib', 'checker-launch.mjs');
 const NODE20_TRAVERSAL_SOURCES = [
   VERIFIER,
   join(HERE, 'helpers', 'baseline-node20-walk.mjs'),
@@ -206,7 +207,7 @@ function fixture({
       source_claim_sha256: sourceClaimSha256,
     };
     const process = exactDualProcess({
-      root: worktree,
+      root: projectRoot,
       attempt: route,
       sessionId: route.session_id,
       usage: usage[route.slot],
@@ -590,10 +591,15 @@ function verifierEnv(fx, extraEnv = {}) {
 }
 
 function runnerVerifierSource() {
-  return readFileSync(VERIFIER, 'utf8').replace(
-    "'./lib/dual-checker.mjs'",
-    JSON.stringify(pathToFileURL(DUAL_CHECKER).href),
-  );
+  return readFileSync(VERIFIER, 'utf8')
+    .replace(
+      "'./lib/dual-checker.mjs'",
+      JSON.stringify(pathToFileURL(DUAL_CHECKER).href),
+    )
+    .replace(
+      "'./lib/checker-launch.mjs'",
+      JSON.stringify(pathToFileURL(CHECKER_LAUNCH).href),
+    );
 }
 
 function invokeReceiptTarget(fx, receiptTarget, { cwd = ROOT } = {}) {
@@ -920,6 +926,33 @@ test('F26-ACTUAL-NEG-DUAL-PROCESS-PROOF rejects self-consistent unvalidated mode
   });
   const result = invokeWithoutReceipt(fx);
   assert.equal(result.stderr, 'WSU1_F26_DUAL_PROCESS_PROOF\n');
+});
+test('F26-ACTUAL authorized provider launch rejects self-consistent weakened argv and noncanonical cwd', () => {
+  const cases = [
+    ['codex sandbox value', 0, launch => {
+      launch.argv[launch.argv.indexOf('--sandbox') + 1] = 'danger-full-access';
+    }],
+    ['codex reduced argv', 0, (launch, route) => {
+      launch.argv = ['exec', '--model', route.model_id, '-'];
+    }],
+    ['grok missing no-subagents', 1, launch => {
+      launch.argv.splice(launch.argv.indexOf('--no-subagents'), 1);
+    }],
+    ['grok reduced argv', 1, (launch, route) => {
+      launch.argv = ['--model', route.model_id];
+    }],
+    ['wrong absolute cwd', 0, launch => { launch.cwd = '/tmp/attacker'; }],
+    ['cross-dialect cwd', 0, launch => { launch.cwd = 'C:\\Windows'; }],
+  ];
+  for (const [label, slot, mutate] of cases) {
+    const fx = fixture({
+      processOptions: (process, route) => {
+        if (route.slot === slot) mutate(process.launch, route);
+      },
+    });
+    const result = invokeWithoutReceipt(fx);
+    assert.equal(result.stderr, 'WSU1_F26_DUAL_PROCESS_PROOF\n', label);
+  }
 });
 negative('F26-ACTUAL-NEG-DUAL-CAPTURE rejects arbitrary capture record bytes',
   'WSU1_F26_DUAL_PROCESS_PROOF', (fx) => {

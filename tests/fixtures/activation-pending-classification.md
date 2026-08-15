@@ -15,7 +15,7 @@ This tracked overlay resolves the pinned seed into the current execution surface
   "schema_version": 1,
   "seed_sha256": "6f6202df0e365f0e68a4f1e81a0a6242d80b1cc493a7acde91d587fdaad7bf13",
   "design_sha256": "b56b161c883eae957718b70fabc31bbec293ba4173e6404cac542aeea9abc61a",
-  "expected_counts": { "L": 39, "B": 7, "X": 34, "E2": 163, "E3": 14, "E4": 21, "E5": 1, "E7": 86, "E8": 42 },
+  "expected_counts": { "L": 39, "B": 7, "X": 34, "E2": 166, "E3": 14, "E4": 21, "E5": 1, "E7": 86, "E8": 42 },
   "base_x_reasons": {
     "safety-downgrade": ["attended-launch.mjs#revokeAttendedLaunch", "spawn-optin.mjs#resetDesktop"],
     "boot-observation": ["detect-terminal.mjs#detectAndPersist"],
@@ -62,6 +62,9 @@ This tracked overlay resolves the pinned seed into the current execution surface
     { "id": "checkpoint.mjs#inspectCompactForSessionStart", "classification": "E2", "reason": "no-run-state-write" },
     { "id": "checkpoint.mjs#observeCompactCheckpoint", "classification": "E4", "reason": "non-run-state-durable-write" },
     { "id": "checkpoint.mjs#selectVerifiedCheckpointDescriptor", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "checker-launch.mjs#buildCodexExecArgv", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "checker-launch.mjs#buildGrokHeadlessArgv", "classification": "E2", "reason": "no-run-state-write" },
+    { "id": "checker-launch.mjs#validDualCheckerLaunch", "classification": "E2", "reason": "no-run-state-write" },
     { "id": "codex-checker.mjs#captureTrustedCheckerSkill", "classification": "E4", "reason": "non-run-state-durable-write" },
     { "id": "compact-restore-intent.mjs#compactObservationRel", "classification": "E2", "reason": "no-run-state-write" },
     { "id": "compact-restore-intent.mjs#compactRestoreRequestBinding", "classification": "E2", "reason": "no-run-state-write" },

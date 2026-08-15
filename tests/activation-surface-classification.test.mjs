@@ -61,8 +61,8 @@ test('STEP0-3 guard 4 link-only extractor reports every scripts namespace withou
   assert.equal(result.stderr, '');
   const output = JSON.parse(result.stdout);
   assert.equal(output.schema_version, 1);
-  assert.equal(output.file_count, 68);
-  assert.equal(output.raw_export_name_count, 415);
+  assert.equal(output.file_count, 69);
+  assert.equal(output.raw_export_name_count, 418);
   assert.equal(output.failures.length, 0);
   const linkedIds = output.files.flatMap((file) =>
     file.export_names.map((name) => `${file.module}#${name}`)).sort(byteSort);
@@ -151,23 +151,23 @@ test('STEP0-3 guard 1 rejects the approved non-mjs reversal instead of silently 
   }]);
 });
 
-test('STEP0-3 static export parser matches the measured 415 raw and 407 canonical surface', async () => {
+test('STEP0-3 static export parser matches the measured 418 raw and 410 canonical surface', async () => {
   const analyzer = await import(STATIC_ANALYZER_URL);
   const result = analyzer.extractExportSurface({ files: recursiveFiles(join(ROOT, 'scripts')) });
   assert.deepEqual(result.failures, []);
-  assert.equal(result.raw_ids.length, 415);
-  assert.equal(result.canonical_ids.length, 407);
+  assert.equal(result.raw_ids.length, 418);
+  assert.equal(result.canonical_ids.length, 410);
 });
 
-test('STEP0-3 live overlay closes the measured current delta with a disjoint 407-row partition', async () => {
+test('STEP0-3 live overlay closes the measured current delta with a disjoint 410-row partition', async () => {
   const analyzer = await import(STATIC_ANALYZER_URL);
   const seed = readFileSync(join(FIXTURES, 'activation-pending-classification.seed.md'), 'utf8');
   const overlay = readFileSync(join(FIXTURES, 'activation-pending-classification.md'), 'utf8');
   const live = analyzer.parseLiveClassification({ seed, overlay });
   assert.deepEqual(live.counts, {
-    L: 39, B: 7, X: 34, E2: 163, E3: 14, E4: 21, E5: 1, E7: 86, E8: 42,
+    L: 39, B: 7, X: 34, E2: 166, E3: 14, E4: 21, E5: 1, E7: 86, E8: 42,
   });
-  assert.equal(live.rows.size, 407);
+  assert.equal(live.rows.size, 410);
   assert.deepEqual(live.rows.get('review.mjs#configureReviewFlags'), {
     classification: 'L', reason: 'leasecheck-dominated',
   });
@@ -272,7 +272,7 @@ test('STEP0-3 every current-delta row is required and rejects a wrong category',
   const config = JSON.parse(overlay.slice(start, finish));
   const render = value => `${overlay.slice(0, start)}\n${JSON.stringify(value)}\n${overlay.slice(finish)}`;
   const currentDelta = config.add.slice(12);
-  assert.equal(currentDelta.length, 95);
+  assert.equal(currentDelta.length, 98);
   for (const row of currentDelta) {
     const removed = structuredClone(config);
     removed.add = removed.add.filter(({ id }) => id !== row.id);
@@ -407,7 +407,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
 
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.violations, []);
-  assert.equal(result.rows.length, 407);
+  assert.equal(result.rows.length, 410);
   assert.deepEqual(result.rows.find(({ id }) => id === 'headless-host.mjs#acquireHeadlessHostLock'), {
     id: 'headless-host.mjs#acquireHeadlessHostLock',
     classification: 'X',
@@ -424,7 +424,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
           'integrity.mjs#reconcileAnchoredPublicationLocked',
         ],
         coordinates: [
-          'scripts/lib/headless-host.mjs:228',
+          'scripts/lib/headless-host.mjs:229',
           'scripts/lib/state.mjs:271',
           'scripts/lib/integrity.mjs:1953',
           'scripts/lib/integrity.mjs:1806',
@@ -439,7 +439,7 @@ test('STEP0-3 call graph recomputes reachability and same-lock dominance for eve
           'integrity.mjs#reconcileAnchoredPublicationLocked',
         ],
         coordinates: [
-          'scripts/lib/headless-host.mjs:228',
+          'scripts/lib/headless-host.mjs:229',
           'scripts/lib/state.mjs:271',
           'scripts/lib/integrity.mjs:1953',
           'scripts/lib/integrity.mjs:1806',

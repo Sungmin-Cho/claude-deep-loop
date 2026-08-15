@@ -226,6 +226,54 @@ test('provider process receipt durably binds locked executable, launch, lifecycl
   });
 });
 
+test('authorized provider launch rejects weakened argv and noncanonical cwd at settlement', () => {
+  const cases = [
+    ['codex sandbox value', 0, process => {
+      process.launch.argv[process.launch.argv.indexOf('--sandbox') + 1] = 'danger-full-access';
+    }],
+    ['codex reduced argv', 0, process => {
+      process.launch.argv = ['exec', '--model', process.model_id, '-'];
+    }],
+    ['grok missing no-subagents', 1, process => {
+      process.launch.argv.splice(process.launch.argv.indexOf('--no-subagents'), 1);
+    }],
+    ['grok reduced argv', 1, process => {
+      process.launch.argv = ['--model', process.model_id];
+    }],
+    ['wrong absolute cwd', 0, process => {
+      process.launch.cwd = process.executable.platform === 'win32' ? 'C:\\attacker' : '/tmp/attacker';
+    }],
+    ['cross-dialect cwd', 0, process => {
+      process.launch.cwd = process.executable.platform === 'win32' ? '/tmp/attacker' : 'C:\\Windows';
+    }],
+  ];
+  for (const [label, slot, mutate] of cases) {
+    const f = fixture();
+    const claim = claimDualIndependentReview(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId, fence: f.fence,
+    });
+    installCheckerApprovals(f, claim.attempts);
+    const attempt = claim.attempts[slot];
+    const process = exactDualProcess({
+      root: f.root,
+      attempt,
+      sessionId: slot === 0
+        ? '11111111-1111-4111-8111-111111111111'
+        : '22222222-2222-4222-8222-222222222222',
+    });
+    mutate(process);
+    assert.throws(() => settleDualAttemptProcess(f.root, f.runId, {
+      episodeId: f.checkerEpisodeId,
+      attemptId: attempt.attempt_id,
+      capture: captureFixture(f, attempt),
+      process,
+      fence: f.fence,
+    }), /DUAL_REVIEW_PROCESS_INVALID/, label);
+    assert.equal(events(f.root, f.runId).filter(event => event.type === 'cost'
+      && event.data?.dual_checker_attempt_id).length, 0, label);
+  }
+});
+
 test('settlement rechecks exact executable security identity against the locked approval', () => {
   const f = fixture();
   const claim = claimDualIndependentReview(f.root, f.runId, {

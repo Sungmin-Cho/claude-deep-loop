@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { normalizePortableRelativePath } from './fs-safe.mjs';
 import { contentHash } from './envelope.mjs';
+import { validDualCheckerLaunch } from './checker-launch.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
@@ -617,14 +618,19 @@ function validDualCapture(proof, attempt, sourceBinding) {
       .every(hash => SHA256.test(hash || ''));
 }
 
-function validDualProcess(proof, attempt) {
+function validDualProcess(proof, attempt, sourceBinding) {
   return exactObject(proof, DUAL_PROCESS_KEYS)
     && [proof.receipt_id, proof.claim_hash].every(hash => SHA256.test(hash || ''))
     && portableRel(proof.receipt, '.deep-loop/runs/')
     && proof.provider_id === attempt.provider_id && proof.model_id === attempt.model_id
     && proof.session_id === attempt.session_id && UUID.test(proof.session_id || '')
     && validDualProcessExecutable(proof.executable, attempt)
-    && validDualProcessLaunch(proof.launch, proof.executable, attempt)
+    && validDualCheckerLaunch({
+      launch: proof.launch,
+      executable: proof.executable,
+      attempt,
+      projectRoot: sourceBinding?.project_root,
+    })
     && validDualProcessLifecycle(proof.lifecycle)
     && exactObject(proof.streams, ['stdout', 'stderr'])
     && validProcessStreamMetadata(proof.streams.stdout)
@@ -644,22 +650,6 @@ function validDualProcessExecutable(value, attempt) {
     && value.source === 'human-explicit'
     && (value.authenticode === null
       || (typeof value.authenticode === 'object' && !Array.isArray(value.authenticode)));
-}
-
-function validDualProcessLaunch(value, executable, attempt) {
-  if (!exactObject(value, ['bin', 'argv', 'cwd', 'shell'])
-    || value.bin !== executable.canonical_path || !portableAbsolute(value.bin)
-    || !portableAbsolute(value.cwd) || value.shell !== false
-    || !Array.isArray(value.argv) || value.argv.length === 0
-    || value.argv.some(arg => typeof arg !== 'string' || /[\0\r\n]/.test(arg)
-      || arg.startsWith('--model=') || /^model\s*=/.test(arg))) return false;
-  const positions = value.argv.flatMap((arg, index) => (
-    arg === '--model' || arg === '-m' ? [index] : []
-  ));
-  const terminator = value.argv.indexOf('--');
-  return positions.length === 1
-    && (terminator === -1 || positions[0] < terminator)
-    && value.argv[positions[0] + 1] === attempt.model_id;
 }
 
 function validDualProcessLifecycle(value) {
@@ -704,7 +694,7 @@ function validDualAttemptClaim(attempt, sourceBinding) {
     && attempt.cost_proof === null;
   const proofed = UUID.test(attempt.session_id || '')
     && validDualCapture(attempt.capture_proof, attempt, sourceBinding)
-    && validDualProcess(attempt.process_proof, attempt)
+    && validDualProcess(attempt.process_proof, attempt, sourceBinding)
     && validDualCost(attempt.cost_proof, attempt.process_proof);
   if (attempt.status === 'claimed') return empty || (proofed && attempt.report_proof === null);
   if (attempt.status === 'imported') return proofed && validDualReport(attempt.report_proof);

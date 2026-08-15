@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { posix, win32 } from 'node:path';
+import { buildCodexExecArgv } from './checker-launch.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
-import { tomlBasicString } from './toml-safe.mjs';
 
 const POSIX_CORE_ENV = Object.freeze([
   ['PATH', ['PATH']],
@@ -50,6 +50,7 @@ export function buildCodexExecEntry({
   model = null,
   effort = null,
   sandbox = 'workspace-write',
+  outputSchemaPath = null,
 } = {}) {
   const bin = absoluteExecutable(executable);
   if (typeof projectRoot !== 'string' || projectRoot.length === 0 || (!posix.isAbsolute(projectRoot) && !win32.isAbsolute(projectRoot))) {
@@ -61,29 +62,22 @@ export function buildCodexExecEntry({
   if (sandbox !== 'workspace-write' && sandbox !== 'read-only') {
     throw Object.assign(new Error('INVALID_CODEX_SANDBOX: expected workspace-write or read-only'), { code: 'INVALID_CODEX_SANDBOX' });
   }
+  if (outputSchemaPath !== null
+    && (typeof outputSchemaPath !== 'string' || outputSchemaPath.length === 0
+      || (!posix.isAbsolute(outputSchemaPath) && !win32.isAbsolute(outputSchemaPath)))) {
+    throw Object.assign(new Error('INVALID_CODEX_OUTPUT_SCHEMA: expected absolute path'), { code: 'INVALID_CODEX_OUTPUT_SCHEMA' });
+  }
   const profile = validateRuntimeProfile('codex', { model, effort });
-  const modelArgs = profile.model == null ? [] : ['--model', profile.model];
-  const effortArgs = profile.effort == null ? [] : ['-c', `model_reasoning_effort=${tomlBasicString(profile.effort)}`];
 
   return {
     bin,
-    argv: [
-      'exec', '--ephemeral', '--json', '--strict-config',
-      '--ignore-user-config', '--ignore-rules',
-      '--disable', 'apps', '--disable', 'plugins',
-      '--disable', 'browser_use', '--disable', 'browser_use_external',
-      '--disable', 'computer_use', '--disable', 'image_generation',
-      '--disable', 'in_app_browser',
-      '--sandbox', sandbox,
-      ...modelArgs,
-      ...effortArgs,
-      '-c', 'approval_policy="never"',
-      '-c', 'web_search="disabled"',
-      '-c', 'sandbox_workspace_write.network_access=false',
-      '-c', 'features.skill_mcp_dependency_install=false',
-      '-c', 'shell_environment_policy.inherit="core"',
-      '-C', projectRoot, '-',
-    ],
+    argv: buildCodexExecArgv({
+      projectRoot,
+      model: profile.model,
+      effort: profile.effort,
+      sandbox,
+      outputSchemaPath,
+    }),
     stdin: prompt,
     shell: false,
   };

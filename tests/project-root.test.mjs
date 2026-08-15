@@ -10,6 +10,7 @@ import {
   readdirSync,
   rmSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,6 +32,7 @@ import {
   readStateForRootRecovery,
   runDir,
   withLock,
+  withReconciledMutationLock,
   writeState,
 } from '../scripts/lib/state.mjs';
 import {
@@ -64,6 +66,7 @@ import {
   exactDualProcess,
   writeExactDualCapture,
 } from './helpers/dual-capture.mjs';
+import { listProcessUsageReceipts } from '../scripts/lib/preflight-receipt-journal.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -239,7 +242,7 @@ function movedRun(prefix = 'dl-root-relocated-') {
   return { originalRoot, candidateRoot, runId, storedRoot };
 }
 
-function movedRunWithDualReceipts() {
+function movedRunWithDualReceipts({ relocate = true } = {}) {
   const parent = freshRoot('dl-root-dual-accounting-');
   const originalRoot = join(parent, 'old root');
   const candidateRoot = join(parent, 'new root');
@@ -311,9 +314,104 @@ function movedRunWithDualReceipts() {
     fence,
   });
   const storedRoot = readState(originalRoot, runId).data.project.root;
-  renameSync(originalRoot, candidateRoot);
-  return { originalRoot, candidateRoot, runId, storedRoot, checkerId, attemptIds: claim.attempts.map(a => a.attempt_id) };
+  if (relocate) renameSync(originalRoot, candidateRoot);
+  return {
+    originalRoot,
+    candidateRoot: relocate ? candidateRoot : originalRoot,
+    runId,
+    storedRoot,
+    checkerId,
+    attemptIds: claim.attempts.map(a => a.attempt_id),
+  };
 }
+
+function rewriteDualLaunchEvidence(root, runId, loop, slot, mutate) {
+  const aggregation = loop.episodes.find(episode => episode.review_aggregation)
+    .review_aggregation;
+  const attempt = aggregation.attempts[slot];
+  const oldId = attempt.process_proof.receipt_id;
+  const oldPath = join(root, ...attempt.process_proof.receipt.split('/'));
+  const receipt = JSON.parse(readFileSync(oldPath, 'utf8'));
+  mutate(receipt.launch);
+  attempt.process_proof.launch = structuredClone(receipt.launch);
+  const payload = { ...receipt };
+  delete payload.receipt_id;
+  const updated = { ...payload, receipt_id: contentHash(JSON.stringify(payload)) };
+  const receiptRel = `.deep-loop/runs/${runId}/preflight/process-receipts/${updated.receipt_id}-dual-checker.json`;
+  const newPath = join(root, ...receiptRel.split('/'));
+  unlinkSync(oldPath);
+  writeFileSync(newPath, JSON.stringify(updated, null, 2));
+  attempt.process_proof.receipt_id = updated.receipt_id;
+  attempt.process_proof.receipt = receiptRel;
+  attempt.cost_proof.receipt_id = updated.receipt_id;
+
+  const lines = eventLines(root, runId);
+  const cost = lines.find(event => event.type === 'cost'
+    && event.data?.process_receipt_id === oldId);
+  assert.ok(cost, 'dual process cost event must exist');
+  cost.data.process_receipt_id = updated.receipt_id;
+  let previous = 'GENESIS';
+  for (const event of lines) {
+    event.checksum = contentHash(
+      `${event.seq}|${event.ts}|${event.type}|${JSON.stringify(event.data)}|${previous}`,
+    );
+    previous = event.checksum;
+  }
+  writeFileSync(
+    join(runDir(root, runId), 'event-log.jsonl'),
+    `${lines.map(event => JSON.stringify(event)).join('\n')}\n`,
+  );
+  for (const candidate of aggregation.attempts) {
+    if (candidate.cost_proof) {
+      candidate.cost_proof.event_checksum = lines.find(
+        event => event.seq === candidate.cost_proof.event_seq,
+      ).checksum;
+    }
+    if (candidate.report_proof) {
+      candidate.report_proof.event_checksum = lines.find(
+        event => event.seq === candidate.report_proof.event_seq,
+      ).checksum;
+    }
+  }
+  loop.event_log_head = { seq: lines.at(-1).seq, checksum: lines.at(-1).checksum };
+  return updated;
+}
+
+test('authorized provider launch journal rejects self-consistent weakened receipt evidence', () => {
+  const settled = movedRunWithDualReceipts({ relocate: false });
+  assert.deepEqual(
+    listProcessUsageReceipts({ root: settled.candidateRoot, runId: settled.runId }),
+    [],
+    'canonical dual receipts must reconcile before the self-consistent mutant is installed',
+  );
+  withReconciledMutationLock(settled.candidateRoot, settled.runId, () => {});
+  const loop = readState(settled.candidateRoot, settled.runId).data;
+  rewriteDualLaunchEvidence(settled.candidateRoot, settled.runId, loop, 0, launch => {
+    launch.argv[launch.argv.indexOf('--sandbox') + 1] = 'danger-full-access';
+  });
+  writeRecoveryFixture(settled.candidateRoot, settled.runId, loop);
+  assert.throws(
+    () => listProcessUsageReceipts({ root: settled.candidateRoot, runId: settled.runId }),
+    /PROCESS_USAGE_RECEIPT_INVALID/,
+  );
+});
+
+test('authorized provider launch relocation accounting rejects self-consistent weakened receipt evidence', () => {
+  const moved = movedRunWithDualReceipts();
+  const loop = readStateForRootRecovery(moved.candidateRoot, moved.runId).data;
+  rewriteDualLaunchEvidence(moved.candidateRoot, moved.runId, loop, 1, launch => {
+    launch.argv.splice(launch.argv.indexOf('--no-subagents'), 1);
+  });
+  assert.throws(
+    () => inventoryRelocatedProcessReceipts(
+      moved.candidateRoot,
+      moved.runId,
+      loop,
+      projectRootDigest(moved.storedRoot),
+    ),
+    /PROJECT_ROOT_ACCOUNTING_UNMEASURABLE/,
+  );
+});
 
 test('root relocation preserves settled dual costs and blocks the root-bound aggregate', async () => {
   const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();

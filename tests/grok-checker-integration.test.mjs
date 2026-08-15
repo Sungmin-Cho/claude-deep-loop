@@ -14,6 +14,9 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview } from '../scripts/lib/review.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
+import { buildCodexCheckerEntry } from '../scripts/lib/codex-checker.mjs';
+import { buildGrokCheckerPrompt } from '../scripts/lib/grok-checker.mjs';
+import { buildGrokHeadlessEntry } from '../scripts/lib/grok-runtime.mjs';
 import { listProcessUsageReceipts } from '../scripts/lib/preflight-receipt-journal.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { writeExactDualCapture } from './helpers/dual-capture.mjs';
@@ -231,20 +234,19 @@ function providerLifecycle(index) {
 }
 
 function fixtureDualEntry(kind, options) {
-  return {
-    bin: options.executable,
-    argv: kind === 'codex'
-      ? ['exec', '--json', '--model', options.model]
-      : ['--output-format', 'json', '--model', options.model],
-    cwd: options.projectRoot,
+  if (kind === 'codex') return buildCodexCheckerEntry(options);
+  return buildGrokHeadlessEntry({
+    executable: options.executable,
+    projectRoot: options.projectRoot,
+    prompt: buildGrokCheckerPrompt({
+      ...options.contract,
+      checker_skill_path: options.checkerSkillPath,
+    }),
+    schema: options.outputSchema,
+    model: options.model,
+    effort: options.effort,
     env: options.env,
-    shell: false,
-    usageOutputKind: kind === 'codex' ? 'codex-jsonl' : 'grok-json',
-    captureFinalMessage: true,
-    captureProviderIdentity: kind === 'codex',
-    captureProcessDiagnostic: true,
-    captureProcessLifecycle: true,
-  };
+  });
 }
 
 function dualHostDependencies(f, transport) {
@@ -370,6 +372,37 @@ test('headless dual route emits checker-complete only after both measured import
     /PROCESS_USAGE_RECEIPT_INVALID/,
     'dual receipts may be excluded only after exact state, event, and content reconciliation',
   );
+});
+
+test('authorized provider launch headless gate rejects weakened entries before transport', () => {
+  const cases = [
+    ['codex sandbox value', 'buildDualCodexEntryFn', entry => {
+      entry.argv[entry.argv.indexOf('--sandbox') + 1] = 'danger-full-access';
+    }],
+    ['grok missing no-subagents', 'buildDualGrokEntryFn', entry => {
+      entry.argv.splice(entry.argv.indexOf('--no-subagents'), 1);
+    }],
+    ['wrong absolute cwd', 'buildDualCodexEntryFn', entry => {
+      entry.cwd = '/tmp/attacker';
+    }],
+  ];
+  for (const [label, builderKey, mutate] of cases) {
+    const f = dualHostFixture();
+    let transports = 0;
+    const deps = dualHostDependencies(f, () => {
+      transports += 1;
+      return { ok: false, reason: 'mutant-transport-ran' };
+    });
+    const authentic = deps[builderKey];
+    deps[builderKey] = options => {
+      const entry = authentic(options);
+      mutate(entry);
+      return entry;
+    };
+    const result = driveHeadlessRun(deps);
+    assert.equal(result.reason, 'dual-checker-entry-invalid', label);
+    assert.equal(transports, 0, label);
+  }
 });
 
 test('headless dual rejection emits no checker-complete and no continuation', () => {

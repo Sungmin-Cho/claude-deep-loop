@@ -597,10 +597,8 @@ export function buildCodexCheckerEntry({
     model,
     effort,
     sandbox: 'read-only',
+    outputSchemaPath: schema,
   });
-  const cwdIndex = entry.argv.indexOf('-C');
-  if (cwdIndex < 0) throw new Error('checker-entry-invalid');
-  entry.argv.splice(cwdIndex, 0, '--output-schema', schema);
   entry.cwd = root;
   entry.env = env;
   entry.usageOutputKind = 'codex-jsonl';

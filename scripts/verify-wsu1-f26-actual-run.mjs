@@ -7,6 +7,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { flushDirectory } from './lib/atomic-write.mjs';
 import { verifyDualCaptureProof } from './lib/dual-checker.mjs';
+import { validDualCheckerLaunch } from './lib/checker-launch.mjs';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -422,7 +423,7 @@ function absoluteSafe(value) {
     && (isAbsolute(value) || win32.isAbsolute(value));
 }
 
-function validateProviderProcessDescriptor(process, attempt, approvals) {
+function validateProviderProcessDescriptor(process, attempt, approvals, projectRoot) {
   const executable = process.executable;
   const launch = process.launch;
   const lifecycle = process.lifecycle;
@@ -433,10 +434,6 @@ function validateProviderProcessDescriptor(process, attempt, approvals) {
     checker === 'codex' ? 'grok' : 'codex');
   const started = Date.parse(lifecycle?.started_at);
   const finished = Date.parse(lifecycle?.finished_at);
-  const modelPositions = Array.isArray(launch?.argv) ? launch.argv.flatMap((value, index) => (
-    value === '--model' || value === '-m' ? [index] : []
-  )) : [];
-  const argumentTerminator = Array.isArray(launch?.argv) ? launch.argv.indexOf('--') : -1;
   if (!exactKeys(approvals, ['codex', 'grok']) || approval === null || other === null
     || approval.canonical_path === other.canonical_path || approval.sha256 === other.sha256
     || !exactKeys(executable, PROCESS_EXECUTABLE_KEYS)
@@ -445,15 +442,7 @@ function validateProviderProcessDescriptor(process, attempt, approvals) {
     || executable.provider_id !== attempt.provider_id || executable.model_id !== attempt.model_id
     || !absoluteSafe(executable.canonical_path) || !SHA256.test(executable.sha256 || '')
     || !same(executable, approval)
-    || !exactKeys(launch, ['bin', 'argv', 'cwd', 'shell'])
-    || launch.bin !== executable.canonical_path || !absoluteSafe(launch.bin)
-    || !absoluteSafe(launch.cwd) || launch.shell !== false
-    || !Array.isArray(launch.argv) || launch.argv.length === 0
-    || launch.argv.some(value => typeof value !== 'string' || /[\0\r\n]/.test(value)
-      || value.startsWith('--model=') || /^model\s*=/.test(value))
-    || modelPositions.length !== 1
-    || (argumentTerminator !== -1 && modelPositions[0] >= argumentTerminator)
-    || launch.argv[modelPositions[0] + 1] !== attempt.model_id
+    || !validDualCheckerLaunch({ launch, executable, attempt, projectRoot })
     || !exactKeys(lifecycle, [
       'spawned', 'started_at', 'finished_at', 'exit_code', 'signal', 'timed_out',
     ]) || lifecycle.spawned !== true || lifecycle.exit_code !== 0 || lifecycle.signal !== null
@@ -479,7 +468,7 @@ function validateProcessProof(projectRoot, runId, aggregation, attempt, approval
     || process.session_id !== attempt.session_id || !safeIdentity(process.session_id)
     || ![process.receipt_id, process.claim_hash]
       .every(value => SHA256.test(value || ''))) fail('WSU1_F26_DUAL_PROCESS_PROOF');
-  validateProviderProcessDescriptor(process, attempt, approvals);
+  validateProviderProcessDescriptor(process, attempt, approvals, projectRoot);
   const receiptPath = `.deep-loop/runs/${runId}/preflight/process-receipts/${process.receipt_id}-dual-checker.json`;
   if (process.receipt !== receiptPath) fail('WSU1_F26_DUAL_PROCESS_PROOF');
   const { bytes, value: receipt } = regularJson(

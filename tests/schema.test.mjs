@@ -12,6 +12,7 @@ import {
 } from '../scripts/lib/schema.mjs';
 import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { classifyPatch } from '../scripts/lib/state.mjs';
+import { exactDualProcess } from './helpers/dual-capture.mjs';
 
 function minimalValid() {
   return {
@@ -76,6 +77,11 @@ function dualAggregationLoop({ approved = false } = {}) {
       attempt.session_id = index === 0
         ? '11111111-1111-4111-8111-111111111111'
         : '22222222-2222-4222-8222-222222222222';
+      const exactProcess = exactDualProcess({
+        root: sourceWithoutDigest.project_root,
+        attempt,
+        sessionId: attempt.session_id,
+      });
       attempt.capture_proof = {
         capture_id: digest(JSON.stringify(captureBinding)), ...captureBinding,
       };
@@ -84,33 +90,10 @@ function dualAggregationLoop({ approved = false } = {}) {
         receipt: `.deep-loop/runs/R/preflight/process-receipts/${suffix}.json`,
         provider_id: attempt.provider_id, model_id: attempt.model_id,
         session_id: attempt.session_id, claim_hash: (index === 0 ? '9' : 'b').repeat(64),
-        executable: {
-          checker: index === 0 ? 'codex' : 'grok',
-          reviewer_adapter: attempt.reviewer_adapter,
-          provider_id: attempt.provider_id,
-          model_id: attempt.model_id,
-          canonical_path: index === 0 ? '/opt/codex/bin/codex' : '/opt/grok/bin/grok',
-          sha256: (index === 0 ? 'c' : 'd').repeat(64),
-          version: index === 0 ? '0.144.1' : '1.0.4',
-          platform: 'linux', arch: 'x64', source: 'human-explicit', authenticode: null,
-        },
-        launch: {
-          bin: index === 0 ? '/opt/codex/bin/codex' : '/opt/grok/bin/grok',
-          argv: index === 0
-            ? ['exec', '--json', '--model', attempt.model_id]
-            : ['--output-format', 'json', '--model', attempt.model_id],
-          cwd: '/repo/worktree', shell: false,
-        },
-        lifecycle: {
-          spawned: true,
-          started_at: `2026-08-15T00:00:0${index * 2}.000Z`,
-          finished_at: `2026-08-15T00:00:0${index * 2 + 1}.000Z`,
-          exit_code: 0, signal: null, timed_out: false,
-        },
-        streams: {
-          stdout: { sha256: `${index + 1}`.repeat(64), byte_count: 10, truncated: false },
-          stderr: { sha256: `${index + 2}`.repeat(64), byte_count: 0, truncated: false },
-        },
+        executable: exactProcess.executable,
+        launch: exactProcess.launch,
+        lifecycle: exactProcess.lifecycle,
+        streams: exactProcess.streams,
       };
       attempt.cost_proof = {
         receipt_id: attempt.process_proof.receipt_id,
@@ -249,7 +232,7 @@ test('approved dual aggregate binds two distinct exact capture/process/report/co
     ['launch binary reversal', value => { value.attempts[0].process_proof.launch.bin = '/opt/other/bin/codex'; }],
     ['launch model reversal', value => {
       const argv = value.attempts[0].process_proof.launch.argv;
-      argv[argv.length - 1] = 'gpt-5.6-sol-mutant';
+      argv[argv.indexOf('--model') + 1] = 'gpt-5.6-sol-mutant';
     }],
     ['launch cwd is not absolute', value => { value.attempts[0].process_proof.launch.cwd = 'relative'; }],
     ['lifecycle reverse chronology', value => {
@@ -268,6 +251,32 @@ test('approved dual aggregate binds two distinct exact capture/process/report/co
   ]) {
     const candidate = structuredClone(valid);
     mutate(candidate.episodes[0].review_aggregation);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+});
+
+test('authorized provider launch durable schema rejects weakened argv and noncanonical cwd', () => {
+  const cases = [
+    ['codex sandbox value', 0, launch => {
+      launch.argv[launch.argv.indexOf('--sandbox') + 1] = 'danger-full-access';
+    }],
+    ['codex reduced argv', 0, (launch, attempt) => {
+      launch.argv = ['exec', '--model', attempt.model_id, '-'];
+    }],
+    ['grok missing no-subagents', 1, launch => {
+      launch.argv.splice(launch.argv.indexOf('--no-subagents'), 1);
+    }],
+    ['grok reduced argv', 1, (launch, attempt) => {
+      launch.argv = ['--model', attempt.model_id];
+    }],
+    ['wrong absolute cwd', 0, launch => { launch.cwd = '/tmp/attacker'; }],
+    ['cross-dialect cwd', 0, launch => { launch.cwd = 'C:\\Windows'; }],
+  ];
+  for (const [label, slot, mutate] of cases) {
+    const candidate = dualAggregationLoop({ approved: true });
+    const aggregation = candidate.episodes[0].review_aggregation;
+    const attempt = aggregation.attempts[slot];
+    mutate(attempt.process_proof.launch, attempt);
     assert.equal(validate(candidate).ok, false, label);
   }
 });

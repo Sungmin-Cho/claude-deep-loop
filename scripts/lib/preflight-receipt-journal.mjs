@@ -23,6 +23,7 @@ import { canonicalProjectRoot } from './project-root.mjs';
 import { captureReconciledRunSnapshot, runDir } from './state.mjs';
 import { validCheckerImportDiagnostic } from './schema.mjs';
 import { flushDirectory } from './atomic-write.mjs';
+import { validDualCheckerLaunch } from './checker-launch.mjs';
 
 const RECEIPT_MAX_BYTES = 16 * 1024;
 const RECEIPT_MAX_FILES = 256;
@@ -343,6 +344,12 @@ function validateSettledDualProcessReceipt({
       || !sameJson(receipt.executable, attempt.process_proof?.executable)
       || !sameJson(receipt.executable, approvalSecurity)
       || !sameJson(receipt.launch, attempt.process_proof?.launch)
+      || !validDualCheckerLaunch({
+        launch: receipt.launch,
+        executable: receipt.executable,
+        attempt,
+        projectRoot: canonicalRoot,
+      })
       || !sameJson(receipt.lifecycle, attempt.process_proof?.lifecycle)
       || !sameJson(receipt.streams, attempt.process_proof?.streams)
       || !sameJson(receipt.capture, attempt.capture_proof)
