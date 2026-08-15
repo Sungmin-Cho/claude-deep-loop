@@ -13,7 +13,7 @@ import { checkBreaker } from './breaker.mjs';
 import { boundaryHandoffTopologyError } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { runtimeCapability, sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import {
   defaultProbeRun, deriveTmuxSessionByAncestry, listTmuxPanes, probeTmuxSocket,
@@ -194,7 +194,7 @@ export function isHeadlessInvocation(env = process.env, runtime = 'claude') {
   if (!env || typeof env !== 'object') return false;
   const truthy = (v) => v === '1' || v === 'true' || v === true;
   if (truthy(env.DEEP_LOOP_UNATTENDED) || truthy(env.DEEP_LOOP_HEADLESS)) return true;
-  if (runtime === 'codex') return false;
+  if (runtimeCapability(runtime, 'entrypoint_heuristic') !== 'claude-code') return false;
   const ep = String(env.CLAUDE_CODE_ENTRYPOINT || '').toLowerCase();
   if (!ep || ep === 'cli') return false;   // interactive TUI (or unset) → not headless
   if (ep.startsWith('sdk') || ep.includes('print') || ep.includes('headless') || ep.includes('noninteractive') || ep.includes('non-interactive')) return true;

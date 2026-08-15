@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken } from '../scripts/lib/runtime.mjs';
+import { isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -93,6 +94,13 @@ test('skillToken renders the host-correct invocation', () => {
 
 test('skillToken throws for an unknown runtime', () => {
   assert.throws(() => skillToken('grok', 'deep-loop-resume'), /INVALID_RUNTIME/);
+});
+
+test('isHeadlessInvocation throws for an unknown runtime without driver markers', () => {
+  assert.throws(
+    () => isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'sdk-py' }, 'grok'),
+    /INVALID_RUNTIME/,
+  );
 });
 
 test('the table is deeply frozen', () => {

@@ -1167,7 +1167,7 @@ function restoreRequest(checkpointRelValue, {
   const claudeEntrypoint = String(env?.CLAUDE_CODE_ENTRYPOINT || '').toLowerCase();
   const headless = headlessTruthy(env?.DEEP_LOOP_UNATTENDED)
     || headlessTruthy(env?.DEEP_LOOP_HEADLESS)
-    || (runtime === 'claude'
+    || (runtimeCapability(runtime, 'entrypoint_heuristic') === 'claude-code'
       && claudeEntrypoint !== ''
       && claudeEntrypoint !== 'cli'
       && (claudeEntrypoint.startsWith('sdk')

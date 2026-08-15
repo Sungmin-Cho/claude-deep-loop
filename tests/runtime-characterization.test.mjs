@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resumeSkillToken, usageOutputKind } from '../scripts/lib/runtime-descriptor.mjs';
+import { isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
+import { validateRuntimeProfile } from '../scripts/lib/session-profile.mjs';
 import {
   collectRuntimeExecutableCandidates,
   resolveTrustedRuntimeExecutable,
@@ -50,6 +52,14 @@ function seed(runtime = 'claude', { label = runtime, now = '2026-08-05T00:00:00.
   recordEpisode(root, runId, episodeId, { status: 'in_progress', fence });
   return { root, runId, runtime, fence, containedCwd };
 }
+
+test('CHARACTERIZATION entrypoint heuristic applies to claude only', () => {
+  const env = { CLAUDE_CODE_ENTRYPOINT: 'sdk-py' };
+  assert.equal(isHeadlessInvocation(env, 'claude'), true);
+  assert.equal(isHeadlessInvocation(env, 'codex'), false);
+  assert.equal(isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'claude'), false);
+  assert.equal(isHeadlessInvocation({ DEEP_LOOP_HEADLESS: '1' }, 'codex'), true);
+});
 
 test('CHARACTERIZATION resumeSkillToken current mapping', () => {
   assert.equal(resumeSkillToken('claude'), '/deep-loop-resume');
