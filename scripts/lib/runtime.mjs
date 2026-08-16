@@ -1,7 +1,7 @@
 export const SESSION_RUNTIMES = Object.freeze(['claude', 'codex', 'grok']);
 
 // 각 필드 주석은 소비자 목록이다(유일 소비자 선언이 아니다).
-// 값은 전부 현행 동작에서 읽어온 것이며, 이 커밋은 어떤 값도 새로 정하지 않는다.
+// claude/codex 값은 1.16 동작의 전사다. grok 값은 Phase 0 attended-Darwin 계약이다.
 export const RUNTIME_CAPABILITIES = Object.freeze({
   claude: Object.freeze({
     skill_token_style: 'slash',                      // runtime-descriptor:123 · checkpoint:846 · sessionstart-restore:199,202,213

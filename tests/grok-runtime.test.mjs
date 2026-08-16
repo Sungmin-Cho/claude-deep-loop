@@ -8,7 +8,6 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,7 +45,7 @@ import { detectPlugins } from '../scripts/lib/detect.mjs';
 import { approveAttendedLaunch } from '../scripts/lib/attended-launch.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
-import { canonicalRealpath, createFileSymlink, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { canonicalRealpath, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
@@ -154,19 +153,23 @@ function approveGrokExe(root, runId, fixture) {
   });
 }
 
-function setIterm2Spawn(root, runId) {
+function setVisibleCmuxSpawn(root, runId) {
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'visible';
   data.session_spawn = {
-    ...data.session_spawn,
     platform: 'darwin',
-    launcher: 'iterm2',
-    launcher_bin: '/usr/bin/osascript',
-    launcher_socket: null,
-    surface: 'window',
+    launcher: 'cmux',
+    launcher_bin: '/opt/cmux/bin/cmux',
+    launcher_socket: '/tmp/cmux.sock',
+    launcher_session: null,
+    surface: 'workspace',
     reachable: true,
     visible: true,
-    probe: { cmd: ['/usr/bin/osascript', '-e', 'id of application "iTerm"'], code: 0 },
+    signals: {},
+    probe: { cmd: ['/opt/cmux/bin/cmux', '--socket', '/tmp/cmux.sock', 'ping'], code: 0 },
+    reason: null,
+    fallback: 'launch-command-file',
+    detected_at: '2026-08-17T00:00:00.000Z',
   };
   writeState(root, runId, data);
 }
@@ -487,7 +490,7 @@ test('T-desc: grok interactive has no -s; desktop/headless/non-darwin unavailabl
 
 // ── T-trust ─────────────────────────────────────────────────────────────────
 
-test('T-trust: symlink rejected with canonical printed; retarget keeps pin; no grok native resolver', () => {
+test('T-trust: no grok native resolver; retarget keeps pin; symlink rejected with canonical printed', async (t) => {
   const fixture = grokBinaryFixture();
   const diagnosed = diagnoseRuntimeExecutable('grok', {
     explicitPath: fixture.executable,
@@ -497,20 +500,6 @@ test('T-trust: symlink rejected with canonical printed; retarget keeps pin; no g
   });
   assert.equal(diagnosed.identity.canonical_path, fixture.executable);
   assert.equal(diagnosed.identity.sha256, fixture.sha256);
-
-  const link = join(fixture.dir, 'grok');
-  const ctx = { skip() {} };
-  if (!createFileSymlinkOrSkip(ctx, fixture.executable, link)) return;
-  assert.throws(
-    () => diagnoseRuntimeExecutable('grok', {
-      explicitPath: link, platform: 'darwin', arch: 'arm64', runVersion: fixture.runVersion,
-    }),
-    error => {
-      assert.match(String(error.message), /UNTRUSTED|symlink/i);
-      assert.ok(String(error.message).includes(fixture.executable), String(error.message));
-      return true;
-    },
-  );
 
   assert.throws(
     () => resolveTrustedRuntimeExecutable('grok', {
@@ -540,14 +529,27 @@ test('T-trust: symlink rejected with canonical printed; retarget keeps pin; no g
   const newer = join(fixture.dir, 'grok-1.0.5-macos-aarch64');
   writeFileSync(newer, 'newer-bytes');
   chmodSync(newer, 0o755);
-  unlinkSync(link);
-  createFileSymlink(newer, link);
   const revalidated = revalidateTrustedRuntimeExecutable(approved.approval, {
     platform: 'darwin',
     arch: 'arm64',
     runVersion: fixture.runVersion,
   });
   assert.equal(revalidated.canonical_path, fixture.executable);
+
+  await t.test('symlink input is rejected and diagnose prints the canonical regular file', (st) => {
+    const link = join(fixture.dir, 'grok');
+    if (!createFileSymlinkOrSkip(st, fixture.executable, link)) return;
+    assert.throws(
+      () => diagnoseRuntimeExecutable('grok', {
+        explicitPath: link, platform: 'darwin', arch: 'arm64', runVersion: fixture.runVersion,
+      }),
+      error => {
+        assert.match(String(error.message), /UNTRUSTED|symlink/i);
+        assert.ok(String(error.message).includes(fixture.executable), String(error.message));
+        return true;
+      },
+    );
+  });
 });
 
 // ── T-order ─────────────────────────────────────────────────────────────────
@@ -604,23 +606,18 @@ test('T-path-v: exe approve → attended visible → emit → respawn; post-emit
   assert.equal(approveAttendedLaunch(root, runId, {
     style: 'visible', confirm: true, fence: { owner: runId, generation: 1 }, now: NOW1,
   }).ok, true);
-  setIterm2Spawn(root, runId);
-  const { data } = readState(root, runId);
-  data.autonomy.runtime_executable_approval = {
-    ...data.autonomy.runtime_executable_approval,
-    platform: 'darwin',
-  };
-  writeState(root, runId, data);
+  setVisibleCmuxSpawn(root, runId);
 
+  const darwinDescriptor = options => buildRuntimeResumeDescriptor({
+    ...options, platform: 'darwin', exists: path => path === '/usr/bin/osascript',
+  });
   const emitted = emitHandoff(root, runId, {
     trigger: 'milestone',
     expect: { owner: runId, generation: 1 },
     now: NOW1,
     platform: 'darwin',
     exists: path => path === '/usr/bin/osascript',
-    descriptorBuilder: options => buildRuntimeResumeDescriptor({
-      ...options, platform: 'darwin', exists: path => path === '/usr/bin/osascript',
-    }),
+    descriptorBuilder: darwinDescriptor,
   });
   assert.equal(emitted.ok, true);
 
@@ -635,9 +632,7 @@ test('T-path-v: exe approve → attended visible → emit → respawn; post-emit
     platform: 'darwin',
     expect: { owner: runId, generation: 1 },
     revalidateRuntimeExecutable: identity => identity,
-    launchCommandBuilder: options => buildRuntimeResumeDescriptor({
-      ...options, platform: 'darwin', exists: path => path === '/usr/bin/osascript',
-    }).entries,
+    launchCommandBuilder: options => darwinDescriptor(options).entries,
     spawnFn: entry => { captured = entry; return { ok: true }; },
     pollLease: () => ({
       state: 'active', handoff_phase: 'acquired', owner_run_id: emitted.childRunId, generation: 2,
@@ -645,13 +640,15 @@ test('T-path-v: exe approve → attended visible → emit → respawn; post-emit
     sleep: () => {},
     pollIntervalMs: 0,
   });
-  assert.ok(spawned.ok === true || spawned.outcome === 'no-launcher' || spawned.outcome === 'spawned', spawned);
-  if (captured) {
-    const serialized = JSON.stringify(captured);
-    assert.doesNotMatch(serialized, /(?:^|")-s(?:"|,)/);
-    assert.doesNotMatch(serialized, /--session-id/);
-    assert.doesNotMatch(serialized, /--effort/);
-  }
+  assert.equal(spawned.ok, true, spawned);
+  assert.equal(spawned.outcome, 'spawned', spawned);
+  assert.ok(captured, 'injected spawnFn must run');
+  assert.equal(captured.bin, '/opt/cmux/bin/cmux');
+  const command = captured.argv[captured.argv.indexOf('--command') + 1];
+  assert.ok(command.includes(bin.executable), command);
+  assert.doesNotMatch(command, /(?:^|\s)-s(?:\s|$)/);
+  assert.doesNotMatch(command, /--session-id/);
+  assert.doesNotMatch(command, /--effort/);
   const afterRespawn = durableBytes(root, runId);
 
   assert.throws(

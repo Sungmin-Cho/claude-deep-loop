@@ -181,6 +181,20 @@ test('init-run rejects Codex max before writing', () => {
   assert.equal(existsSync(join(codexRoot, '.deep-loop', 'runs')), false);
 });
 
+test('init-run still rejects an unknown runtime before writing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-init-unknown-'));
+  assert.throws(
+    () => initRun(root, { runtime: 'unknown-runtime', goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z') }),
+    /INVALID_RUNTIME/,
+  );
+  const result = spawnSync(process.execPath, [
+    CLI, 'init-run', '--goal', 'g', '--runtime', 'unknown-runtime', '--project-root', root,
+  ], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /INVALID_RUNTIME/);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
 test('init-run accepts grok on darwin and records skill-asserted runtime', () => {
   const loop = buildInitialLoop({
     runtime: 'grok', runId: 'grok-darwin', goal: 'g', recipe: {},
