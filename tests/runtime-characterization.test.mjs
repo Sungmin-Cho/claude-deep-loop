@@ -54,7 +54,7 @@ function seed(runtime = 'claude', { label = runtime, now = '2026-08-05T00:00:00.
 }
 
 test('CHARACTERIZATION codex rejects max effort, claude accepts it', () => {
-  assert.throws(() => validateRuntimeProfile('codex', { effort: 'max' }), /UNSUPPORTED_RUNTIME_EFFORT/);
+  assert.throws(() => validateRuntimeProfile('codex', { effort: 'max' }), { message: 'UNSUPPORTED_RUNTIME_EFFORT: codex max' });
   assert.deepEqual(validateRuntimeProfile('claude', { effort: 'max' }), { model: null, effort: 'max' });
 });
 

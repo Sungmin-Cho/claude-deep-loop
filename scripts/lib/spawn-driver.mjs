@@ -61,7 +61,7 @@ export function visibleSpawn(entry, { launcher, timeoutMs = 30000, run = default
 function parseLegacyHeadlessResult(entry, out) {
   if (out.timedOut) return { ok: false, reason: 'timeout' };
   if (out.code !== 0) return { ok: false, reason: `exit-${out.code}` };
-  const usageKind = entry?.usageOutputKind ?? 'claude-json';
+  const usageKind = entry?.usageOutputKind;
   if (usageKind === 'codex-jsonl') {
     const parser = createCodexJsonlParser();
     parser.write(Buffer.isBuffer(out.stdout) ? out.stdout : Buffer.from(String(out.stdout || ''), 'utf8'));

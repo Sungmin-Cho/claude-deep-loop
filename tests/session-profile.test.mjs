@@ -39,7 +39,10 @@ test('validateRuntimeProfile preserves runtime-specific model/effort and rejects
   for (const effort of ['low', 'medium', 'high', 'xhigh']) {
     assert.deepEqual(validateRuntimeProfile('codex', { model: 'gpt-5.4', effort }), { model: 'gpt-5.4', effort });
   }
-  assert.throws(() => validateRuntimeProfile('codex', { model: 'gpt-5.4', effort: 'max' }), /UNSUPPORTED_RUNTIME_EFFORT/);
+  assert.throws(
+    () => validateRuntimeProfile('codex', { model: 'gpt-5.4', effort: 'max' }),
+    { message: 'UNSUPPORTED_RUNTIME_EFFORT: codex max' },
+  );
   assert.throws(() => validateRuntimeProfile('other', { model: 'gpt-5.4', effort: 'high' }), /INVALID_RUNTIME/);
 });
 
@@ -221,7 +224,7 @@ test('CLI empty JSON session profile is a lease-checked no-op', () => {
 test('CLI empty JSON profile does not revalidate an unchanged independently seeded pair', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-sp-codex-max-'));
   const { runId } = initRun(root, {
-    runtime: 'codex', goal: 'g', detected: {}, model: 'gpt-5.6-sol', effort: 'max',
+    runtime: 'codex', goal: 'g', detected: {}, model: 'gpt-5.6-sol', effort: 'xhigh',
     now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
   });
   const seq = readState(root, runId).data.event_log_head.seq;

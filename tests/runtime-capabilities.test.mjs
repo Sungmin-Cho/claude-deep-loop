@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken } from '../scripts/lib/runtime.mjs';
+import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken, assertRuntimePlatform } from '../scripts/lib/runtime.mjs';
 import { isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,6 +22,7 @@ const FIELDS = [
   'desktop_transport', 'unattended_checker', 'requires_process_preflight',
   'requires_process_receipt_settlement', 'requires_posix_visible_executable_trust',
   'max_effort_supported', 'executable_name', 'version_probe',
+  'supported_platforms', 'measured_headless',
 ];
 
 test('every session runtime has every capability field', () => {
@@ -73,6 +74,23 @@ test('current values match today behavior', () => {
   assert.equal(runtimeCapability('codex', 'requires_posix_visible_executable_trust'), true);
   assert.equal(runtimeCapability('claude', 'version_probe'), 'claude');
   assert.equal(runtimeCapability('codex', 'version_probe'), 'codex');
+  assert.deepEqual(runtimeCapability('claude', 'supported_platforms'), ['darwin', 'linux', 'win32']);
+  assert.deepEqual(runtimeCapability('codex', 'supported_platforms'), ['darwin', 'linux', 'win32']);
+  assert.equal(runtimeCapability('claude', 'measured_headless'), true);
+  assert.equal(runtimeCapability('codex', 'measured_headless'), true);
+});
+
+test('assertRuntimePlatform accepts current hosts and rejects others without falling back', () => {
+  for (const runtime of SESSION_RUNTIMES) {
+    for (const platform of ['darwin', 'linux', 'win32']) {
+      assert.equal(assertRuntimePlatform(runtime, platform), undefined);
+    }
+    assert.throws(
+      () => assertRuntimePlatform(runtime, 'aix'),
+      { message: `UNSUPPORTED_RUNTIME_PLATFORM: ${runtime} on aix`, code: 'UNSUPPORTED_RUNTIME_PLATFORM' },
+    );
+  }
+  assert.throws(() => assertRuntimePlatform('grok', 'darwin'), /INVALID_RUNTIME/);
 });
 
 test('every capability field has at least one production consumer', () => {

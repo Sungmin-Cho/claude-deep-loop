@@ -568,7 +568,8 @@ function buildClaudeEntries({
       ? {
         platform: 'win32', bin: runtimeBin,
         argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
-        cwd: root, shell: false, display: `# Claude CLI headless: ${JSON.stringify(runtimeBin)} (trusted native identity)`,
+        cwd: root, shell: false, usageOutputKind: 'claude-json',
+        display: `# Claude CLI headless: ${JSON.stringify(runtimeBin)} (trusted native identity)`,
       }
       : unavailableEntry('headless', 'trusted-native-runtime-unavailable');
     return {
@@ -615,6 +616,7 @@ function buildClaudeEntries({
       bin: 'claude',
       argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
       cwd: root,
+      usageOutputKind: 'claude-json',
       display: headlessDisplay,
     },
     interactive: {

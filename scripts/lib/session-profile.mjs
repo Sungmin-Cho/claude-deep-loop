@@ -25,7 +25,7 @@ export function validateRuntimeProfile(runtime, { model = null, effort = null } 
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
   if (effort === 'max' && !runtimeCapability(selectedRuntime, 'max_effort_supported')) {
-    throw Object.assign(new Error('UNSUPPORTED_RUNTIME_EFFORT: codex max'), { code: 'UNSUPPORTED_RUNTIME_EFFORT' });
+    throw Object.assign(new Error(`UNSUPPORTED_RUNTIME_EFFORT: ${selectedRuntime} max`), { code: 'UNSUPPORTED_RUNTIME_EFFORT' });
   }
   return { model, effort };
 }

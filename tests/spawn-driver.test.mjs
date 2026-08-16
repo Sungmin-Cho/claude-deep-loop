@@ -15,12 +15,20 @@ const unmeasurableRun = () => ({ code: 0, stdout: 'done, no usage here', stderr:
 const costOnlyRun = () => ({ code: 0, stdout: '{"total_cost_usd":0.12}', stderr: '', timedOut: false });   // Codex r2 sf-4
 
 // Minimal valid entry shape for headlessSpawn.
-const okEntry = { bin: 'claude', argv: ['-p', 'x'], cwd: '/p' };
+const okEntry = { bin: 'claude', argv: ['-p', 'x'], cwd: '/p', usageOutputKind: 'claude-json' };
 const codexEntry = { bin: '/trusted/codex', argv: ['exec', '--json', '-'], cwd: '/p', usageOutputKind: 'codex-jsonl' };
 
 function codexStdout(usage = { input_tokens: 10, cached_input_tokens: 4, output_tokens: 7, reasoning_output_tokens: 3 }) {
   return `${JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' })}\n${JSON.stringify({ type: 'turn.completed', usage })}\n`;
 }
+
+test('headlessSpawn rejects a missing usageOutputKind as unsupported', () => {
+  const r = headlessSpawn({ bin: 'claude', argv: ['-p', 'x'], cwd: '/p' }, {
+    run: () => ({ code: 0, stdout: '{"num_turns":1}', stderr: '', timedOut: false }),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'unsupported-usage-kind');
+});
 
 test('headlessSpawn ok when usage measurable', () => {
   const r = headlessSpawn(okEntry, { run: okRun });
@@ -61,7 +69,7 @@ test('headlessSpawn passes entry.bin, entry.argv, entry.cwd to run (no bash -c)'
     calledBin = bin; calledArgv = argv; calledOpts = opts;
     return { code: 0, stdout: '{"num_turns":1}', stderr: '', timedOut: false };
   };
-  const entry = { bin: 'claude', argv: ['-p', 'hello', '--output-format', 'json'], cwd: '/work' };
+  const entry = { bin: 'claude', argv: ['-p', 'hello', '--output-format', 'json'], cwd: '/work', usageOutputKind: 'claude-json' };
   headlessSpawn(entry, { run: capturingRun });
   assert.equal(calledBin, 'claude');
   assert.deepEqual(calledArgv, ['-p', 'hello', '--output-format', 'json']);
@@ -144,7 +152,7 @@ test('visibleSpawn does NOT parse usage (exit 0 = launch issued, not session suc
 
 test('headlessSpawn usage.num_turns equals 3 from stdout', () => {
   const r = headlessSpawn(
-    { bin: 'claude', argv: ['-p', 'x'], cwd: '/p' },
+    { bin: 'claude', argv: ['-p', 'x'], cwd: '/p', usageOutputKind: 'claude-json' },
     { run: () => ({ code: 0, stdout: '{"num_turns":3}', stderr: '', timedOut: false }) },
   );
   assert.equal(r.ok, true);
@@ -153,7 +161,7 @@ test('headlessSpawn usage.num_turns equals 3 from stdout', () => {
 
 test('headlessSpawn reason is exact string unmeasurable-fail-closed', () => {
   const r = headlessSpawn(
-    { bin: 'claude', argv: ['-p', 'x'], cwd: '/p' },
+    { bin: 'claude', argv: ['-p', 'x'], cwd: '/p', usageOutputKind: 'claude-json' },
     { run: () => ({ code: 0, stdout: 'no metric', stderr: '', timedOut: false }) },
   );
   assert.equal(r.ok, false);

@@ -64,7 +64,7 @@ export function runStreamingProcess(entry, {
     return Promise.resolve({ ok: false, reason: 'shell-not-allowed' });
   }
 
-  const usageKind = entry.usageOutputKind ?? 'claude-json';
+  const usageKind = entry.usageOutputKind;
   if (usageKind !== 'claude-json' && usageKind !== 'codex-jsonl') {
     return Promise.resolve({ ok: false, reason: 'unsupported-usage-kind' });
   }
@@ -206,7 +206,7 @@ function workerEntry(entry) {
     ...(entry && Object.hasOwn(entry, 'cwd') ? { cwd: entry.cwd } : {}),
     ...(entry && Object.hasOwn(entry, 'env') ? { env: entry.env } : {}),
     shell: entry?.shell ?? false,
-    usageOutputKind: entry?.usageOutputKind ?? 'claude-json',
+    usageOutputKind: entry?.usageOutputKind,
     captureFinalMessage: entry?.captureFinalMessage === true,
     stdin,
   };
@@ -300,6 +300,9 @@ export function runStreamingProcessSync(entry, {
   usageReceipt = null,
 } = {}) {
   if (!validTimeout(timeoutMs)) return { ok: false, reason: 'invalid-timeout' };
+  if (entry?.usageOutputKind !== 'claude-json' && entry?.usageOutputKind !== 'codex-jsonl') {
+    return { ok: false, reason: 'unsupported-usage-kind' };
+  }
   let normalizedUsageReceipt = null;
   if (usageReceipt != null) {
     try {

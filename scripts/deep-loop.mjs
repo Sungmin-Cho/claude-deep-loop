@@ -1507,6 +1507,7 @@ const handlers = {
           expect, expectedMode: mode,
         });
       json({ mode, ...r });
+      if (r.action === 'unmeasured-runtime' || r.action === 'paused') return 1;
       return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' || r.action === 'fenced' || r.action === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
       const msg = String(e?.message || e);

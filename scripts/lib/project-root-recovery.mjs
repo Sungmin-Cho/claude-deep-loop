@@ -23,7 +23,7 @@ import {
   readLines,
 } from './integrity.mjs';
 import { contentHash, unwrap, wrap } from './envelope.mjs';
-import { SESSION_RUNTIMES, sessionRuntime } from './runtime.mjs';
+import { SESSION_RUNTIMES, assertRuntimePlatform, sessionRuntime } from './runtime.mjs';
 import { buildRootRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
 import {
   checkHardBudget,
@@ -987,6 +987,7 @@ export function acquireRootRecovery(candidateRoot, runId, {
   runtime,
   now,
   clock = Date.now,
+  platform = process.platform,
 } = {}) {
   const root = canonicalCandidate(candidateRoot);
   if (typeof capsuleRel !== 'string' || !capsuleRel.startsWith('recoveries/root/')
@@ -996,6 +997,7 @@ export function acquireRootRecovery(candidateRoot, runId, {
     || !SESSION_RUNTIMES.includes(runtime)) {
     throw new Error('ROOT_RECOVERY_ACQUIRE_INPUT_INVALID');
   }
+  assertRuntimePlatform(runtime, platform);
   return withReconciledRootRecoveryLock(root, runId, (guard, snapshot) => {
     const loop = snapshot.data;
     const lease = loop.session_chain.lease;

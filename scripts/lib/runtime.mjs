@@ -16,6 +16,8 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     max_effort_supported: true,                      // session-profile:27
     executable_name: 'claude',                       // runtime-executable:577
     version_probe: 'claude',                         // runtime-executable:375
+    supported_platforms: Object.freeze(['darwin', 'linux', 'win32']), // assertRuntimePlatform · acquireLease · acquireRecovery · acquireRootRecovery · initrun
+    measured_headless: true,                         // headless-host skip rewrite / would-spawn pause
   }),
   codex: Object.freeze({
     skill_token_style: 'dollar',
@@ -30,6 +32,8 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     max_effort_supported: false,
     executable_name: 'codex',
     version_probe: 'codex',
+    supported_platforms: Object.freeze(['darwin', 'linux', 'win32']),
+    measured_headless: true,
   }),
 });
 
@@ -43,6 +47,16 @@ export function runtimeCapability(runtime, field) {
     throw new Error(`UNKNOWN_RUNTIME_CAPABILITY: ${selected}.${field}`);
   }
   return row[field];
+}
+
+export function assertRuntimePlatform(runtime, platform) {
+  const allowed = runtimeCapability(runtime, 'supported_platforms');
+  if (!allowed.includes(platform)) {
+    throw Object.assign(
+      new Error(`UNSUPPORTED_RUNTIME_PLATFORM: ${runtime} on ${platform}`),
+      { code: 'UNSUPPORTED_RUNTIME_PLATFORM' },
+    );
+  }
 }
 
 // `deep-loop-compact restore`처럼 인자가 붙는 형태도 그대로 받는다.

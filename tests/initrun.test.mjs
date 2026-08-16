@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,7 +135,7 @@ test('CLI init-run accepts empty, partial, and complete session-profile JSON', (
   }
 });
 
-test('CLI init-run session-profile matches legacy seed and keeps independent Codex validation', () => {
+test('CLI init-run session-profile matches legacy seed', () => {
   const legacyRoot = mkdtempSync(join(tmpdir(), 'dl-init-legacy-'));
   const jsonRoot = mkdtempSync(join(tmpdir(), 'dl-init-json-'));
   const legacy = initializedState(legacyRoot, initCli(legacyRoot, ['--model', 'opus', '--effort', 'xhigh']));
@@ -144,16 +144,74 @@ test('CLI init-run session-profile matches legacy seed and keeps independent Cod
     { model: json.autonomy.session_model, effort: json.autonomy.session_effort },
     { model: legacy.autonomy.session_model, effort: legacy.autonomy.session_effort },
   );
+});
+
+test('init-run rejects Codex max before writing', () => {
+  assert.throws(
+    () => buildInitialLoop({
+      runtime: 'codex', runId: 'codex-max', goal: 'g', recipe: {},
+      now: new Date('2026-07-02T00:00:00Z'), env: noSignalEnv, platform: noSignalPlatform, run: noOpRun,
+      model: 'gpt-5.6-sol', effort: 'max',
+    }),
+    { message: 'UNSUPPORTED_RUNTIME_EFFORT: codex max' },
+  );
+
+  const libRoot = mkdtempSync(join(tmpdir(), 'dl-init-codex-max-lib-'));
+  assert.throws(
+    () => initRun(libRoot, {
+      runtime: 'codex', goal: 'g', detected: {},
+      now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+      model: 'gpt-5.6-sol', effort: 'max',
+    }),
+    { message: 'UNSUPPORTED_RUNTIME_EFFORT: codex max' },
+  );
+  assert.equal(existsSync(join(libRoot, '.deep-loop')), false);
 
   const codexRoot = mkdtempSync(join(tmpdir(), 'dl-init-codex-max-'));
+  mkdirSync(join(codexRoot, '.deep-loop'), { recursive: true });
+  writeFileSync(join(codexRoot, '.deep-loop', 'current'), 'OLD_POINTER\n');
   const result = spawnSync(process.execPath, [
     CLI, 'init-run', '--goal', 'g', '--runtime', 'codex',
     '--session-profile', '{"model":"gpt-5.6-sol","effort":"max"}',
     '--project-root', codexRoot,
   ], { encoding: 'utf8' });
-  const codex = initializedState(codexRoot, result);
-  assert.equal(codex.autonomy.session_model, 'gpt-5.6-sol');
-  assert.equal(codex.autonomy.session_effort, 'max');
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /UNSUPPORTED_RUNTIME_EFFORT: codex max/);
+  assert.equal(readFileSync(join(codexRoot, '.deep-loop', 'current'), 'utf8'), 'OLD_POINTER\n');
+  assert.equal(existsSync(join(codexRoot, '.deep-loop', 'runs')), false);
+});
+
+test('init-run still rejects public grok as INVALID_RUNTIME', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-init-grok-'));
+  assert.throws(
+    () => initRun(root, { runtime: 'grok', goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z') }),
+    /INVALID_RUNTIME/,
+  );
+  const result = spawnSync(process.execPath, [
+    CLI, 'init-run', '--goal', 'g', '--runtime', 'grok', '--project-root', root,
+  ], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /INVALID_RUNTIME/);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+test('buildInitialLoop and initRun reject an unsupported live-host platform before writing', () => {
+  assert.throws(
+    () => buildInitialLoop({
+      runtime: 'claude', runId: 'aix-host', goal: 'g', recipe: {},
+      now: new Date('2026-07-02T00:00:00Z'), env: noSignalEnv, platform: 'aix', run: noOpRun,
+    }),
+    { message: 'UNSUPPORTED_RUNTIME_PLATFORM: claude on aix', code: 'UNSUPPORTED_RUNTIME_PLATFORM' },
+  );
+  const root = mkdtempSync(join(tmpdir(), 'dl-init-aix-'));
+  assert.throws(
+    () => initRun(root, {
+      runtime: 'codex', goal: 'g', detected: {},
+      now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'aix', run: () => ({ code: 1 }),
+    }),
+    { message: 'UNSUPPORTED_RUNTIME_PLATFORM: codex on aix' },
+  );
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
 });
 
 test('CLI init-run classifies malformed session-profile JSON and invalid shapes as exit 1', () => {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
+import { runtimeCapability, sessionRuntime } from './runtime.mjs';
 
 // Task 7 — durable, nonce-bound desktop opt-in (offer/confirm/decline). Each function is a single
 // appendAnchored transaction: fence check FIRST (LEASE_FENCED never swallowed — fail loud), then
@@ -46,6 +47,9 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
     (l) => {
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
+      if (!runtimeCapability(sessionRuntime(l), 'desktop_transport')) {
+        throw new Error('DESKTOP_TRANSPORT_UNSUPPORTED');
+      }
     });
   return { ok: true, nonce: issued };
 }
@@ -102,6 +106,9 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, p
       (l) => {
         const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
         if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);                                                        // ① fence
+        if (!runtimeCapability(sessionRuntime(l), 'desktop_transport')) {
+          throw new Error('DESKTOP_TRANSPORT_UNSUPPORTED');
+        }
         if (platform !== 'darwin' && platform !== 'win32') throw new Error('PLATFORM_UNSUPPORTED: confirmDesktop');       // ② platform guard
         const p = l.autonomy?.spawn_style_optin_pending;
         if (!p || p.nonce !== nonce) throw new Error('NONCE_INVALID: confirmDesktop');                                    // ③ nonce

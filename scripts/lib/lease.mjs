@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { contentHash, ulid } from './envelope.mjs';
-import { runtimeFence } from './runtime.mjs';
+import { runtimeCapability, runtimeFence } from './runtime.mjs';
 import { runDir, writeState, withReconciledMutationLock } from './state.mjs';
 import { nextAction } from './next-action.mjs';
 import { projectRootDigest } from './project-root.mjs';
@@ -186,6 +186,7 @@ export function acquireLease(root, runId, {
   runtime,
   now,
   clock = Date.now,
+  platform = process.platform,
   attemptId = null,
   // 라이브러리 테스트 전용 ingress (spec §3.2 노트 7·8, §11-12). CLI 는 어느 쪽도 노출하지 않는다.
   __testPreCheckSeam,
@@ -207,6 +208,13 @@ export function acquireLease(root, runId, {
     // runtimeFence 가 만든 객체를 그대로 복원한다 — `generation`도 `kernel_exit_code`도 없는 유일한 형태다.
     if (!runtimeResult.ok) throw acquireHalt(contractFields(runtimeResult));
     const lease = data.session_chain.lease;
+    if (!runtimeCapability(runtime, 'supported_platforms').includes(platform)) {
+      throw acquireHalt(contractFields({
+        ok: false,
+        reason: 'UNSUPPORTED_RUNTIME_PLATFORM',
+        generation: lease.generation,
+      }));
+    }
     // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {
       // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
