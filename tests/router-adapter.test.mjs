@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 import { locateDeepModelRouter } from '../scripts/lib/locate-deep-model-router.mjs';
 import {
   attachRoutingToDescriptor,
@@ -14,7 +14,22 @@ import {
   translateRouteOutcome,
 } from '../scripts/lib/router-adapter.mjs';
 
-const ROUTER_CLI = '/Users/sungmin/Dev/claude-plugins/deep-model-router/skills/model-router/scripts/route_task.py';
+function existingRouterCli() {
+  const sibling = '/Users/sungmin/Dev/claude-plugins/deep-model-router/skills/model-router/scripts/route_task.py';
+  for (const candidate of [process.env.DEEP_MODEL_ROUTER_CLI, sibling]) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function writeSourceCheckoutCli(home) {
+  const cli = join(home, 'claude-plugins', 'deep-model-router', 'skills', 'model-router', 'scripts', 'route_task.py');
+  mkdirSync(dirname(cli), { recursive: true });
+  writeFileSync(cli, '#!/usr/bin/env python3\n');
+  chmodSync(cli, 0o755);
+  return cli;
+}
+
 const POLICY_A = 'a'.repeat(64);
 const POLICY_B = 'b'.repeat(64);
 
@@ -43,11 +58,13 @@ function outcome(partial) {
 }
 
 test('locator: DEEP_MODEL_ROUTER_CLI hits an injected route_task.py including a source checkout', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dl-loc-home-'));
+  const cli = writeSourceCheckoutCli(home);
   const found = locateDeepModelRouter({
-    env: { DEEP_MODEL_ROUTER_CLI: ROUTER_CLI },
-    home: mkdtempSync(join(tmpdir(), 'dl-loc-home-')),
+    env: { DEEP_MODEL_ROUTER_CLI: cli },
+    home,
   });
-  assert.equal(found, resolve(ROUTER_CLI));
+  assert.equal(found, realpathSync(cli));
 });
 
 test('locator: DEEP_MODEL_ROUTER_ROOT accepts only an installed/cache plugin root', () => {
@@ -63,7 +80,7 @@ test('locator: DEEP_MODEL_ROUTER_ROOT accepts only an installed/cache plugin roo
   assert.equal(found, realpathSync(cli));
 });
 
-test('locator: DEEP_MODEL_ROUTER_ROOT rejects source checkout, relative sibling, and personal tree', () => {
+test('locator: DEEP_MODEL_ROUTER_ROOT rejects source checkout, relative sibling, and personal tree', (t) => {
   const home = mkdtempSync(join(tmpdir(), 'dl-loc-root-bad-'));
   const sourceRoot = join(home, 'claude-plugins', 'deep-model-router');
   const sourceCli = join(sourceRoot, 'skills', 'model-router', 'scripts', 'route_task.py');
@@ -83,7 +100,9 @@ test('locator: DEEP_MODEL_ROUTER_ROOT rejects source checkout, relative sibling,
   writeFileSync(personal, '# personal\n');
   const aliasRoot = join(home, 'alias-root');
   mkdirSync(join(aliasRoot, 'skills', 'model-router', 'scripts'), { recursive: true });
-  symlinkSync(personal, join(aliasRoot, 'skills', 'model-router', 'scripts', 'route_task.py'));
+  if (!createFileSymlinkOrSkip(t, personal, join(aliasRoot, 'skills', 'model-router', 'scripts', 'route_task.py'))) {
+    return;
+  }
   assert.equal(locateDeepModelRouter({
     env: { DEEP_MODEL_ROUTER_ROOT: aliasRoot },
     home,
@@ -169,7 +188,7 @@ for (const row of EXIT_CASES) {
 test('adapter: missing CLI / python3 / non-JSON / unsupported schema / digest mismatch / signal map to the exit-2 consumer path', () => {
   const cases = [
     outcome({ exit: 0, stdout: '', stderr: '', cliPath: false, python3Available: true }),
-    outcome({ exit: 0, stdout: '', stderr: '', cliPath: ROUTER_CLI, python3Available: false }),
+    outcome({ exit: 0, stdout: '', stderr: '', cliPath: '/tmp/route_task.py', python3Available: false }),
     outcome({ exit: 0, stdout: 'not-json', stderr: '' }),
     outcome({ exit: 0, stdout: JSON.stringify(decision({ route_schema_version: 2 })), stderr: '' }),
     outcome({
@@ -315,12 +334,17 @@ test('attachRoutingToDescriptor threads selected model/effort onto a spawn descr
   assert.equal(attached.routing_provenance, 'router');
 });
 
-test('adapter: live DEEP_MODEL_ROUTER_CLI LOW route is dispatchable and freezes identity fields', () => {
+test('adapter: live DEEP_MODEL_ROUTER_CLI LOW route is dispatchable and freezes identity fields', (t) => {
+  const routerCli = existingRouterCli();
+  if (!routerCli) {
+    t.skip('local deep-model-router checkout is not present');
+    return;
+  }
   const cli = locateDeepModelRouter({
-    env: { ...process.env, DEEP_MODEL_ROUTER_CLI: ROUTER_CLI },
+    env: { ...process.env, DEEP_MODEL_ROUTER_CLI: routerCli },
     home: mkdtempSync(join(tmpdir(), 'dl-live-home-')),
   });
-  assert.equal(cli, resolve(ROUTER_CLI));
+  assert.equal(cli, realpathSync(routerCli));
   const dir = mkdtempSync(join(tmpdir(), 'dl-live-req-'));
   const request = {
     route_schema_version: 1,
@@ -338,7 +362,7 @@ test('adapter: live DEEP_MODEL_ROUTER_CLI LOW route is dispatchable and freezes 
   const spawned = spawnSync(process.env.PYTHON || 'python3', [cli, '--request-json', reqPath, '--format', 'json'], {
     encoding: 'utf8',
     timeout: 20000,
-    env: { ...process.env, DEEP_MODEL_ROUTER_CLI: ROUTER_CLI },
+    env: { ...process.env, DEEP_MODEL_ROUTER_CLI: routerCli },
   });
   const translated = translateRouteOutcome({
     exit: spawned.status,
