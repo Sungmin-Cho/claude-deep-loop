@@ -36,14 +36,14 @@ test('plugin manifest is installable-shaped', () => {
   if ('repository' in m) assert.equal(typeof m.repository, 'string', 'repository must be a string URL, not an object');
 });
 
-test('release metadata uses version 1.16.1 across both hosts and npm', () => {
+test('release metadata uses version 1.17.0 across both hosts and npm', () => {
   const claude = readJson('.claude-plugin/plugin.json');
   const codex = readJson('.codex-plugin/plugin.json');
   const pkg = readJson('package.json');
 
-  assert.equal(claude.version, '1.16.1');
-  assert.equal(codex.version, '1.16.1');
-  assert.equal(pkg.version, '1.16.1');
+  assert.equal(claude.version, '1.17.0');
+  assert.equal(codex.version, '1.17.0');
+  assert.equal(pkg.version, '1.17.0');
 });
 
 test('durable run schema is pinned at 0.4.0 independently of the release version', () => {
@@ -81,7 +81,7 @@ test('Codex manifest preserves its skill and interface contract', () => {
   });
 });
 
-test('both manifests advertise Claude Code, Codex CLI/App, and native Windows support', () => {
+test('both manifests advertise Claude Code, Codex CLI/App, Grok CLI, and native Windows support', () => {
   const manifests = [
     ['Claude', readJson('.claude-plugin/plugin.json')],
     ['Codex', readJson('.codex-plugin/plugin.json')],
@@ -91,8 +91,9 @@ test('both manifests advertise Claude Code, Codex CLI/App, and native Windows su
     assert.match(manifest.description, /Claude Code/i, `${host} description must mention Claude Code`);
     assert.match(manifest.description, /Codex CLI/i, `${host} description must mention Codex CLI`);
     assert.match(manifest.description, /Codex App/i, `${host} description must mention Codex App`);
+    assert.match(manifest.description, /Grok CLI/i, `${host} description must mention Grok CLI`);
     assert.match(manifest.description, /Windows/i, `${host} description must mention Windows`);
-    for (const keyword of ['claude-code', 'codex-cli', 'codex-app', 'windows']) {
+    for (const keyword of ['claude-code', 'codex-cli', 'codex-app', 'grok-cli', 'windows']) {
       assert.ok(manifest.keywords.includes(keyword), `${host} keywords must include ${keyword}`);
     }
   }

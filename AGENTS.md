@@ -1,10 +1,10 @@
 # deep-loop — Agent Guide
 
-Loop Engineering control plane over the deep-suite. A 2-plane Claude Code / Codex
-plugin that discovers work, routes it to sibling `deep-*` plugins as maker/checker
-episodes, keeps durable lock-safe loop state, and hands off to fresh sessions
-autonomously — keeping the human in the verification loop, never in the cycle
-between steps.
+Loop Engineering control plane over the deep-suite. A 2-plane Claude Code / Codex /
+Grok CLI plugin that discovers work, routes it to sibling `deep-*` plugins as
+maker/checker episodes, keeps durable lock-safe loop state, and hands off to
+fresh sessions autonomously — keeping the human in the verification loop, never
+in the cycle between steps. Grok is an attended Darwin session runtime only.
 
 Both hosts read this file; it is the single source and carries no `@`-import of its
 own, because Codex does not support them. It guides agents working **on** this
@@ -42,8 +42,9 @@ The kernel **never calls sibling skills as functions**. It returns descriptors
 (`next-action`, `adapter resolve`, `review dispatch`) and the Execution-plane LLM
 performs the dispatch — `Skill()`, or a runtime-selected measured headless
 subprocess: **Claude** uses bounded `claude -p` JSON, approved **Codex** uses
-shell-free `codex exec --json` with incremental JSONL. There is no cross-runtime
-fallback.
+shell-free `codex exec --json` with incremental JSONL. **Grok** has no measured
+headless path. There is no cross-runtime fallback. Grok compact is unsupported
+(plugin matcher `"*"` did not fire on measured Grok 1.0.4).
 
 New runs use `workstream-session` with interactive same-conversation affinity until
 the bound Workstream's first terminal event. Attended launch requires explicit

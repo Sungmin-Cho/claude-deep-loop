@@ -5,6 +5,25 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.17.0] — 2026-08-17
+
+### Added
+
+- **Grok CLI를 attended Darwin session runtime으로 추가했다.** `SESSION_RUNTIMES`에 `'grok'`을
+  넣고 능력 행은 Darwin-only, `measured_headless: false`, `session_effort_allowed: 'none'`이다.
+  공개 enum은 게이트·스킬과 같은 릴리스에서 켜진다. Linux/Windows grok, desktop, 측정 헤드리스는
+  코드가 거부한다. 매니페스트 description/keywords에 Grok CLI를 넣었다.
+
+### Changed
+
+- **Grok compact is unsupported.** The Claude-cache-loaded deep-loop plugin hook with matcher `"*"` did not fire on measured Grok 1.0.4 PreCompact/PostCompact, so emit+observe stay closed and SessionStart restore is not opened.
+
+### Notes
+
+- **다운그레이드:** 1.17 grok run을 1.16.1 커널이 읽으면 `validateSessionRuntime` / 스키마 enum에서
+  fail-stop한다. 기존 claude/codex run은 enum 확장만으로 읽힌다. 스키마 버전은 `0.4.0` 유지
+  (새 required durable 필드 없음).
+
 ## [1.16.1] — 2026-08-15
 
 ### Changed

@@ -2,11 +2,11 @@
 
 # deep-loop
 
-**Claude Code와 Codex용 내구성 있는 오케스트레이션 플러그인** — 엄격한 2-plane 아키텍처, 예산 강제, proposal-only 안전 불변식으로 멀티세션·크로스플러그인 엔지니어링 작업을 조율합니다.
+**Claude Code, Codex, Grok CLI용 내구성 있는 오케스트레이션 플러그인** — 엄격한 2-plane 아키텍처, 예산 강제, proposal-only 안전 불변식으로 멀티세션·크로스플러그인 엔지니어링 작업을 조율합니다.
 
 ## 개요
 
-deep-loop는 독립 실행 가능한(standalone/독립) Claude Code / Codex 플러그인으로, 내구성 있는 "루프"를 실행합니다 — 여러 LLM 세션에 걸친 발견(discovery), 트리아지(triage), 제작(make), 리뷰(review), 통합(integrate)의 구조화된 순서입니다. deep-suite(deep-work, deep-review, deep-wiki, deep-memory) 없이도 독립 동작하며, 있으면 오케스트레이션 레이어로 활용됩니다.
+deep-loop는 독립 실행 가능한(standalone/독립) Claude Code / Codex / Grok CLI 플러그인으로, 내구성 있는 "루프"를 실행합니다 — 여러 LLM 세션에 걸친 발견(discovery), 트리아지(triage), 제작(make), 리뷰(review), 통합(integrate)의 구조화된 순서입니다. deep-suite(deep-work, deep-review, deep-wiki, deep-memory) 없이도 독립 동작하며, 있으면 오케스트레이션 레이어로 활용됩니다.
 
 **Proposal-only** 범위는 push, PR, merge, publish, delete, marketplace/deep-suite sync를 모두 포함하며, 실행 전 각각 **별도 사람 승인(human approval)**이 필요합니다. 설치 안내는 이 저장소가 이미 릴리스·마켓플레이스 동기화되었다는 뜻이 아닙니다.
 
@@ -40,7 +40,7 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 | `/deep-loop-ack` | `$deep-loop:deep-loop-ack` | 사람 리뷰 확인 및 comprehension debt 감소 |
 | `/deep-loop-finish` | `$deep-loop:deep-loop-finish` | settled 검증, final-report 작성, run 종료 |
 
-> 참고: `/deep-loop-workflow`는 `/deep-loop-continue` 등이 내부적으로 사용하는 비공개(user-invocable:false) 스킬입니다.
+> 참고: `/deep-loop-workflow`는 `/deep-loop-continue` 등이 내부적으로 사용하는 비공개(user-invocable:false) 스킬입니다. Grok CLI는 Claude Code와 같은 `/deep-loop…` 슬래시 명령을 사용합니다.
 
 ## Multi-run identity와 worktree 라우팅
 
@@ -62,6 +62,8 @@ node "<absolute-deep-loop-root>/scripts/hooks-impl/drive-headless.mjs" --project
 ## 호환성 및 복구 계약
 
 새 run은 Claude Code, Codex CLI, Codex App 모두 `workstream-session`과 `spawn_style='interactive'`로 시작합니다. active host conversation은 정확한 `bound_workstream_first_terminal` 이벤트까지 하나의 bound Workstream을 소유합니다. compaction은 그 대화 안에서 처리하고, normal child handoff는 first-terminal 경계에서만 발행합니다. **No unattended mid-Workstream respawn**이 계약입니다. 따라서 기본 연속성은 interactive이고 `/deep-loop-resume` 또는 `$deep-loop:deep-loop-resume`을 이용한 **manual resume**은 오류 전용 폴백이 아닌 일급 지원 경로입니다.
+
+Grok CLI는 **attended Darwin-only** session runtime입니다. 새 grok run도 macOS에서 `workstream-session`과 `spawn_style='interactive'`를 쓰며, Linux·Windows·desktop·측정 헤드리스는 거부됩니다. **Grok compact is unsupported.** The Claude-cache-loaded deep-loop plugin hook with matcher `"*"` did not fire on measured Grok 1.0.4 PreCompact/PostCompact, so emit+observe stay closed and SessionStart restore is not opened. **다운그레이드:** 1.17 grok run을 1.16.1 커널이 읽으면 `validateSessionRuntime` / 스키마 enum에서 fail-stop합니다. 기존 claude/codex run은 그대로 읽힙니다. durable schema는 `0.4.0`입니다.
 
 PreCompact는 bounded checkpoint를 발행하고 source/matcher가 `compact`인 SessionStart가 **host-mediated restore**를 수행합니다. restore liveness의 주체는 host이며 hook은 emit-only, best-effort이고 세션을 생성하지 않습니다. **Provider identity is optional** when the host has no stable identity; 제공되면 digest가 일치해야 합니다. missing or untrusted hook은 무조건 pause한다는 뜻이 아니라 조건부로 처리됩니다. 명시적인 trusted-evidence rejection이 없으면 restore가 fresh state를 읽고, 그 owner session의 same owner와 generation 및 open bound Workstream affinity를 입증할 때만 state-derived continuation을 계속할 수 있습니다. Otherwise restore는 durable lease에 preserve-pause를 적용하고 같은 manual resume 경로를 사용합니다. 명시적인 trusted `provider-evidence-mismatch` 또는 `checkpoint-unavailable-with-trusted-evidence` 결과는 곧바로 이 preserve-pause 경로를 따릅니다. 격리 headless driver도 Workstream 경계 뒤에서만 계속할 수 있고 usage 측정 불가 시 fail-closed합니다.
 
@@ -170,6 +172,7 @@ payload(`insights_schema_version`은 `1` 유지 — 아래는 additive 필드)�
 | Claude Code | 배포되지 않은 로컬 변경에는 `claude --plugin-dir /absolute/path/to/deep-loop`를 사용합니다. pin 된 릴리스에는 `/plugin marketplace add Sungmin-Cho/claude-deep-suite`와 `/plugin install deep-loop@claude-deep-suite`를 사용합니다. | **new session**을 시작합니다. |
 | Codex CLI | 아래 결합 설치 단계 둘 다 완료한 뒤 `/plugins`를 엽니다. | **new task/session**을 시작하고 `/plugins`에서 확인합니다. |
 | Codex App | 같은 결합 설치를 완료합니다. ChatGPT desktop app에서 **Work or Codex**를 선택하고 **Plugins**를 연 뒤 deep-loop를 선택합니다. 연속성은 `workstream-session`을 사용합니다. | **restart the App** 후 **new task**를 시작합니다. |
+| Grok CLI | Attended Darwin only. Grok 1.0.4는 Claude-cache-loaded plugin을 발견하며 `.grok-plugin` 매니페스트는 없습니다. 캐시 엔트리를 위해 `claude --plugin-dir /absolute/path/to/deep-loop` 또는 pin된 Claude marketplace 설치를 사용한 뒤 새 Grok session을 시작합니다. | 새 Grok session을 시작합니다. |
 
 Codex 개인 설치는 대안 선택이 아니라 하나의 결합 작업입니다. 먼저 저장소를 공식 현재 개인 플러그인 디렉터리 `~/.codex/plugins/deep-loop`에 copy/place하고, 이어서 로컬 개인 마켓플레이스 `~/.agents/plugins/marketplace.json`의 해당 엔트리를 추가·수정해 `source.path`를 `"./.codex/plugins/deep-loop"`로 설정합니다. 두 단계가 모두 필요합니다. **ChatGPT desktop app: select Work or Codex, then open Plugins.**
 
@@ -186,6 +189,7 @@ Windows의 결합 경로는 `%USERPROFILE%\.codex\plugins\deep-loop`와 `%USERPR
 | Codex CLI, macOS/Linux | 전체 | `workstream-session` — first-terminal 경계까지 affinity 유지 | 명시적으로 승인된 runtime을 이용한 터미널/tmux 실행 | `$deep-loop:deep-loop-resume`을 통한 **공식 지원 경로** | 경계 뒤 격리 `codex exec --json` | trust review 후 플러그인 lifecycle hook; 버전 의존·우아한 부재 |
 | Codex CLI, native Windows | 전체 | `workstream-session` — first-terminal 경계까지 affinity 유지 | 명시적으로 승인된 Windows Terminal/PowerShell 실행 | `$deep-loop:deep-loop-resume`을 통한 **공식 지원 경로** | 경계 뒤 격리·신뢰 `codex.exe`, 아니면 fail-closed | trust review 후 플러그인 lifecycle hook; 버전 의존·우아한 부재 |
 | Codex App | install/discovery와 in-task execution | `workstream-session` — first-terminal 경계에서만 수동 task 변경 | 수동 새 task만 | 새 task를 열고 `$deep-loop:deep-loop-resume`을 실행하는 **공식 지원 경로** | 경계 뒤 선택적 격리 `codex exec` 드라이버 | trust review 후 플러그인 lifecycle hook; 버전 의존·우아한 부재, App smoke pending |
+| Grok CLI, macOS | 전체 (attended) | `workstream-session` — first-terminal 경계까지 같은 대화; compact 미지원 | 승인된 Darwin 터미널/tmux에서 trusted grok runtime 실행 | `/deep-loop-resume`를 통한 **공식 지원 경로** | 미지원 — no measured headless | 미지원 — plugin hook matcher `"*"` 미기동 |
 
 `workstream-session` continuation policy는 모든 host에 적용됩니다. attended run은 first-terminal 경계까지 interactive 동일 대화 작업이 기본입니다. unattended run은 측정형 headless 실행을 유지하지만 Workstream 중간에는 rotate하지 않습니다. manual resume은 오류 발생 시에만 쓰는 fallback이 아니라 일급 공식 지원 경로입니다.
 

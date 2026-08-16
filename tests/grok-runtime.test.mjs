@@ -43,6 +43,7 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { detectPlugins } from '../scripts/lib/detect.mjs';
 import { approveAttendedLaunch } from '../scripts/lib/attended-launch.mjs';
+import { validate } from '../scripts/lib/schema.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 import { canonicalRealpath, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
@@ -967,6 +968,41 @@ test('T-skills: slash≠Claude; Path M/V; grok never Step 1a / --worktree; compa
   const detectSrc = readFileSync(join(ROOT, 'scripts/lib/detect.mjs'), 'utf8');
   assert.match(detectSrc, /join\('\.grok', 'installed-plugins'\)/);
   assert.doesNotMatch(detectSrc, /marketplace-cache/);
+});
+
+// ── T-down ──────────────────────────────────────────────────────────────────
+
+test('T-down: a 1.17 grok fixture fail-stops on a 1.16 validateSessionRuntime and schema enum copy', () => {
+  const { root, runId } = seedGrok();
+  const loop = JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
+  assert.equal(loop.autonomy.session_runtime, 'grok');
+  assert.equal(loop.autonomy.runtime_source, 'skill-asserted');
+  assert.equal(validateSessionRuntime(loop.autonomy.session_runtime), 'grok');
+  const current = validate(loop);
+  assert.equal(current.ok, true, current.errors.join('; '));
+
+  const SESSION_RUNTIMES_1_16 = Object.freeze(['claude', 'codex']);
+  function validateSessionRuntime116(value) {
+    if (!SESSION_RUNTIMES_1_16.includes(value)) {
+      throw new Error(`INVALID_RUNTIME: expected claude or codex, got ${String(value)}`);
+    }
+    return value;
+  }
+  assert.throws(
+    () => validateSessionRuntime116(loop.autonomy.session_runtime),
+    { message: 'INVALID_RUNTIME: expected claude or codex, got grok' },
+  );
+
+  const schema = JSON.parse(readFileSync(join(ROOT, 'schemas/loop-run.schema.json'), 'utf8'));
+  assert.deepEqual(schema.enums['autonomy.session_runtime'], ['claude', 'codex', 'grok']);
+  const schema116 = structuredClone(schema);
+  schema116.enums['autonomy.session_runtime'] = ['claude', 'codex'];
+  const down = validate(loop, schema116);
+  assert.equal(down.ok, false);
+  assert.ok(
+    down.errors.includes('invalid enum at autonomy.session_runtime: grok'),
+    down.errors.join('; '),
+  );
 });
 
 test('T-skills detect: ~/.grok/installed-plugins is scanned and marketplace-cache is not', () => {

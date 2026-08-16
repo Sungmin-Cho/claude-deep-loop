@@ -2,11 +2,11 @@
 
 # deep-loop
 
-**Durable orchestration plugin for Claude Code and Codex** — coordinates multi-session, cross-plugin engineering work with a strict 2-plane architecture, budget enforcement, and proposal-only safety invariants.
+**Durable orchestration plugin for Claude Code, Codex, and Grok CLI** — coordinates multi-session, cross-plugin engineering work with a strict 2-plane architecture, budget enforcement, and proposal-only safety invariants.
 
 ## Overview
 
-deep-loop is a standalone Claude Code / Codex plugin that runs durable "loops" — structured sequences of discovery, triage, make, review, and integrate across multiple LLM sessions. It can operate independently or as the orchestration layer on top of the deep-suite (deep-work, deep-review, deep-wiki, deep-memory).
+deep-loop is a standalone Claude Code / Codex / Grok CLI plugin that runs durable "loops" — structured sequences of discovery, triage, make, review, and integrate across multiple LLM sessions. It can operate independently or as the orchestration layer on top of the deep-suite (deep-work, deep-review, deep-wiki, deep-memory).
 
 **Proposal-only** means push, PR, merge, publish, delete, and marketplace/deep-suite sync all require separate **human approval** before execution. Installation does not imply that this repository has been released or synchronized to either marketplace.
 
@@ -49,7 +49,7 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 | `/deep-loop-ack` | `$deep-loop:deep-loop-ack` | Marks a human-reviewed episode and reduces comprehension debt |
 | `/deep-loop-finish` | `$deep-loop:deep-loop-finish` | Verifies settled episodes, writes the final report, and finishes the run |
 
-> Note: `/deep-loop-workflow` is an internal non-user-invocable skill used by `/deep-loop-continue` and other skills.
+> Note: `/deep-loop-workflow` is an internal non-user-invocable skill used by `/deep-loop-continue` and other skills. Grok CLI uses the same `/deep-loop…` slash commands as Claude Code.
 
 ## Multi-run identity and worktree routing
 
@@ -71,6 +71,8 @@ node "<absolute-deep-loop-root>/scripts/hooks-impl/drive-headless.mjs" --project
 ## Compatibility and recovery contract
 
 New runs use `workstream-session` with `spawn_style='interactive'` on Claude Code, Codex CLI, and Codex App. The active host conversation owns one bound Workstream until its exact `bound_workstream_first_terminal` event; compaction stays in that conversation, and only that first-terminal boundary may publish a normal child handoff. There is **no unattended mid-Workstream respawn**. The default continuation is interactive, and **manual resume** through `/deep-loop-resume` or `$deep-loop:deep-loop-resume` is a first-class supported path rather than an error-only fallback.
+
+Grok CLI is an **attended Darwin-only** session runtime: new grok runs also use `workstream-session` with `spawn_style='interactive'` on macOS, and Linux, Windows, desktop, and measured headless are rejected. **Grok compact is unsupported.** The Claude-cache-loaded deep-loop plugin hook with matcher `"*"` did not fire on measured Grok 1.0.4 PreCompact/PostCompact, so emit+observe stay closed and SessionStart restore is not opened. **Downgrade:** a 1.17 grok run fail-stops on a 1.16.1 kernel at `validateSessionRuntime` / the schema enum; existing claude/codex runs remain readable. The durable schema stays `0.4.0`.
 
 PreCompact publishes a bounded checkpoint and SessionStart with source/matcher `compact` performs **host-mediated restore**. Restore liveness belongs to the host: the hook is emit-only, best-effort, and never creates a session. **Provider identity is optional** when the host supplies no stable identity; when present, its digest must match. A missing or untrusted hook is conditional, not an unconditional pause: without an explicit trusted-evidence rejection, restore reads fresh state; if it proves the same owner and generation with an open bound Workstream affinity in that owner session, state-derived continuation may proceed. Otherwise restore uses preserve-pause for the durable lease and the same manual resume path. An explicit trusted `provider-evidence-mismatch` or `checkpoint-unavailable-with-trusted-evidence` result takes that preserve-pause path directly. The isolated headless driver may continue only after the Workstream boundary and still fails closed on unmeasurable usage.
 
@@ -187,6 +189,7 @@ The marketplace entries may be synchronized only after merge and separate approv
 | Claude Code | Use `claude --plugin-dir /absolute/path/to/deep-loop` for unreleased local changes. For the pinned release, use `/plugin marketplace add Sungmin-Cho/claude-deep-suite` and `/plugin install deep-loop@claude-deep-suite`. | Start a new session. |
 | Codex CLI | Complete both coupled local-install steps below, then open `/plugins`. | Start a new task/session and verify it in `/plugins`. |
 | Codex App | Complete the same coupled install. In the ChatGPT desktop app, select **Work or Codex**, open **Plugins**, and select deep-loop; continuation uses `workstream-session`. | **Restart the App**, then start a new task. |
+| Grok CLI | Attended Darwin only. Grok 1.0.4 discovers the Claude-cache-loaded plugin; there is no `.grok-plugin` manifest. Use `claude --plugin-dir /absolute/path/to/deep-loop` or the pinned Claude marketplace install so the cache entry is present, then start a new Grok session. | Start a new Grok session. |
 
 The Codex personal install is one coupled operation, not alternatives: first copy/place this repository at the official current personal plugin directory `~/.codex/plugins/deep-loop`; then add or update its entry in the local personal marketplace `~/.agents/plugins/marketplace.json` with `source.path` set to `"./.codex/plugins/deep-loop"`. Both steps are required. In the ChatGPT desktop app: select **Work or Codex**, then open **Plugins**.
 
@@ -203,6 +206,7 @@ Codex App install/discovery and in-task skill execution are supported by the plu
 | Codex CLI, macOS/Linux | Full | `workstream-session` — keep affinity until the first-terminal boundary | Explicitly approved terminal/tmux launch using the trusted runtime | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated `codex exec --json` after the boundary only | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
 | Codex CLI, native Windows | Full | `workstream-session` — keep affinity until the first-terminal boundary | Explicitly approved Windows Terminal/PowerShell launch | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated trusted `codex.exe` after the boundary; otherwise fail-closed | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
 | Codex App | Install/discovery and in-task execution | `workstream-session` — manual task change only at the first-terminal boundary | Manual new task only | **Officially supported** by opening a new task, then `$deep-loop:deep-loop-resume` | Optional isolated `codex exec` driver after the boundary | Plugin lifecycle hooks after trust review; version-dependent, graceful absence; App smoke pending |
+| Grok CLI, macOS | Full (attended) | `workstream-session` — same conversation until the first-terminal boundary; compact unsupported | Explicitly approved Darwin terminal/tmux launch using the trusted grok runtime | **Officially supported** via `/deep-loop-resume` | Unsupported — no measured headless | Unsupported — plugin hook matcher `"*"` did not fire |
 
 The `workstream-session` continuation policy applies on every host. An attended run defaults to interactive same-conversation work until the first-terminal boundary; unattended runs retain measured headless execution but cannot rotate mid-Workstream. Manual resume is a first-class supported path, not only an error fallback.
 
