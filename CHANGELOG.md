@@ -5,7 +5,7 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
-## [1.17.0] — 2026-08-17
+## [1.18.0] — 2026-08-17
 
 ### Added
 
@@ -20,9 +20,22 @@ All notable changes to deep-loop are documented in this file.
 
 ### Notes
 
-- **다운그레이드:** 1.17 grok run을 1.16.1 커널이 읽으면 `validateSessionRuntime` / 스키마 enum에서
+- **다운그레이드:** 1.18 grok run을 1.17.0 커널이 읽으면 `validateSessionRuntime` / 스키마 enum에서
   fail-stop한다. 기존 claude/codex run은 enum 확장만으로 읽힌다. 스키마 버전은 `0.4.0` 유지
   (새 required durable 필드 없음).
+
+## [1.17.0] — 2026-08-17
+
+### Added
+
+- **새 episode 경계에서 suite model-router 결정을 freeze한다.** live route는 새 episode가
+  열릴 때만 호출하고, resume·checker·fix_episode는 이전 freeze를 복사한다. authority는
+  로컬 floor와의 monotonic merge이며, router exit 3/4는 degrade하지 않는다.
+
+### Fixed
+
+- **Windows resume 테스트가 fixture platform을 유지한다.** respawn이 `process.platform`을
+  그대로 쓰면 win32에서 `runtime-identity-unavailable`로 실패하던 CI 칸을 고친다.
 
 ## [1.16.1] — 2026-08-15
 

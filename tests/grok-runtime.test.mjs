@@ -972,7 +972,7 @@ test('T-skills: slash≠Claude; Path M/V; grok never Step 1a / --worktree; compa
 
 // ── T-down ──────────────────────────────────────────────────────────────────
 
-test('T-down: a 1.17 grok fixture fail-stops on a 1.16 validateSessionRuntime and schema enum copy', () => {
+test('T-down: a 1.18 grok fixture fail-stops on a 1.17 validateSessionRuntime and schema enum copy', () => {
   const { root, runId } = seedGrok();
   const loop = JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
   assert.equal(loop.autonomy.session_runtime, 'grok');
@@ -981,23 +981,23 @@ test('T-down: a 1.17 grok fixture fail-stops on a 1.16 validateSessionRuntime an
   const current = validate(loop);
   assert.equal(current.ok, true, current.errors.join('; '));
 
-  const SESSION_RUNTIMES_1_16 = Object.freeze(['claude', 'codex']);
-  function validateSessionRuntime116(value) {
-    if (!SESSION_RUNTIMES_1_16.includes(value)) {
+  const SESSION_RUNTIMES_1_17 = Object.freeze(['claude', 'codex']);
+  function validateSessionRuntime117(value) {
+    if (!SESSION_RUNTIMES_1_17.includes(value)) {
       throw new Error(`INVALID_RUNTIME: expected claude or codex, got ${String(value)}`);
     }
     return value;
   }
   assert.throws(
-    () => validateSessionRuntime116(loop.autonomy.session_runtime),
+    () => validateSessionRuntime117(loop.autonomy.session_runtime),
     { message: 'INVALID_RUNTIME: expected claude or codex, got grok' },
   );
 
   const schema = JSON.parse(readFileSync(join(ROOT, 'schemas/loop-run.schema.json'), 'utf8'));
   assert.deepEqual(schema.enums['autonomy.session_runtime'], ['claude', 'codex', 'grok']);
-  const schema116 = structuredClone(schema);
-  schema116.enums['autonomy.session_runtime'] = ['claude', 'codex'];
-  const down = validate(loop, schema116);
+  const schema117 = structuredClone(schema);
+  schema117.enums['autonomy.session_runtime'] = ['claude', 'codex'];
+  const down = validate(loop, schema117);
   assert.equal(down.ok, false);
   assert.ok(
     down.errors.includes('invalid enum at autonomy.session_runtime: grok'),

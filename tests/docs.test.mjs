@@ -205,7 +205,7 @@ test('user docs publish the compatibility, authorization, recovery, and WAL cont
   }
 });
 
-test('user docs publish the Grok attended-Darwin contract, closed compact, and 1.16.1 downgrade', () => {
+test('user docs publish the Grok attended-Darwin contract, closed compact, and 1.17.0 downgrade', () => {
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');
     const grokRow = source.split('\n').find(candidate => candidate.startsWith('| Grok CLI, macOS |'));
@@ -219,8 +219,8 @@ test('user docs publish the Grok attended-Darwin contract, closed compact, and 1
       `${path} must publish the Task 3 compact-off sentence`);
     assert.match(source, /matcher `"\*"`.{0,160}did not fire on measured Grok 1\.0\.4/i,
       `${path} must cite the measured matcher no-fire`);
-    assert.match(source, /1\.17[\s\S]{0,80}grok[\s\S]{0,200}1\.16\.1[\s\S]{0,160}validateSessionRuntime/i,
-      `${path} must publish the 1.17→1.16.1 grok fail-stop`);
+    assert.match(source, /1\.18[\s\S]{0,80}grok[\s\S]{0,200}1\.17\.0[\s\S]{0,160}validateSessionRuntime/i,
+      `${path} must publish the 1.18→1.17.0 grok fail-stop`);
     assert.match(source, /fail-stop/i, `${path} must say grok downgrade fail-stops`);
   }
 });
