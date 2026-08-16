@@ -101,6 +101,30 @@ test('recordEpisode without --routing keeps current degrade behavior', () => {
   assert.equal(Object.hasOwn(ep, 'routing'), false);
 });
 
+test('newEpisode rejects maker create-time routing; recordEpisode rejects late attach', () => {
+  const { root, runId, fence } = seed();
+  const ws = newWorkstream(root, runId, {
+    title: 'impl', branch: 'impl', worktree: '.claude/worktrees/impl', fence,
+  }).id;
+  writeFileSync(join(root, 'art.txt'), 'x');
+  assert.throws(
+    () => newEpisode(root, runId, {
+      plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+      workstream: ws, expectedArtifacts: ['art.txt'], fence, routing: routingFixture(),
+    }),
+    /EPISODE_ROUTING_ROLE_INVALID/,
+  );
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: ['art.txt'], fence,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence });
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'in_progress', routing: routingFixture(), fence }),
+    /EPISODE_ROUTING_TRANSITION_INVALID/,
+  );
+});
+
 test('recordEpisode rejects a second routing write on the same episode', () => {
   const { root, runId, fence } = seed();
   const { id } = readyMaker(root, runId, fence, { routing: routingFixture() });
@@ -152,6 +176,8 @@ test('recordEpisode rejects routing on a checker; dispatchReview freezes it at c
   assert.equal(checker.role, 'checker');
   assert.equal(checker.status, 'pending');
   assert.deepEqual(checker.routing.decision.policy_sha256, POLICY_A);
+  assert.equal(dispatched.descriptor.selected_model, 'claude-sonnet-5');
+  assert.equal(dispatched.descriptor.selected_effort_native, 'high');
   const created = eventLog(root, runId).filter((event) => event.type === 'episode-new' && event.data.routing);
   assert.equal(created.length, 1);
   assert.throws(
@@ -234,4 +260,7 @@ test('continue SKILL routes after adapter resolve / route A-B-C and will not mar
   assert.match(checker, /Route A\/B\/C[\s\S]+--routing[\s\S]+(?:spawn|Skill|codex exec|review dispatch)/i);
   assert.match(checker, /HIGH|CRITICAL/);
   assert.match(checker, /await_human/);
+  const fix = skill.slice(skill.indexOf('### fix_episode'));
+  assert.match(fix, /target_maker|거절된 maker|prior_maker_routing|routing을 다시 호출하지 않는다|라우터를 다시 호출하지 않는다/);
+  assert.match(fix, /--routing/);
 });

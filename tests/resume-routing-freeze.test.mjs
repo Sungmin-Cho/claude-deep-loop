@@ -100,6 +100,29 @@ test('resolveLaunchProfile consumes frozen episode.routing and never calls the l
   assert.equal(locateCalls, 0);
 });
 
+test('resolveLaunchProfile binds the current episode, not the first routed in_progress', () => {
+  const { root, runId } = seedLauncher();
+  const first = plantInProgressRouting(root, runId);
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const otherWs = newWorkstream(root, runId, {
+    title: 'other', branch: 'other', worktree: '.claude/worktrees/other', fence,
+  }).id;
+  writeFileSync(join(root, 'other.txt'), 'y');
+  const { id: secondId } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: otherWs, expectedArtifacts: ['other.txt'], fence,
+  });
+  recordEpisode(root, runId, secondId, { status: 'in_progress', fence });
+  const after = readState(root, runId).data;
+  assert.equal(after.current_episode, secondId);
+  const unbound = resolveLaunchProfile(after);
+  assert.equal(unbound.source, 'session_profile');
+  assert.equal(unbound.model, 'claude-opus-4-8[1m]');
+  const boundFirst = resolveLaunchProfile(after, { episodeId: first.id });
+  assert.equal(boundFirst.source, 'episode.routing');
+  assert.equal(boundFirst.model, 'claude-sonnet-5');
+});
+
 test('missing episode.routing degrades to session_profile without invoking the locator', () => {
   const { root, runId } = seedLauncher();
   let locateCalls = 0;

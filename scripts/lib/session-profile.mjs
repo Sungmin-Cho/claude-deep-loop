@@ -46,13 +46,10 @@ export function validateRuntimeProfile(runtime, { model = null, effort = null } 
 export function resolveLaunchProfile(loop, { episodeId, locate } = {}) {
   void locate;
   const episodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
-  const selected = episodeId
-    ? episodes.find(episode => episode.id === episodeId)
-    : episodes.find(episode => episode.status === 'in_progress' && episode.routing)
-      || episodes.find(episode => episode.id === loop?.current_episode
-        && episode.routing
-        && (episode.status === 'in_progress' || episode.status === 'done'))
-      || null;
+  const wantedId = episodeId || loop?.current_episode || null;
+  const selected = wantedId
+    ? episodes.find(episode => episode.id === wantedId) || null
+    : null;
   const routing = selected?.routing;
   if (routing && typeof routing.selected_model === 'string' && typeof routing.selected_effort_native === 'string') {
     return {

@@ -82,6 +82,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   if (!kind || typeof kind !== 'string' || !kind.length) throw new Error('EPISODE_INPUT_INVALID: kind');
   if (!point || typeof point !== 'string' || !point.length) throw new Error('EPISODE_INPUT_INVALID: point');
   if (!['pending', 'blocked'].includes(initialStatus)) throw new Error('EPISODE_INPUT_INVALID: initialStatus');
+  if (routing !== undefined && role === 'maker') throw new Error('EPISODE_ROUTING_ROLE_INVALID');
   if (initialStatus === 'blocked' && role !== 'checker') throw new Error('EPISODE_INPUT_INVALID: only checker episodes may start blocked');
   if (initialStatus === 'blocked' && (!blockReason || typeof blockReason !== 'string')) throw new Error('EPISODE_INPUT_INVALID: blockReason');
   if (reviewerResolution !== undefined && (role !== 'checker' || reviewerResolution === null || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
@@ -280,6 +281,7 @@ export function recordEpisode(root, runId, episodeId, {
       if (status !== 'in_progress') throw new Error('EPISODE_ROUTING_STATUS_INVALID');
       if (ep.role !== 'maker') throw new Error('EPISODE_ROUTING_ROLE_INVALID');
       if (Object.hasOwn(ep, 'routing')) throw new Error('EPISODE_ROUTING_FROZEN');
+      if (ep.status !== 'pending') throw new Error('EPISODE_ROUTING_TRANSITION_INVALID');
       assertRoutingDigest(loop, frozenRouting);
     }
     const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';

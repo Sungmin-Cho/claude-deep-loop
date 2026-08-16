@@ -9,6 +9,7 @@ import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
 import { checkerDescriptor } from './adapters.mjs';
+import { attachRoutingToDescriptor } from './router-adapter.mjs';
 import { containedRealFile } from './fs-safe.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { sessionRuntime } from './runtime.mjs';
@@ -528,10 +529,10 @@ export function dispatchReview(root, runId, {
   const { id } = blockedReason
     ? newBlockedCheckerEpisode(root, runId, { ...episodeInput, reason: blockedReason })
     : newEpisode(root, runId, { ...episodeInput, role: 'checker' });
-  const descriptor = {
+  const descriptor = attachRoutingToDescriptor({
     ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
     ...(evidence !== undefined ? { evidence } : {}),
-  };
+  }, routing);
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 

@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
@@ -18,6 +18,27 @@ function isRouteTask(path) {
   } catch {
     return false;
   }
+}
+
+function isInstalledCacheRouteTask(path) {
+  const text = posix(path);
+  return VERSION_RE.test(text)
+    && (text.includes('/.claude/plugins/cache/') || text.includes('/.codex/plugins/'));
+}
+
+function acceptRouteTask(path) {
+  if (isForbiddenRelativeCheckout(path) || isPersonalSkillPath(path) || !isRouteTask(path)) {
+    return null;
+  }
+  let resolved;
+  try {
+    resolved = realpathSync(path);
+  } catch {
+    return null;
+  }
+  if (basename(resolved) !== ROUTE_TASK) return null;
+  if (isForbiddenRelativeCheckout(resolved) || isPersonalSkillPath(resolved)) return null;
+  return resolved;
 }
 
 function isPersonalSkillPath(path) {
@@ -83,18 +104,16 @@ export function locateDeepModelRouter({
   home = homedir(),
   cwd = process.cwd(),
 } = {}) {
-  void cwd;
   const cli = env?.DEEP_MODEL_ROUTER_CLI;
   if (cli) {
-    if (!isForbiddenRelativeCheckout(cli) && !isPersonalSkillPath(cli) && isRouteTask(cli)) {
-      return resolve(cli);
-    }
+    const hit = acceptRouteTask(resolve(cwd || process.cwd(), cli));
+    if (hit) return hit;
   }
 
   const root = env?.DEEP_MODEL_ROUTER_ROOT;
   if (root) {
-    const candidate = join(root, 'skills', 'model-router', 'scripts', ROUTE_TASK);
-    if (isRouteTask(candidate)) return resolve(candidate);
+    const hit = acceptRouteTask(join(root, 'skills', 'model-router', 'scripts', ROUTE_TASK));
+    if (hit && isInstalledCacheRouteTask(hit)) return hit;
   }
 
   const claude = highestCacheHit(join(home, '.claude', 'plugins', 'cache'));

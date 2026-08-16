@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { locateDeepModelRouter } from '../scripts/lib/locate-deep-model-router.mjs';
 import {
+  attachRoutingToDescriptor,
   buildRoutingRecord,
   mayRecordInProgress,
   shouldAttachRouting,
@@ -49,16 +50,44 @@ test('locator: DEEP_MODEL_ROUTER_CLI hits an injected route_task.py including a 
   assert.equal(found, resolve(ROUTER_CLI));
 });
 
-test('locator: DEEP_MODEL_ROUTER_ROOT wins after a missing CLI and does not require cache', () => {
-  const root = mkdtempSync(join(tmpdir(), 'dl-loc-root-'));
+test('locator: DEEP_MODEL_ROUTER_ROOT accepts only an installed/cache plugin root', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dl-loc-home-'));
+  const root = join(home, '.claude', 'plugins', 'cache', 'mkt', 'deep-model-router', '1.2.0');
   const cli = join(root, 'skills', 'model-router', 'scripts', 'route_task.py');
   mkdirSync(dirname(cli), { recursive: true });
   writeFileSync(cli, '#!/usr/bin/env python3\n');
   const found = locateDeepModelRouter({
     env: { DEEP_MODEL_ROUTER_ROOT: root },
-    home: mkdtempSync(join(tmpdir(), 'dl-loc-home-')),
+    home,
   });
-  assert.equal(found, resolve(cli));
+  assert.equal(found, realpathSync(cli));
+});
+
+test('locator: DEEP_MODEL_ROUTER_ROOT rejects source checkout, relative sibling, and personal tree', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dl-loc-root-bad-'));
+  const sourceRoot = join(home, 'claude-plugins', 'deep-model-router');
+  const sourceCli = join(sourceRoot, 'skills', 'model-router', 'scripts', 'route_task.py');
+  mkdirSync(dirname(sourceCli), { recursive: true });
+  writeFileSync(sourceCli, '#!/usr/bin/env python3\n');
+  assert.equal(locateDeepModelRouter({
+    env: { DEEP_MODEL_ROUTER_ROOT: sourceRoot },
+    home,
+  }), null);
+  assert.equal(locateDeepModelRouter({
+    env: { DEEP_MODEL_ROUTER_ROOT: '../deep-model-router' },
+    home,
+    cwd: home,
+  }), null);
+  const personal = join(home, '.claude', 'skills', 'model-router', 'scripts', 'route_task.py');
+  mkdirSync(dirname(personal), { recursive: true });
+  writeFileSync(personal, '# personal\n');
+  const aliasRoot = join(home, 'alias-root');
+  mkdirSync(join(aliasRoot, 'skills', 'model-router', 'scripts'), { recursive: true });
+  symlinkSync(personal, join(aliasRoot, 'skills', 'model-router', 'scripts', 'route_task.py'));
+  assert.equal(locateDeepModelRouter({
+    env: { DEEP_MODEL_ROUTER_ROOT: aliasRoot },
+    home,
+  }), null);
 });
 
 test('locator: missing env and empty caches return null', () => {
@@ -243,6 +272,47 @@ test('adapter: HIGH/CRITICAL failures must not advance in_progress; LOW/MEDIUM m
   const gate = outcome({ exit: 3, stdout: JSON.stringify(decision({ risk_band: 'LOW' })) });
   assert.equal(mayRecordInProgress(gate), false);
   assert.equal(gate.degrade_forbidden, true);
+});
+
+test('adapter: exit 3/4 with empty or non-JSON stdout never degrade', () => {
+  for (const exit of [3, 4]) {
+    for (const stdout of ['', 'not-json', '{"route_schema_version":1,']) {
+      const translated = outcome({ exit, stdout, stderr: '', localBand: 'LOW' });
+      assert.equal(translated.degrade_forbidden, true, `${exit}:${stdout}`);
+      assert.equal(translated.dispatch_authorized, false);
+      assert.equal(mayRecordInProgress(translated), false);
+      assert.ok(translated.status === 'human_gate' || translated.status === 'deferred_confirm', translated.status);
+    }
+  }
+});
+
+test('adapter: only explicit LOW/MEDIUM may degrade; null/unknown/lowercase HIGH block', () => {
+  assert.equal(mayRecordInProgress(outcome({
+    exit: 1, stdout: JSON.stringify(decision({ risk_band: null })),
+  })), false);
+  assert.equal(mayRecordInProgress(outcome({
+    exit: 1, stdout: JSON.stringify(decision({ risk_band: 'UNKNOWN' })),
+  })), false);
+  assert.equal(mayRecordInProgress(outcome({
+    exit: 1, stdout: JSON.stringify(decision({ risk_band: 'high' })),
+  })), false);
+  assert.equal(mayRecordInProgress(outcome({
+    exit: 1, stdout: '', stderr: '', cliPath: false,
+  })), false);
+  assert.equal(mayRecordInProgress(outcome({
+    exit: 1, stdout: JSON.stringify(decision({ risk_band: 'low' })),
+  })), true);
+});
+
+test('attachRoutingToDescriptor threads selected model/effort onto a spawn descriptor', () => {
+  const routing = buildRoutingRecord(
+    { route_schema_version: 1, task_class: 'REVIEW' },
+    decision(),
+  );
+  const attached = attachRoutingToDescriptor({ kind: 'skill', skill: 'deep-review:deep-review-loop' }, routing);
+  assert.equal(attached.selected_model, 'claude-sonnet-5');
+  assert.equal(attached.selected_effort_native, 'high');
+  assert.equal(attached.routing_provenance, 'router');
 });
 
 test('adapter: live DEEP_MODEL_ROUTER_CLI LOW route is dispatchable and freezes identity fields', () => {

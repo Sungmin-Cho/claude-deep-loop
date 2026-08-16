@@ -588,7 +588,7 @@ export function respawn(root, runId, {
   // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
   const dt = runtimeCapability(runtime, 'desktop_transport') && mode === 'desktop'
     ? desktopProbe({ platform }) : null;
-  const launchProfile = resolveLaunchProfile(loop);
+  const launchProfile = resolveLaunchProfile(loop, { episodeId: loop.current_episode });
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
