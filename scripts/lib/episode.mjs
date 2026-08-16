@@ -8,6 +8,7 @@ import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { assertScopeAllows, bindMakerScope } from './session-scope.mjs';
 import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
+import { assertRoutingDigest, assertRoutingRecord } from './router-adapter.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
@@ -66,7 +67,13 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, initialStatus = 'pending', blockReason, fence, operation, now = Date.now() } = {}) {
+function normalizeRoutingInput(routing) {
+  if (routing === undefined) return undefined;
+  assertRoutingRecord(routing);
+  return structuredClone(routing);
+}
+
+function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, routing, initialStatus = 'pending', blockReason, fence, operation, now = Date.now() } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
@@ -87,12 +94,14 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
   // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
   if (!Array.isArray(expectedArtifacts) || !expectedArtifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: expectedArtifacts must be an array of strings');
+  const frozenRouting = normalizeRoutingInput(routing);
   let id, requestPath, requestRel, dir;
   const safePlugin = slugify(plugin) || 'plugin';
   appendAnchored(root, runId, { type: 'episode-new', data: {
     plugin, role, kind, point,
     ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
     ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+    ...(frozenRouting !== undefined ? { routing: frozenRouting } : {}),
   }, now }, (loop) => {
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
@@ -115,6 +124,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     // durable 신뢰 원천이 될 수 없다. undefined면 필드 자체를 생략(비-hill-climb 무변화).
     if (evidence !== undefined) epObj.evidence = evidence;
     if (contract !== undefined) epObj.contract = contract;
+    if (frozenRouting !== undefined) epObj.routing = structuredClone(frozenRouting);
     loop.episodes.push(epObj);
     loop.current_episode = id;
     if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
@@ -149,6 +159,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
         throw artifactError('EPISODE_ARTIFACT_UNSAFE', artifact, loop, scopeTarget);
       }
     }
+    if (frozenRouting !== undefined) assertRoutingDigest(loop, frozenRouting);
   }, { floor: MUTATION_TURN_FLOOR });
   // Assert containment before FS writes
   const base = resolve(runDir(root, runId), 'episodes');
@@ -159,16 +170,16 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   return { id, requestPath, requestRel };
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, fence, now = Date.now() } = {}) {
-  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, fence, operation: 'newEpisode', now });
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, routing, fence, now = Date.now() } = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, expectedReviewConfig, routing, fence, operation: 'newEpisode', now });
 }
 
 // Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
 // Keeping this separate from newEpisode prevents makers (or arbitrary callers) from selecting an initial blocked state.
-export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, expectedReviewConfig, fence } = {}) {
+export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, expectedReviewConfig, routing, fence } = {}) {
   return createEpisode(root, runId, {
     plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
-    expectedReviewConfig, initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
+    expectedReviewConfig, routing, initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
   });
 }
 
@@ -218,7 +229,7 @@ export function abandonEpisode(root, runId, episodeId, {
 }
 
 export function recordEpisode(root, runId, episodeId, {
-  status, artifacts = [], proof = {}, fence, now = Date.now(),
+  status, artifacts = [], proof = {}, routing, fence, now = Date.now(),
 } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
   // Fix 3: episodeId must be a non-empty string
@@ -229,8 +240,12 @@ export function recordEpisode(root, runId, episodeId, {
   if (![...NON_TERMINAL, ...TERMINAL].includes(status)) throw new Error(`EPISODE_STATUS_INVALID: ${status}`);
   if (!Array.isArray(artifacts) || !artifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: artifacts must be an array of strings');
   if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
+  if (routing !== undefined && status !== 'in_progress') throw new Error('EPISODE_ROUTING_STATUS_INVALID');
+  const frozenRouting = normalizeRoutingInput(routing);
   appendAnchored(root, runId, {
-    type: 'episode-record', data: { id: episodeId, status, artifacts }, now,
+    type: 'episode-record',
+    data: { id: episodeId, status, artifacts, ...(frozenRouting !== undefined ? { routing: frozenRouting } : {}) },
+    now,
   }, (loop, _spent, tx) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적
@@ -250,6 +265,7 @@ export function recordEpisode(root, runId, episodeId, {
     }
     ep.status = status;
     if (artifacts.length) ep.artifacts = artifacts;
+    if (frozenRouting !== undefined) ep.routing = structuredClone(frozenRouting);
     for (const [k, v] of Object.entries(proof)) if (/^result_[A-Za-z0-9_]+$/.test(k)) ep[k] = v;
   }, (loop) => {
     // Codex r3 🔴: All throwing validations inside preCheck (run on fresh loop, before append)
@@ -259,6 +275,12 @@ export function recordEpisode(root, runId, episodeId, {
     // Codex r3 🔴2 + R1 f2/R2 f1: 현재 status 가 터미널(abandoned 포함)이면 요청 status 무관하게 재기록 불가.
     if (ALL_TERMINAL.includes(ep.status)) {
       throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
+    }
+    if (frozenRouting !== undefined) {
+      if (status !== 'in_progress') throw new Error('EPISODE_ROUTING_STATUS_INVALID');
+      if (ep.role !== 'maker') throw new Error('EPISODE_ROUTING_ROLE_INVALID');
+      if (Object.hasOwn(ep, 'routing')) throw new Error('EPISODE_ROUTING_FROZEN');
+      assertRoutingDigest(loop, frozenRouting);
     }
     const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
     const scopeTarget = episodeScopeTarget(loop, ep, {

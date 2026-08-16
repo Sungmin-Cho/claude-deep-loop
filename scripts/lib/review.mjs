@@ -389,7 +389,7 @@ export function makerReviewed(loop, maker) {
 
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
 export function dispatchReview(root, runId, {
-  point, workstreamId, detected = {}, independentSubagent = false, fence,
+  point, workstreamId, detected = {}, independentSubagent = false, routing, fence,
   __testBeforeCheckerCreate,
 } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
@@ -519,7 +519,7 @@ export function dispatchReview(root, runId, {
   const episodeInput = {
     plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
     kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
-    reviewerResolution, evidence, contract, expectedReviewConfig, fence,
+    reviewerResolution, evidence, contract, expectedReviewConfig, routing, fence,
   };
   if (__testBeforeCheckerCreate !== undefined && typeof __testBeforeCheckerCreate !== 'function') {
     throw new Error('REVIEW_TEST_SEAM_INVALID');

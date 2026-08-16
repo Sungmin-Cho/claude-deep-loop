@@ -41,6 +41,35 @@ export function validateRuntimeProfile(runtime, { model = null, effort = null } 
 // so we only DECIDE inside the lock and, if a write is needed, appendAnchored AFTER releasing it; appendAnchored's
 // own in-lock preCheck re-fences the write, so a concurrent lease change between the two locks can never cause
 // an unfenced write — the worst case is one harmless redundant event.
+// Resume/retry/fix consume a frozen episode.routing when present. This never
+// locates or invokes the router — in_progress/done episodes keep their seat.
+export function resolveLaunchProfile(loop, { episodeId, locate } = {}) {
+  void locate;
+  const episodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
+  const selected = episodeId
+    ? episodes.find(episode => episode.id === episodeId)
+    : episodes.find(episode => episode.status === 'in_progress' && episode.routing)
+      || episodes.find(episode => episode.id === loop?.current_episode
+        && episode.routing
+        && (episode.status === 'in_progress' || episode.status === 'done'))
+      || null;
+  const routing = selected?.routing;
+  if (routing && typeof routing.selected_model === 'string' && typeof routing.selected_effort_native === 'string') {
+    return {
+      model: routing.selected_model,
+      effort: routing.selected_effort_native,
+      source: 'episode.routing',
+      provenance: routing.provenance || 'router',
+    };
+  }
+  return {
+    model: loop?.autonomy?.session_model ?? null,
+    effort: loop?.autonomy?.session_effort ?? null,
+    source: 'session_profile',
+    provenance: 'local-fallback',
+  };
+}
+
 export function setSessionProfile(root, runId, { model, effort, expect, now = Date.now(), allowEmpty = false } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: setSessionProfile');
   const empty = model == null && effort == null;
@@ -67,6 +96,7 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
   // field as null — replay/audit consumers would misread that as a clear).
   appendAnchored(root, runId, { type: 'session-profile-set', data: { ...(model != null ? { model } : {}), ...(effort != null ? { effort } : {}) } },
     (l) => {
+      // Session-level model/effort only. Frozen episodes[].routing is immutable here.
       if (model != null) l.autonomy.session_model = model;
       if (effort != null) l.autonomy.session_effort = effort;
     },

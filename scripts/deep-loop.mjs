@@ -1317,7 +1317,21 @@ const handlers = {
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
       if (status === 'approved' || status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
       if (status === 'abandoned') { error(`EPISODE_ABANDON_VIA_VERB: use 'episode abandon --confirm'`); return 1; }
-      recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence, now: parseNow(f) }); json({ ok: true }); return 0;
+      let routing;
+      if (Object.hasOwn(f, 'routing')) {
+        if (status !== 'in_progress') { error('EPISODE_ROUTING_STATUS_INVALID'); return 1; }
+        if (f.routing === true || f.routing === '') { error('USAGE: --routing requires JSON'); return 2; }
+        try { routing = JSON.parse(f.routing); }
+        catch { error('INVALID_ROUTING: must be JSON'); return 1; }
+      }
+      recordEpisode(root, runId, id, {
+        status,
+        artifacts: f.artifacts ? JSON.parse(f.artifacts) : [],
+        proof: f.proof ? JSON.parse(f.proof) : {},
+        ...(routing !== undefined ? { routing } : {}),
+        fence,
+        now: parseNow(f),
+      }); json({ ok: true }); return 0;
     }
     if (verb === 'abandon') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
@@ -1375,7 +1389,17 @@ const handlers = {
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
       const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
       const independentSubagent = f['independent-subagent'] === true || f['independent-subagent'] === 'true';
-      json(dispatchReview(root, runId, { point, workstreamId: workstream, detected: detectPlugins(root), independentSubagent, fence })); return 0;
+      let routing;
+      if (Object.hasOwn(f, 'routing')) {
+        if (f.routing === true || f.routing === '') { error('USAGE: --routing requires JSON'); return 2; }
+        try { routing = JSON.parse(f.routing); }
+        catch { error('INVALID_ROUTING: must be JSON'); return 1; }
+      }
+      json(dispatchReview(root, runId, {
+        point, workstreamId: workstream, detected: detectPlugins(root), independentSubagent,
+        ...(routing !== undefined ? { routing } : {}),
+        fence,
+      })); return 0;
     }
     // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'record') {
