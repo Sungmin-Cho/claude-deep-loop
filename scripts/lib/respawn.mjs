@@ -24,6 +24,7 @@ import {
 } from './runtime-executable.mjs';
 import { nextAction } from './next-action.mjs';
 import { attendedLaunchAuthorized } from './attended-launch.mjs';
+import { resolveLaunchProfile } from './session-profile.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const captureFreshLoop = (root, runId) => captureReconciledRunSnapshot(root, runId).data;
@@ -392,7 +393,9 @@ export function respawn(root, runId, {
   tmuxPanesRun = defaultProbeRun,
   tmuxPsRun,
   beforeClaim = () => {},
+  locateRouter,
 } = {}) {
+  void locateRouter;
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const loop = captureFreshLoop(root, runId);
   const runtime = sessionRuntime(loop);
@@ -585,6 +588,7 @@ export function respawn(root, runId, {
   // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
   const dt = runtimeCapability(runtime, 'desktop_transport') && mode === 'desktop'
     ? desktopProbe({ platform }) : null;
+  const launchProfile = resolveLaunchProfile(loop, { episodeId: loop.current_episode });
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
@@ -599,7 +603,7 @@ export function respawn(root, runId, {
       launcherSession: loop.session_spawn?.launcher_session,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
       exists: descriptorExists,
-      model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
+      model: launchProfile.model, effort: launchProfile.effort,
       codexExecutable, deepLoopRoot,
       runtimeExecutableIdentity, launcherIdentity,
     });

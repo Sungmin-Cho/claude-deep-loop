@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { normalizePortableRelativePath } from './fs-safe.mjs';
 import { SESSION_RUNTIMES } from './runtime.mjs';
+import { isRoutingRecord } from './router-adapter.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
@@ -352,6 +353,9 @@ function validateEpisodeV040(ep, errors) {
   const expectedRequestRel = typeof ep.id === 'string' ? `episodes/${ep.id}/request.md` : null;
   if (!portableRel(ep.request_rel, 'episodes/') || ep.request_rel !== expectedRequestRel) {
     errors.push('episodes[].request_rel must exactly match episodes/<id>/request.md');
+  }
+  if (Object.hasOwn(ep, 'routing') && !isRoutingRecord(ep.routing)) {
+    errors.push('episodes[].routing must be a frozen RouteDecision payload');
   }
   const invalidated = ep.invalidated_review_claims;
   if (invalidated === undefined) return;

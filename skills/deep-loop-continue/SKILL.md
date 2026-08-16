@@ -179,12 +179,37 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" adapter resolve --protocol <protocol
 
 `guard.ok === false`이면 dispatch 중단 → `await_human` 안내.
 
-진행 시 episode in_progress로 기록:
+**신규 maker 에피소드 경계에서만** 라우터를 호출한다. `adapter resolve` 이후, in_progress 기록 이전. durable `episodes[].routing`이 이미 있으면 재호출하지 않는다.
+
+분류(`task_class`, complexity / uncertainty / blast_radius / reversibility, flags, runtime)를 RouteRequestV1로 만들고 `DEEP_MODEL_ROUTER_CLI` 또는 설치된 플러그인 캐시의 `route_task.py`를 찾는다. 개인 `~/.claude/skills/model-router` 심링크와 `../deep-model-router` checkout은 금지. python3 부재·CLI 부재는 라우터 부재다.
+
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --status in_progress --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+python3 <route_task.py> --request-json <request.json> --format json
 ```
 
-`dispatch.kind`를 production routing authority로 소비한다.
+Exit 번역(§11.3):
+- `0`: 결정을 소비하고 아래 `--routing` JSON을 붙인다.
+- `4`: 결정을 소비하고 사후 확인 의무를 남긴다. degrade 금지.
+- `3`: human gate를 전파한다. in_progress로 올리지 않고 `await_human`.
+- `1`/`2`/`5`, 비-JSON, 미지원 schema, digest 불일치, spawn/timeout/signal/빈 stdout/범위 밖 exit/`TERMINATION_UNCONFIRMED`, 라우터 부재:
+  - 로컬 분류 또는 직전 완전 결정의 band가 HIGH/CRITICAL이면 in_progress로 올리지 않고 `await_human`
+  - LOW/MEDIUM이면 `--routing` 없이 진행(현행 session_profile 단일 전파)
+- `TERMINATION_UNCONFIRMED` 뒤에는 라우터 write-capable retry 금지
+
+`--routing` 최소 키: `request`, `decision`(`route_schema_version` / `router_plugin_version` / `policy_sha256`), `selected_model`, `selected_effort_native`, `effective_policy`, `provenance`.
+
+진행 시 episode in_progress로 기록(authorized 결정이 있을 때만 `--routing`을 붙인다):
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --status in_progress --routing '<routing_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+HIGH/CRITICAL 라우터 실패나 human_gate에서는 이 in_progress 기록 명령을 실행하지 않는다. LOW/MEDIUM degrade면 `--routing`을 생략한 같은 명령을 쓴다.
+
+`dispatch.kind`를 production routing authority로 소비한다. authorized
+`--routing`이 있으면 `selected_model` / `selected_effort_native`를 이번
+maker spawn에 적용한다. host가 새 세션을 띄우면 그 model/effort를 넘긴다.
+inline owner 세션은 모델을 바꾸지 않고, freeze는 다음 handoff/respawn이
+소비한다.
 
 - `dispatch.kind === 'inline'`이면 `dispatch.explicit_fallback === true`,
   `dispatch.role === 'maker'`, `dispatch.skill === null`을 모두 요구한다. 현재
@@ -207,6 +232,8 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --s
 
 먼저 `references/adapters.md`의 **상호 배타 checker routing** Route A–D 중 실제 가능한 경로를 선택하되 아직 dispatch하지 않는다. Route D이면 `needs-human`으로 중단하며 계약 파일도 쓰지 않는다. Route A/B/C일 때만 아래 계약 준비를 수행한 뒤 선택한 경로로 dispatch한다.
 
+Route A/B/C 선택 후, 실제 spawn 전에 maker와 **별도** route를 한 번 수행한다. 성공한 결정은 아래 review dispatch의 `--routing` JSON으로 checker 생성 시 심는다. 생성 후 episode record로 routing을 추가하지 않는다. HIGH/CRITICAL 실패·human_gate면 review dispatch와 spawn을 하지 않고 `await_human`. 라우터 부재·LOW/MEDIUM degrade면 `--routing` 없이 dispatch하고 session_profile을 쓴다.
+
 먼저 recipe를 **상태에서** 읽는다(이전 대화 컨텍스트를 가정하지 말 것 — 이 값이 아래 분기의 유일한 근거다):
 
 ```
@@ -224,18 +251,23 @@ Route A/B/C 모두 hill-climb dispatch 응답의 `descriptor.evidence`(커널-�
 - **Route A — cooperative fresh subagent:** host에 fresh `code-reviewer`를 만드는 cooperative tool이 실제로 있을 때만 다음 명령을 실행한다. configured reviewer가 agent인데 이 capability가 없으면 Route D로 가며 dispatch하지 않는다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --routing '<routing_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-  반환된 agent descriptor로 host tool을 통해 fresh reviewer를 spawn한다. inline 자기 리뷰는 proof가 아니다.
+  반환된 agent descriptor로 host tool을 통해 fresh reviewer를 spawn한다.
+  `descriptor.selected_model` / `descriptor.selected_effort_native`가 있으면
+  그 값을 그대로 spawn에 넘긴다. inline 자기 리뷰는 proof가 아니다.
 
 - **Route B — Codex unattended measured host:** 다음 명령을 정확히 한 번 실행하고 즉시 measured host에 yield한다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --routing '<routing_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-  host가 claim, isolated read-only 두 번째 `codex exec`, import, accounting을 소유한다. 이 execution skill은 Route B에서 아래 `review record`를 실행하지 않는다.
+  host가 claim, isolated read-only 두 번째 `codex exec`, import, accounting을 소유한다.
+  dispatch 응답의 `descriptor.selected_model` / `selected_effort_native`를
+  measured host spawn에 그대로 전달한다. 이 execution skill은 Route B에서
+  아래 `review record`를 실행하지 않는다.
 
 - **Route C — interactive independent skill session:** reviewed worktree를 root로 하는 distinct fresh session/task가 실제 준비됐을 때만 flag 없는 위 dispatch를 실행한다. Claude fresh session은 `Skill({ skill: checker.skill, args: checker.args })`, Codex fresh task는 `$<checker.skill>`에 args를 전달한다. Codex 자동 task 생성은 지원하지 않으므로 사람이 수동 task 생성을 완료해야 한다. 같은 task의 `$<checker.skill>` 실행은 proof가 아니다.
 - **Route D — no independent path:** `needs-human`으로 보고하고 dispatch/record/proof 생성을 모두 중단한다. pending checker를 만들지 않는다.
@@ -247,9 +279,18 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review record --episode <checker_epi
 
 ### fix_episode
 
-fix maker episode 생성 후 dispatch:
+라우터를 다시 호출하지 않는다. `action.episode_id`는 거절된 checker다.
+그 `target_maker` episode의 기존 `routing`을 읽어 새 fix maker의
+`in_progress` 기록에 그대로 붙인다. maker `routing`이 없으면 `--routing`
+없이 기록하고 session_profile로 degrade한다.
+
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+생성 직후, 거절된 maker의 freeze가 있으면:
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <new_fix_episode_id> --status in_progress --routing '<prior_maker_routing_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ### discover
