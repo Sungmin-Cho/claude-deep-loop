@@ -69,10 +69,25 @@ test('CHARACTERIZATION entrypoint heuristic applies to claude only', () => {
 test('an unknown runtime cannot reach an entry builder', () => {
   assert.throws(
     () => buildRuntimeResumeDescriptor({
-      runtime: 'grok', root: '/tmp/x', parentRunId: 'A', childRunId: 'B', handoffRel: 'handoffs/h.md',
+      runtime: 'unknown-runtime', root: '/tmp/x', parentRunId: 'A', childRunId: 'B', handoffRel: 'handoffs/h.md',
     }),
     /INVALID_RUNTIME/,
   );
+});
+
+test('grok skill token is slash', () => {
+  assert.equal(resumeSkillToken('grok'), '/deep-loop-resume');
+});
+
+test('grok rejects every effort at profile', () => {
+  for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+    assert.throws(() => validateRuntimeProfile('grok', { effort }), /UNSUPPORTED_RUNTIME_EFFORT/);
+  }
+});
+
+test('isHeadlessInvocation ignores Claude entrypoint on grok', () => {
+  assert.equal(isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'sdk-py' }, 'grok'), false);
+  assert.equal(isHeadlessInvocation({ DEEP_LOOP_HEADLESS: '1' }, 'grok'), true);
 });
 
 test('CHARACTERIZATION resumeSkillToken current mapping', () => {

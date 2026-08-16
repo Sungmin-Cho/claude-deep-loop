@@ -9,7 +9,7 @@ import {
 import { classifyPatch } from '../scripts/lib/state.mjs';
 
 test('session runtime allowlist is immutable and validation returns the asserted enum', () => {
-  assert.deepEqual(SESSION_RUNTIMES, ['claude', 'codex']);
+  assert.deepEqual(SESSION_RUNTIMES, ['claude', 'codex', 'grok']);
   assert.equal(Object.isFrozen(SESSION_RUNTIMES), true);
   assert.equal(validateSessionRuntime('claude'), 'claude');
   assert.equal(validateSessionRuntime('codex'), 'codex');

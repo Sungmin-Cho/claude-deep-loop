@@ -4,7 +4,7 @@
     {
       "file": "scripts/lib/runtime.mjs",
       "line": 1,
-      "literal": "['claude', 'codex']",
+      "literal": "['claude', 'codex', 'grok']",
       "reason": "정경 SESSION_RUNTIMES 정의. 능력 테이블의 키가 여기서 파생되므로 리터럴 자체는 남아야 한다"
     },
     {

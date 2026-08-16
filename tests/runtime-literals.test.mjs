@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const PATTERN = /(?:[!=]==\s*'(?:claude|codex)'|\['claude',\s*'codex'\])/;
+const PATTERN = /(?:[!=]==\s*'(?:claude|codex|grok)'|\['claude',\s*'codex'(?:,\s*'grok')?\])/;
 const ALLOWLIST = join(repoRoot, 'schemas/runtime-literal-allowlist.json');
 
 function walk(dir, out = []) {

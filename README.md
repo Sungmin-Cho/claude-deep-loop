@@ -215,7 +215,7 @@ Native Windows means the Node control plane runs directly on win32 and the docum
 Automatic continuation never trusts command lookup alone. Runtime executable diagnosis/approval applies to the selected runtime on every supported OS; launcher executable approval is the additional native-Windows WT/PowerShell or POSIX tmux boundary. Substitute the installed plugin's canonical absolute root for `<absolute-deep-loop-root>` and run exactly one read-only diagnosis for the selected identity:
 
 ```text
-node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex> --path "<human-supplied-absolute-exe>"
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex|grok> --path "<human-supplied-absolute-exe>"
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human-supplied-absolute-exe>"
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagnose --kind tmux --path "<human-supplied-absolute-exe>"
 ```
@@ -223,7 +223,7 @@ node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagn
 Show the returned **canonical absolute path** (`canonical_path`) and **lowercase SHA-256** (`sha256`) to the user. Only after the user confirms that exact identity may the matching fenced approval run:
 
 ```text
-node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable approve --runtime <claude|codex> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable approve --runtime <claude|codex|grok> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable approve --kind tmux --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 ```

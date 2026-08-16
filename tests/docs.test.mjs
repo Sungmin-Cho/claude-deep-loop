@@ -279,7 +279,7 @@ test('user docs define runtime and launcher executable diagnosis, approval, and 
       'launcher-executable diagnose',
       'launcher-executable approve',
     ]) assert.ok(source.includes(command), `${path} missing ${command}`);
-    assert.match(source, /runtime-executable approve --runtime <claude\|codex> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>"/);
+    assert.match(source, /runtime-executable approve --runtime <claude\|codex\|grok> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>"/);
     assert.match(source, /launcher-executable approve --kind <wt\|powershell> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>"/);
     for (const token of ['canonical_path', 'sha256', '--actor human', '--confirm', '--owner', '--generation']) {
       assert.ok(source.includes(token), `${path} missing approval token ${token}`);

@@ -102,6 +102,8 @@ fresh checker는 reviewed worktree 아래의 contained report만 반환한다. �
 
 독립 경로가 없으면 `needs-human`으로 보고하고 `review dispatch`를 실행하지 않으며, `review record`도 실행하지 않고 proof를 만들지 않는다(fabricated proof 금지). 특히 configured reviewer가 `checker.kind === 'agent'`인데 cooperative capability가 실제로 없으면 이 flag를 전달하지 않고 반드시 그 전에 Route D로 중단하며, `review dispatch`를 호출하지 않아 pending checker를 만들지 않는다. `checker.kind === 'blocked'`가 사전에 확정되면 `needs-human`으로 보고하고 proof를 만들지 않는다.
 
+Grok Build 호스트는 Route D만 사용한다. 이 대화에서 `review dispatch`, `deep-review:*`, `spawn_subagent` checker를 호출하지 않는다. 사람 또는 Claude/Codex 세션이 현행 review argv를 실행한다(`--runtime` 없음). `review record` / `review import`에도 `--runtime`을 추가하지 않는다.
+
 ### Verdict 기록
 
 Route A 또는 Route C에서 실제 contained report가 원래 execution session으로 돌아온 경우에만 이 단계를 수행한다. Route B는 host import가 소유하고 Route D는 proof가 없으므로 이 명령을 실행하지 않는다.

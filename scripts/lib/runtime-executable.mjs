@@ -371,9 +371,30 @@ function probeExplicitClaudeVersion(executable, runVersion = spawnSync, expected
   return match[1];
 }
 
+function probeExplicitGrokVersion(executable, runVersion = spawnSync, expectedVersion = null) {
+  const result = runVersion(executable, ['--version'], {
+    encoding: 'utf8', shell: false, timeout: VERSION_TIMEOUT_MS, maxBuffer: VERSION_MAX_BUFFER,
+    windowsHide: true, env: {},
+  });
+  if (!result || result.error || result.status !== 0 || result.signal) {
+    throw runtimeError('RUNTIME_EXECUTABLE_VERSION_INVALID', 'bounded direct --version probe failed');
+  }
+  const stdout = typeof result.stdout === 'string' ? result.stdout : String(result.stdout || '');
+  const stderr = typeof result.stderr === 'string' ? result.stderr : String(result.stderr || '');
+  const normalized = stdout.replace(/\r\n/g, '\n').trimEnd();
+  const match = /^grok (\d+\.\d+\.\d+) \(([0-9a-f]+)\) \[[^\]]+\]$/.exec(normalized);
+  if (!match || normalized.includes('\n') || stderr.trim() !== ''
+    || Buffer.byteLength(stdout) > 1024 || Buffer.byteLength(stderr) > 1024
+    || (expectedVersion !== null && match[1] !== expectedVersion)) {
+    throw runtimeError('RUNTIME_EXECUTABLE_VERSION_INVALID', 'version output is not a matching bounded Grok line');
+  }
+  return match[1];
+}
+
 const VERSION_PROBES = Object.freeze({
   claude: probeExplicitClaudeVersion,
   codex: probeExplicitCodexVersion,
+  grok: probeExplicitGrokVersion,
 });
 
 function probeExplicitRuntimeVersion(runtime, executable, runVersion = spawnSync, expectedVersion = null) {
@@ -1147,25 +1168,37 @@ export function diagnoseRuntimeExecutable(runtime, options = {}) {
     return { approval_required: true, identity };
   } catch (officialError) {
     if (options.explicitPath === undefined) throw officialError;
-    const candidate = regularFile(options.explicitPath);
-    assertTrustedRuntimeNamespace(candidate.canonical, platform);
-    assertApprovableNativePath(candidate.canonical);
-    const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
-    return {
-      approval_required: true,
-      identity: {
-        runtime,
-        canonical_path: candidate.canonical,
-        sha256,
-        version: null,
-        platform,
-        arch,
-        source: 'human-explicit',
-        package: null,
-        authenticode: null,
-        version_probe: 'deferred-until-human-approval',
-      },
-    };
+    try {
+      const candidate = regularFile(options.explicitPath);
+      assertTrustedRuntimeNamespace(candidate.canonical, platform);
+      assertApprovableNativePath(candidate.canonical);
+      const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
+      return {
+        approval_required: true,
+        identity: {
+          runtime,
+          canonical_path: candidate.canonical,
+          sha256,
+          version: null,
+          platform,
+          arch,
+          source: 'human-explicit',
+          package: null,
+          authenticode: null,
+          version_probe: 'deferred-until-human-approval',
+        },
+      };
+    } catch (humanError) {
+      let canonical = null;
+      try { canonical = canonicalRealpath(options.explicitPath); } catch { /* diagnose still reports the original rejection */ }
+      if (canonical) {
+        throw runtimeError(
+          String(humanError.message || humanError).split(':')[0],
+          `${String(humanError.message || humanError).replace(/^[^:]+:\s*/, '')}; approve the regular file at ${canonical}`,
+        );
+      }
+      throw humanError;
+    }
   }
 }
 

@@ -224,14 +224,14 @@ test('portable command contract: execution docs contain no shell-only constructi
 test('portable command contract: runtime and resumed mutation identity are explicit', () => {
   const init = kernelCommandLines(readFileSync(skillPath('deep-loop'), 'utf8'))
     .find((line) => /\binit-run\b/.test(line)) || '';
-  assert.match(init, /--runtime\s+<claude\|codex>/, 'init-run must carry the asserted current runtime');
+  assert.match(init, /--runtime\s+<claude\|codex\|grok>/, 'init-run must carry the asserted current runtime');
   assert.match(init, /--project-root\s+"<canonical_project_root>"/, 'init-run must pin the canonical root');
 
   for (const file of EXECUTION_DOCS) {
     const src = readFileSync(file, 'utf8');
     for (const line of kernelCommandLines(src)) {
       if (/\blease acquire\b/.test(line)) {
-        assert.match(line, /--runtime\s+<claude\|codex>/, `${file}: lease acquire must assert runtime`);
+        assert.match(line, /--runtime\s+<claude\|codex\|grok>/, `${file}: lease acquire must assert runtime`);
       }
       if (/--project-root\b/.test(line)) {
         assert.match(line, /--project-root\s+"<canonical_project_root>"/,
@@ -605,7 +605,7 @@ test('handoff-respawn resume contract uses descriptor root/run/runtime and exact
   const src = readFileSync(refPath, 'utf8');
   assert.match(src, /Resume acquisition[\s\S]{0,800}--project-root "<canonical_project_root>"[\s\S]{0,240}--run-id <run_id>/,
     'resume flow must consume the descriptor canonical root and logical run id');
-  assert.match(src, /lease acquire[^\n]*--runtime <claude\|codex>[^\n]*--project-root "<canonical_project_root>"[^\n]*--run-id <run_id>/,
+  assert.match(src, /lease acquire[^\n]*--runtime <claude\|codex\|grok>[^\n]*--project-root "<canonical_project_root>"[^\n]*--run-id <run_id>/,
     'resume lease acquisition must assert runtime and explicit root/run identity');
   assert.match(src, /recovery acquire --capsule/);
   assert.match(src, /root recovery acquire --capsule/);
@@ -787,7 +787,7 @@ test('deep-loop init skill observes + seeds session model/effort into init-run (
 
 test('runtime-facing skills assert runtime and carry explicit resume root/run identity', () => {
   const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
-  assert.match(entry, /init-run[\s\S]{0,500}--runtime\s+<claude\|codex>/, 'new runs must record the asserted host runtime');
+  assert.match(entry, /init-run[\s\S]{0,500}--runtime\s+<claude\|codex\|grok>/, 'new runs must record the asserted host runtime');
 
   const resume = readFileSync(new URL('../skills/deep-loop-resume/SKILL.md', import.meta.url), 'utf8');
   assert.match(resume, /\$deep-loop:deep-loop-resume/, 'Codex resume must use the qualified dollar skill token');
@@ -797,7 +797,7 @@ test('runtime-facing skills assert runtime and carry explicit resume root/run id
   // 언급하는 순간 혼란스러운 false RED 가 난다(이 저장소의 Phase 5 산문 편집이 실제로 그것을
   // 밟았다). 같은 파일 아래쪽이 이미 쓰는 견고한 관용구 — 커널 명령 줄로 먼저 필터한다.
   const acquire = kernelCommandLines(resume).find((line) => /\blease acquire\b/.test(line)) || '';
-  assert.match(acquire, /--runtime\s+<claude\|codex>/, 'lease acquisition must assert the actual host runtime');
+  assert.match(acquire, /--runtime\s+<claude\|codex\|grok>/, 'lease acquisition must assert the actual host runtime');
   assert.match(acquire, /--project-root\s+"<canonical_project_root>"/);
   assert.match(acquire, /--run-id\s+<run_id>/);
 });
@@ -1074,7 +1074,7 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   const prepare = body.match(/## Prepare([\s\S]*?)## Restore/i)?.[1] ?? '';
   assert.match(prepare, /state get --field session_chain\.lease/);
   assert.match(prepare, /state get --field session_chain\.sessions/);
-  assert.match(prepare, /checkpoint emit[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>/);
+  assert.match(prepare, /checkpoint emit[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex\|grok>/);
   assert.match(prepare, /Claude[\s\S]{0,160}\/compact <focus>/);
   assert.match(prepare, /Codex[\s\S]{0,160}`\/compact`/);
   assert.doesNotMatch(prepare, /Codex:[^\n]*\/compact <focus>/);
@@ -1086,8 +1086,8 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.ok(trustedStart >= 0 && trustedStart < inspectStart,
     'trusted evidence rejection must branch before checkpoint inspection');
   assert.match(restore, /checkpoint inspect --json/);
-  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--admission postcompact-observation[^\n]*--source sessionstart[^\n]*--json/);
-  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--admission human-attested[^\n]*--source direct-human-skill[^\n]*--confirm-manual-compact[^\n]*--json/);
+  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex\|grok>[^\n]*--admission postcompact-observation[^\n]*--source sessionstart[^\n]*--json/);
+  assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex\|grok>[^\n]*--admission human-attested[^\n]*--source direct-human-skill[^\n]*--confirm-manual-compact[^\n]*--json/);
   assert.match(restore, /\/deep-loop-continue/);
   assert.match(restore, /\$deep-loop:deep-loop-continue/);
   assert.match(restore, /same (?:owner )?session|동일 owner 세션/i);
@@ -1444,4 +1444,51 @@ test('Task 14 migrated policies execute only their fresh boundary-less kernel ha
       /per_session_turn_cap[\s\S]{0,500}respawn[^\n]*--attended/,
       `${file}: legacy compatibility must not restore inferred attended launch`);
   }
+});
+
+test('slash invocation is not a Claude identity', () => {
+  for (const file of EXECUTION_DOCS) {
+    const src = readFileSync(file, 'utf8');
+    assert.doesNotMatch(src, /슬래시\s*⇒\s*Claude|slash\s*(?:⇒|=>|implies|means)\s*Claude/i,
+      `${file}: slash must not imply Claude`);
+  }
+});
+
+test('Route D review argv stays current and has no --runtime', () => {
+  for (const file of [
+    skillPath('deep-loop-continue'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'adapters.md'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'review-strategy.md'),
+  ]) {
+    const src = readFileSync(file, 'utf8');
+    for (const line of kernelCommandLines(src)) {
+      if (/\breview (?:dispatch|record|import)\b/.test(line)) {
+        assert.doesNotMatch(line, /--runtime\b/, `${file}: review argv must not add --runtime`);
+      }
+    }
+  }
+});
+
+test('compact skill does not emit or restore for grok', () => {
+  const src = readFileSync(skillPath('deep-loop-compact'), 'utf8');
+  assert.match(src, /session_runtime[\s\S]{0,120}grok[\s\S]{0,200}(?:stop|needs-human|do not (?:call|invoke)|호출하지)/i);
+  assert.match(src, /grok[\s\S]{0,240}checkpoint emit/i);
+  assert.match(src, /grok[\s\S]{0,240}(?:restore|checkpoint restore)/i);
+});
+
+test('handoff requires diagnose and executable approve before emit', () => {
+  const src = readFileSync(skillPath('deep-loop-handoff'), 'utf8');
+  const diagnose = src.indexOf('runtime-executable diagnose');
+  const approve = src.indexOf('runtime-executable approve');
+  const emit = src.indexOf('handoff emit');
+  assert.ok(diagnose !== -1 && approve !== -1 && emit !== -1, 'handoff must name diagnose, approve, and emit');
+  assert.ok(diagnose < emit && approve < emit, 'diagnose and exe approve must precede emit');
+});
+
+test('Path V requires attended visible approve before emit', () => {
+  const src = readFileSync(skillPath('deep-loop-handoff'), 'utf8');
+  const attended = src.indexOf('attended-launch approve --style visible');
+  const emit = src.indexOf('handoff emit');
+  assert.ok(attended !== -1 && emit !== -1, 'Path V must name attended visible approve and emit');
+  assert.ok(attended < emit, 'attended visible approve must precede emit');
 });

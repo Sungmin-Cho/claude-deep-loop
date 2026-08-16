@@ -18,8 +18,11 @@ user-invocable: true
 literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경
 변수나 셸 확장으로 루트를 만들지 않는다.
 
-호출은 Claude에서 `/deep-loop-resume`, Codex에서
-`$deep-loop:deep-loop-resume` 형식을 사용한다. descriptor가 준
+호출은 제품 이름(Claude Code / Codex / Grok Build)을 직접 assertion한다.
+Claude Code는 `/deep-loop-resume`, Codex는
+`$deep-loop:deep-loop-resume`, Grok Build는 `/deep-loop-resume`(모호하면
+`/deep-loop:deep-loop-resume`)를 사용한다. 슬래시 호출이 Claude를 뜻하지
+않는다. 환경 변수로 호스트를 단정하지 않는다. descriptor가 준
 `--project-root "<canonical_project_root>" --run-id <run_id>`를 그대로
 사용한다. `<run_id>`는 논리적(logical) loop run id이며 불변(immutable)이다.
 
@@ -85,7 +88,7 @@ exact reserved child, `<current_generation>`은 fresh lease generation,
 `proceed:false`(`already-owned`)로 떨어진다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex|grok> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 **`proceed:true` 뒤에만** `<owner_run_id> = <child_run_id>`,
@@ -148,7 +151,8 @@ state와 일치하지 않으면 중단한다. generic acquisition은 금지한�
 ## 단계 2.5: 세션 model/effort refresh (성공한 acquire 직후)
 
 성공한 branch가 새 owner를 만들었을 때 실제 host model/effort를 public
-kernel route로 갱신한다. 둘 다 관측한 경우:
+kernel route로 갱신한다. durable `session_runtime`이 grok이면 effort를
+넣지 않는다. 둘 다 관측한 경우(grok 제외):
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --effort "<session_effort>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -180,5 +184,6 @@ resume은 특정 worktree에 미리 진입하지 않는다. per-action worktree 
 
 ## 단계 4: 진행
 
-Claude에서는 `/deep-loop-continue`, Codex에서는
-`$deep-loop:deep-loop-continue`를 invoke한다.
+Claude Code에서는 `/deep-loop-continue`, Codex에서는
+`$deep-loop:deep-loop-continue`, Grok Build에서는 `/deep-loop-continue`를
+invoke한다.

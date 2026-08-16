@@ -1,4 +1,4 @@
-export const SESSION_RUNTIMES = Object.freeze(['claude', 'codex']);
+export const SESSION_RUNTIMES = Object.freeze(['claude', 'codex', 'grok']);
 
 // 각 필드 주석은 소비자 목록이다(유일 소비자 선언이 아니다).
 // 값은 전부 현행 동작에서 읽어온 것이며, 이 커밋은 어떤 값도 새로 정하지 않는다.
@@ -18,6 +18,7 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     version_probe: 'claude',                         // runtime-executable:375
     supported_platforms: Object.freeze(['darwin', 'linux', 'win32']), // assertRuntimePlatform · acquireLease · acquireRecovery · acquireRootRecovery · initrun
     measured_headless: true,                         // headless-host skip rewrite / would-spawn pause
+    session_effort_allowed: 'kernel-set',            // session-profile validateRuntimeProfile
   }),
   codex: Object.freeze({
     skill_token_style: 'dollar',
@@ -34,6 +35,24 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     version_probe: 'codex',
     supported_platforms: Object.freeze(['darwin', 'linux', 'win32']),
     measured_headless: true,
+    session_effort_allowed: 'kernel-set',
+  }),
+  grok: Object.freeze({
+    skill_token_style: 'slash',
+    provider_label: 'grok',
+    usage_output_kind: 'unmeasured',
+    entrypoint_heuristic: null,
+    desktop_transport: false,
+    unattended_checker: false,
+    requires_process_preflight: false,
+    requires_process_receipt_settlement: false,
+    requires_posix_visible_executable_trust: true,
+    max_effort_supported: false,
+    executable_name: 'grok',
+    version_probe: 'grok',
+    supported_platforms: Object.freeze(['darwin']),
+    measured_headless: false,
+    session_effort_allowed: 'none',
   }),
 });
 
@@ -69,7 +88,7 @@ export function skillToken(runtime, skillWithArgs) {
 
 export function validateSessionRuntime(value) {
   if (!SESSION_RUNTIMES.includes(value)) {
-    throw new Error(`INVALID_RUNTIME: expected claude or codex, got ${String(value)}`);
+    throw new Error(`INVALID_RUNTIME: expected claude, codex, or grok, got ${String(value)}`);
   }
   return value;
 }

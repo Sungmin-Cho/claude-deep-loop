@@ -181,18 +181,21 @@ test('init-run rejects Codex max before writing', () => {
   assert.equal(existsSync(join(codexRoot, '.deep-loop', 'runs')), false);
 });
 
-test('init-run still rejects public grok as INVALID_RUNTIME', () => {
+test('init-run accepts grok on darwin and records skill-asserted runtime', () => {
+  const loop = buildInitialLoop({
+    runtime: 'grok', runId: 'grok-darwin', goal: 'g', recipe: {},
+    now: new Date('2026-07-02T00:00:00Z'), env: noSignalEnv, platform: 'darwin', run: noOpRun,
+  });
+  assert.equal(loop.autonomy.session_runtime, 'grok');
+  assert.equal(loop.autonomy.runtime_source, 'skill-asserted');
+
   const root = mkdtempSync(join(tmpdir(), 'dl-init-grok-'));
-  assert.throws(
-    () => initRun(root, { runtime: 'grok', goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z') }),
-    /INVALID_RUNTIME/,
-  );
-  const result = spawnSync(process.execPath, [
-    CLI, 'init-run', '--goal', 'g', '--runtime', 'grok', '--project-root', root,
-  ], { encoding: 'utf8' });
-  assert.notEqual(result.status, 0, result.stdout);
-  assert.match(result.stderr, /INVALID_RUNTIME/);
-  assert.equal(existsSync(join(root, '.deep-loop')), false);
+  const { runId } = initRun(root, {
+    runtime: 'grok', goal: 'g', detected: {},
+    now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'darwin', run: () => ({ code: 1 }),
+  });
+  assert.equal(readState(root, runId).data.autonomy.session_runtime, 'grok');
+  assert.equal(readState(root, runId).data.autonomy.runtime_source, 'skill-asserted');
 });
 
 test('buildInitialLoop and initRun reject an unsupported live-host platform before writing', () => {

@@ -15,7 +15,7 @@ user-invocable: true
 
 로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
 
-호출은 Claude에서 `/deep-loop-finish`, Codex에서 `$deep-loop:deep-loop-finish` 형식을 사용한다.
+호출은 제품 이름(Claude Code / Codex / Grok Build)을 직접 assertion한다. Claude Code는 `/deep-loop-finish`, Codex는 `$deep-loop:deep-loop-finish`, Grok Build는 `/deep-loop-finish`(모호하면 `/deep-loop:deep-loop-finish`)를 사용한다. 슬래시 호출이 Claude를 뜻하지 않는다. 환경 변수로 호스트를 단정하지 않는다.
 
 ## 개요
 
