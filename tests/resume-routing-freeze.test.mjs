@@ -51,7 +51,7 @@ function seedLauncher() {
   data.autonomy.session_model = 'claude-opus-4-8[1m]';
   data.autonomy.session_effort = 'xhigh';
   data.session_spawn = {
-    platform: 'darwin', launcher: 'cmux',
+    platform: 'linux', launcher: 'cmux',
     launcher_bin: '/abs/bin/cmux', launcher_socket: '/tmp/cmux.sock',
     surface: 'multiplexer', reachable: true, visible: true, signals: {}, probe: null,
     reason: 'detected', fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00Z',
@@ -60,12 +60,16 @@ function seedLauncher() {
   return { root, runId };
 }
 
+function targetPlatform(root, runId, options = {}) {
+  return options.platform ?? readState(root, runId).data.session_spawn?.platform ?? 'linux';
+}
+
 function emitHandoff(root, runId, options = {}) {
-  return emitHandoffImpl(root, runId, options);
+  return emitHandoffImpl(root, runId, { ...options, platform: targetPlatform(root, runId, options) });
 }
 
 function respawn(root, runId, options = {}) {
-  return respawnImpl(root, runId, options);
+  return respawnImpl(root, runId, { ...options, platform: targetPlatform(root, runId, options) });
 }
 
 function plantInProgressRouting(root, runId) {
