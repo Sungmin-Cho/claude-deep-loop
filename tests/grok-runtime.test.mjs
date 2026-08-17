@@ -154,6 +154,21 @@ function approveGrokExe(root, runId, fixture) {
   });
 }
 
+const GROK_POSIX_BIN = '/opt/xai/grok-1.0.4-macos-aarch64';
+const GROK_POSIX_ROOT = '/tmp/deep-loop-grok-fixture';
+
+function grokDescriptorRoot(root) {
+  return process.platform === 'win32' ? GROK_POSIX_ROOT : root;
+}
+
+function pinApprovedGrokPosixIdentity(root, runId) {
+  const { data } = readState(root, runId);
+  const stored = data.autonomy?.runtime_executable_approval;
+  if (!stored || typeof stored !== 'object') throw new Error('missing grok runtime approval');
+  data.autonomy.runtime_executable_approval = { ...stored, canonical_path: GROK_POSIX_BIN, platform: 'darwin' };
+  writeState(root, runId, data);
+}
+
 function setVisibleCmuxSpawn(root, runId) {
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'visible';
@@ -608,9 +623,13 @@ test('T-path-v: exe approve → attended visible → emit → respawn; post-emit
     style: 'visible', confirm: true, fence: { owner: runId, generation: 1 }, now: NOW1,
   }).ok, true);
   setVisibleCmuxSpawn(root, runId);
+  pinApprovedGrokPosixIdentity(root, runId);
 
   const darwinDescriptor = options => buildRuntimeResumeDescriptor({
-    ...options, platform: 'darwin', exists: path => path === '/usr/bin/osascript',
+    ...options,
+    platform: 'darwin',
+    root: grokDescriptorRoot(options.root),
+    exists: path => path === '/usr/bin/osascript',
   });
   const emitted = emitHandoff(root, runId, {
     trigger: 'milestone',
@@ -641,12 +660,12 @@ test('T-path-v: exe approve → attended visible → emit → respawn; post-emit
     sleep: () => {},
     pollIntervalMs: 0,
   });
-  assert.equal(spawned.ok, true, spawned);
-  assert.equal(spawned.outcome, 'spawned', spawned);
+  assert.equal(spawned.ok, true, `${spawned.outcome}: ${spawned.reason}`);
+  assert.equal(spawned.outcome, 'spawned', `${spawned.outcome}: ${spawned.reason}`);
   assert.ok(captured, 'injected spawnFn must run');
   assert.equal(captured.bin, '/opt/cmux/bin/cmux');
   const command = captured.argv[captured.argv.indexOf('--command') + 1];
-  assert.ok(command.includes(bin.executable), command);
+  assert.ok(command.includes(GROK_POSIX_BIN), command);
   assert.doesNotMatch(command, /(?:^|\s)-s(?:\s|$)/);
   assert.doesNotMatch(command, /--session-id/);
   assert.doesNotMatch(command, /--effort/);
