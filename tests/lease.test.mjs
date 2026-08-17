@@ -11,6 +11,8 @@ import {
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
   rollbackReservedEmit,
 } from '../scripts/lib/lease.mjs';
+import { acquireRecovery } from '../scripts/lib/recover.mjs';
+import { acquireRootRecovery } from '../scripts/lib/project-root-recovery.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
@@ -592,6 +594,60 @@ test('acquireLease: active-terminal rejects with run-terminal; generation fence-
   // 비terminal 회귀: same-owner active 멱등 불변
   const { root: r2, runId: run2 } = seed();
   assert.equal(acquireLease(r2, run2, { owner: run2, expectGeneration: 1, runtime: 'claude' }).reason, 'already-owned');
+});
+
+test('acquireLease rejects an unsupported live-host platform after the runtime fence and does not read session_spawn.platform', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.session_spawn = { ...data.session_spawn, platform: 'darwin' };
+  writeState(root, runId, data);
+  const before = structuredClone(readState(root, runId).data);
+  const halted = acquireLease(root, runId, {
+    owner: runId, expectGeneration: 1, runtime: 'claude', platform: 'aix',
+  });
+  assert.deepEqual(halted, {
+    ok: false, reason: 'UNSUPPORTED_RUNTIME_PLATFORM', generation: 1,
+    proceed: false, consumed: null, replayed: false,
+  });
+  assert.deepEqual(readState(root, runId).data, before);
+});
+
+test('acquireRecovery rejects an unsupported live-host platform after the runtime fence', () => {
+  const { root, runId } = seed();
+  const before = structuredClone(readState(root, runId).data);
+  const halted = acquireRecovery(root, runId, {
+    capsuleRel: 'recoveries/child.json',
+    owner: 'CHILD',
+    expectGeneration: 1,
+    runtime: 'claude',
+    platform: 'aix',
+    now: Date.parse('2026-06-24T00:00:00Z'),
+    clock: () => Date.parse('2026-06-24T00:00:00Z'),
+  });
+  assert.equal(halted.ok, false);
+  assert.equal(halted.reason, 'UNSUPPORTED_RUNTIME_PLATFORM');
+  assert.equal(halted.proceed, false);
+  assert.deepEqual(readState(root, runId).data, before);
+});
+
+test('acquireRootRecovery throws unsupported platform before writeState', () => {
+  const { root, runId } = seed();
+  const loopPath = join(runDir(root, runId), 'loop.json');
+  const before = readFileSync(loopPath, 'utf8');
+  assert.throws(
+    () => acquireRootRecovery(root, runId, {
+      capsuleRel: 'recoveries/root/capsule.json',
+      owner: 'CHILD',
+      expectGeneration: 1,
+      bindingGeneration: 1,
+      runtime: 'claude',
+      platform: 'aix',
+      now: Date.parse('2026-06-24T00:00:00Z'),
+      clock: () => Date.parse('2026-06-24T00:00:00Z'),
+    }),
+    /UNSUPPORTED_RUNTIME_PLATFORM: claude on aix/,
+  );
+  assert.equal(readFileSync(loopPath, 'utf8'), before);
 });
 
 test('acquireLease checks runtime before same-owner idempotency', () => {

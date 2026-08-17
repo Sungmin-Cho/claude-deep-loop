@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken } from '../scripts/lib/runtime.mjs';
+import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken, assertRuntimePlatform } from '../scripts/lib/runtime.mjs';
 import { isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
+import { validateRuntimeProfile } from '../scripts/lib/session-profile.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -22,6 +23,7 @@ const FIELDS = [
   'desktop_transport', 'unattended_checker', 'requires_process_preflight',
   'requires_process_receipt_settlement', 'requires_posix_visible_executable_trust',
   'max_effort_supported', 'executable_name', 'version_probe',
+  'supported_platforms', 'measured_headless', 'session_effort_allowed',
 ];
 
 test('every session runtime has every capability field', () => {
@@ -40,7 +42,7 @@ test('capability table has no row beyond SESSION_RUNTIMES', () => {
 });
 
 test('an unknown runtime throws instead of falling back', () => {
-  assert.throws(() => runtimeCapability('grok', 'skill_token_style'), /INVALID_RUNTIME/);
+  assert.throws(() => runtimeCapability('unknown-runtime', 'skill_token_style'), /INVALID_RUNTIME/);
   assert.throws(() => runtimeCapability('', 'skill_token_style'), /INVALID_RUNTIME/);
 });
 
@@ -73,6 +75,32 @@ test('current values match today behavior', () => {
   assert.equal(runtimeCapability('codex', 'requires_posix_visible_executable_trust'), true);
   assert.equal(runtimeCapability('claude', 'version_probe'), 'claude');
   assert.equal(runtimeCapability('codex', 'version_probe'), 'codex');
+  assert.deepEqual(runtimeCapability('claude', 'supported_platforms'), ['darwin', 'linux', 'win32']);
+  assert.deepEqual(runtimeCapability('codex', 'supported_platforms'), ['darwin', 'linux', 'win32']);
+  assert.equal(runtimeCapability('claude', 'measured_headless'), true);
+  assert.equal(runtimeCapability('codex', 'measured_headless'), true);
+  assert.equal(runtimeCapability('claude', 'session_effort_allowed'), 'kernel-set');
+  assert.equal(runtimeCapability('codex', 'session_effort_allowed'), 'kernel-set');
+});
+
+test('assertRuntimePlatform accepts current hosts and rejects others without falling back', () => {
+  for (const runtime of SESSION_RUNTIMES) {
+    const allowed = runtimeCapability(runtime, 'supported_platforms');
+    for (const platform of allowed) {
+      assert.equal(assertRuntimePlatform(runtime, platform), undefined);
+    }
+    for (const platform of ['darwin', 'linux', 'win32'].filter(value => !allowed.includes(value))) {
+      assert.throws(
+        () => assertRuntimePlatform(runtime, platform),
+        { message: `UNSUPPORTED_RUNTIME_PLATFORM: ${runtime} on ${platform}`, code: 'UNSUPPORTED_RUNTIME_PLATFORM' },
+      );
+    }
+    assert.throws(
+      () => assertRuntimePlatform(runtime, 'aix'),
+      { message: `UNSUPPORTED_RUNTIME_PLATFORM: ${runtime} on aix`, code: 'UNSUPPORTED_RUNTIME_PLATFORM' },
+    );
+  }
+  assert.throws(() => assertRuntimePlatform('unknown-runtime', 'darwin'), /INVALID_RUNTIME/);
 });
 
 test('every capability field has at least one production consumer', () => {
@@ -94,14 +122,29 @@ test('skillToken renders the host-correct invocation', () => {
 });
 
 test('skillToken throws for an unknown runtime', () => {
-  assert.throws(() => skillToken('grok', 'deep-loop-resume'), /INVALID_RUNTIME/);
+  assert.throws(() => skillToken('unknown-runtime', 'deep-loop-resume'), /INVALID_RUNTIME/);
+});
+
+test('grok skill token is slash', () => {
+  assert.equal(skillToken('grok', 'deep-loop-resume'), '/deep-loop-resume');
+});
+
+test('grok rejects every effort at profile', () => {
+  for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+    assert.throws(() => validateRuntimeProfile('grok', { effort }), /UNSUPPORTED_RUNTIME_EFFORT/);
+  }
 });
 
 test('isHeadlessInvocation throws for an unknown runtime without driver markers', () => {
   assert.throws(
-    () => isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'sdk-py' }, 'grok'),
+    () => isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'sdk-py' }, 'unknown-runtime'),
     /INVALID_RUNTIME/,
   );
+});
+
+test('isHeadlessInvocation ignores Claude entrypoint on grok', () => {
+  assert.equal(isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'sdk-py' }, 'grok'), false);
+  assert.equal(isHeadlessInvocation({ DEEP_LOOP_HEADLESS: '1' }, 'grok'), true);
 });
 
 test('the table is deeply frozen', () => {

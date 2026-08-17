@@ -16,7 +16,7 @@ user-invocable: true
 
 로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
 
-호출은 Claude에서 `/deep-loop "<goal>"`, Codex에서 `$deep-loop:deep-loop "<goal>"` 형식을 사용한다.
+호출은 제품 이름(Claude Code / Codex / Grok Build)을 직접 assertion한다. Claude Code는 `/deep-loop "<goal>"`, Codex는 `$deep-loop:deep-loop "<goal>"`, Grok Build는 `/deep-loop "<goal>"`(모호하면 `/deep-loop:deep-loop "<goal>"`)를 사용한다. 슬래시 호출이 Claude를 뜻하지 않는다. 환경 변수로 호스트를 단정하지 않는다.
 
 ## 개요
 
@@ -111,18 +111,18 @@ cooperative subagent를 선택하면 durable reviewer enum은 `subagent-checker`
 
 ### 2-4.5. 세션 model/effort 관측 (자동, 무프롬프트)
 
-먼저 현재 실행 호스트를 **직접** 판정해 `<claude|codex>`에 `claude` 또는 `codex`를 넣는다. 환경 변수 마커는 권위가 아니며, Claude에서는 slash skill, Codex에서는 qualified dollar skill로 실제 실행 중인 호스트를 기준으로 assertion한다. 이 runtime 값은 run 생성 후 변경하지 않는다.
+먼저 현재 실행 호스트를 **직접** 판정해 `<claude|codex|grok>`에 `claude`, `codex`, 또는 `grok`를 넣는다. 모델이 제품 이름(Claude Code / Codex / Grok Build)을 직접 assertion한다. 환경 변수 마커는 권위가 아니다. Claude Code와 Grok Build는 slash(`/deep-loop…`), Codex는 qualified dollar(`$deep-loop:…`)로 호출한다. 슬래시 호출이 Claude를 뜻하지 않는다. 이 runtime 값은 run 생성 후 변경하지 않는다.
 
-respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 시 현재 세션 값을 호스트 컨텍스트에서 직접 관측한다(이 값이 durable "init seed" — 첫 handoff가 PreCompact/headless여도 fallback이 된다). Claude host가 제공하는 `CLAUDE_EFFORT`와 정확한 모델 ID는 셸에서 읽지 말고 로드된 세션 컨텍스트 값으로 사용한다. Codex도 현재 task의 모델과 effort를 같은 방식으로 사용한다.
+respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 시 현재 세션 값을 호스트 컨텍스트에서 직접 관측한다(이 값이 durable "init seed" — 첫 handoff가 PreCompact/headless여도 fallback이 된다). Claude host가 제공하는 `CLAUDE_EFFORT`와 정확한 모델 ID는 셸에서 읽지 말고 로드된 세션 컨텍스트 값으로 사용한다. Codex도 현재 task의 모델과 effort를 같은 방식으로 사용한다. Grok Build는 effort를 seed하지 않는다 — 관측된 model만 넣고 effort key는 생략한다.
 
 - 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만든다. 둘 다 관측하지 못하면 `{}`다. 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
 
 ### 2-5. Run 생성 (`init-run`)
 
-현재 runtime을 실제 `claude` 또는 `codex`로 치환하고 다음 완전한 명령 하나를 사용한다:
+현재 runtime을 실제 `claude`, `codex`, 또는 `grok`로 치환하고 다음 완전한 명령 하나를 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --session-profile '<session_profile_json_compact>' --project-root "<canonical_project_root>"
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex|grok> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --session-profile '<session_profile_json_compact>' --project-root "<canonical_project_root>"
 ```
 
 `--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.
@@ -161,10 +161,11 @@ surface heuristic으로 소비하지 않고 kernel `next-action`만 따른다.
 세 조건 충족 **+ 사용자 확인** 시에만 첫 workstream을 재사용(실제 path/branch 캡처 → Step 2). 부적격 또는 미확인이면 git 생성(Step 1b) 또는 human selection 중단.
 
 **비격리 상태이면:**
-- **단일 workstream run → native 우선(Step 1a)**
+- **`--runtime grok`이면 항상 Step 1b.** grok never Step 1a. never grok `--worktree` / `/fork --worktree` — Grok native worktree는 native-eligible이 아니다. 기록 경로는 `.claude/worktrees/<slug>` 또는 `.worktrees/<slug>`.
+- **단일 workstream run · claude/codex → native 우선(Step 1a)**
 - **다중 workstream run → 모든 ws를 전부 git(Step 1b)**, 세션은 ORIG_ROOT 유지
 
-#### Step 1a — native (단일 workstream run 전용)
+#### Step 1a — native (단일 workstream run 전용, grok 금지)
 
 > 적용 범위: 단일 workstream run의 비격리 케이스. 다중은 Step 1b.
 
@@ -243,7 +244,8 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream 
 |------|------|
 | 단일 run · 이미 격리 · 적격(clean·base·소유)+사용자 확인 | 현재 worktree 재사용 |
 | 단일 run · 이미 격리 · 부적격/미확인 | 재사용 ❌ → git(Step 1b) 또는 human 중단 |
-| 단일 run · 비격리 · native 있음 | `EnterWorktree` native 생성(Step 1a) |
+| 단일 run · 비격리 · native 있음 · claude/codex | `EnterWorktree` native 생성(Step 1a) |
+| `--runtime grok` · 모든 ws | 항상 git(Step 1b). grok never Step 1a. never grok `--worktree` |
 | 단일 run · 비격리 · native 없음 | git 컨벤션 경로(Step 1b) |
 | 다중 run · 모든 ws | 전부 git(Step 1b): 생성 `<canonical_project_root>/.claude/worktrees/<slug>` — 기록 `.claude/worktrees/<slug>` (루트-상대, native 미사용) |
 | gitignore 미설정 | proposal-only 제안 — 승인 시에만 진행, 자동 커밋 ❌ |
@@ -262,4 +264,4 @@ Artifact 상세 교정 규칙은 `deep-loop-workflow`의 `## 핵심 불변식`�
 
 run_id와 workstream 요약을 출력하고 다음 명령을 안내한다:
 
-이후 각 tick마다 Claude는 `/deep-loop-continue`, Codex는 `$deep-loop:deep-loop-continue`를 호출해 루프를 진행한다.
+이후 각 tick마다 Claude Code는 `/deep-loop-continue`, Codex는 `$deep-loop:deep-loop-continue`, Grok Build는 `/deep-loop-continue`를 호출해 루프를 진행한다.

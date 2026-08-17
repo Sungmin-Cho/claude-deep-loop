@@ -34,9 +34,11 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuat
 
 - action에 열린 affinity의 `workstream_id`가 있으면 현재 owner conversation에
   남는다.
-- `action.advice === 'compact'`이면 `/deep-loop-compact prepare` 또는
-  `$deep-loop:deep-loop-compact prepare`가 출력하는 host native `/compact`
-  명령을 사용한다. prepare/restore는 같은 conversation과 lease를 유지한다.
+- `action.advice === 'compact'`이면 durable `session_runtime`이 grok일 때
+  compact를 호출하지 않고 `needs-human`으로 멈춘다. 그 외에는
+  `/deep-loop-compact prepare` 또는 `$deep-loop:deep-loop-compact prepare`가
+  출력하는 host native `/compact` 명령을 사용한다. prepare/restore는 같은
+  conversation과 lease를 유지한다.
 - `action.type === 'await_human'`이면 exact reason을 보고하고 멈춘다.
 - `continuation_policy === 'workstream-session'`에서는 오직
   `action.type === 'handoff'`,
@@ -50,6 +52,11 @@ surface milestone, turn cap, launcher, tty, spawn style로 affinity closure나
 handoff를 추론하지 않는다.
 
 ## Exact boundary publication
+
+emit 전에 `runtime-executable diagnose`와 사람의 정확한
+`runtime-executable approve` argv가 끝나 있어야 한다. Path V이면 emit 전에
+`attended-launch approve --style visible`도 끝나 있어야 한다. 승인이 없으면
+emit하지 않고 `needs-human`. emit 뒤에 두 승인을 호출하지 않는다.
 
 public `next-action --json`은 boundary를
 `<boundary_seq>:<boundary_checksum>` 문자열로 렌더한다. 그
@@ -92,8 +99,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<cano
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <n> --mode preserve --reason "needs-human:workstream-terminal" --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-사람은 출력된 Claude `/deep-loop-resume` 또는 Codex
-`$deep-loop:deep-loop-resume` 명령을 새 conversation에서 그대로 실행한다.
+사람은 출력된 Claude `/deep-loop-resume`, Codex
+`$deep-loop:deep-loop-resume`, 또는 Grok `/deep-loop-resume` 명령을 새
+conversation에서 그대로 실행한다.
 
 ## Unattended continuation
 
@@ -118,7 +126,7 @@ exact child identity만 사용한다. `<attempt_id>`는 **호출 전에** 자기
 호출 후 영속화는 amnesiac 창을 남기므로 금지하며, 새 값을 만들면 replay가 성립하지 않는다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <current_generation> --runtime <claude|codex|grok> --attempt-id <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 **`proceed:true` 뒤에만** 승격한다 — 모든 public 획득 경로가 같은 fence를 통과한다.

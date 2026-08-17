@@ -6,7 +6,11 @@ import { homedir } from 'node:os';
 // "this sibling is installed somewhere" discovery signal. Routing keys on `present` (installed OR
 // initialized marker), which is robust to install-detection imperfection: a missed install falls back
 // to the project marker, and the 2-plane boundary means the executor verifies callability at dispatch.
-const CACHE_ROOTS = [join('.claude', 'plugins', 'cache'), join('.codex', 'plugins', 'cache')];
+const CACHE_ROOTS = [
+  join('.claude', 'plugins', 'cache'),
+  join('.codex', 'plugins', 'cache'),
+  join('.grok', 'installed-plugins'),
+];
 const PLUGINS = ['deep-work', 'deep-review', 'deep-docs', 'deep-evolve', 'deep-dashboard', 'deep-memory', 'deep-wiki', 'codex'];
 
 const has = (p) => { try { return existsSync(p); } catch { return false; } };

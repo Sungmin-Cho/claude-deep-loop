@@ -449,11 +449,11 @@ test('CLI lease acquire requires a valued runtime', () => {
 
   const missing = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen)]);
   assert.equal(missing.status, 2, missing.stdout + missing.stderr);
-  assert.match(missing.stderr, /--runtime <claude\|codex> is required/);
+  assert.match(missing.stderr, /--runtime <claude\|codex\|grok> is required/);
 
   const valueless = run(root, ['lease', 'acquire', '--owner', owner, '--generation', String(gen), '--runtime']);
   assert.equal(valueless.status, 2, valueless.stdout + valueless.stderr);
-  assert.match(valueless.stderr, /--runtime <claude\|codex> is required/);
+  assert.match(valueless.stderr, /--runtime <claude\|codex\|grok> is required/);
 });
 
 test('CLI lease acquire classifies an invalid runtime enum or stored runtime state as exit 1', () => {

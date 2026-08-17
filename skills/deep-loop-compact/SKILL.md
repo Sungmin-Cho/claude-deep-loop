@@ -18,6 +18,11 @@ accept exactly one explicit argument:
 
 - Claude: `/deep-loop-compact prepare|restore`
 - Codex: `$deep-loop:deep-loop-compact prepare|restore`
+- Grok Build: `/deep-loop-compact prepare|restore` (모호하면 `/deep-loop:deep-loop-compact prepare|restore`). 슬래시 호출이 Claude를 뜻하지 않는다.
+
+If durable `session_runtime` is grok, stop. Do not call `checkpoint emit` or
+`checkpoint restore`. Report `needs-human`: grok compact is unsupported until
+a hook-fire fixture exists.
 
 Checkpoint presence must never select or guess a phase or mode. A missing mode
 or unknown mode is rejected, as are extra arguments and conflicting host
@@ -40,14 +45,15 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.sess
 
 Set `<owner_run_id>` from `session_chain.lease.owner_run_id`,
 `<generation>` from `session_chain.lease.generation`, and
-`<claude|codex>` from the durable current owner session. Read the current
+`<claude|codex|grok>` from the durable current owner session. If that value is
+`grok`, stop without emit or restore. Read the current
 Workstream and episode and require the same open bound affinity. Do not infer
 an affinity from a checkpoint.
 
 Invoke only the public fenced checkpoint writer:
 
 ```text
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint emit --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint emit --owner <owner_run_id> --generation <generation> --runtime <claude|codex|grok> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 After a successful emit, print the documented native compact command but
@@ -108,14 +114,14 @@ Use only the returned relative `<checkpoint_rel>`. A trusted SessionStart
 `compacted` capsule invokes only the receipt-backed observation admission:
 
 ```text
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --admission postcompact-observation --source sessionstart --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex|grok> --admission postcompact-observation --source sessionstart --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 A direct human `restore` invocation, and only that invocation, uses the
 cooperative manual admission. It never consumes a receipt:
 
 ```text
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex> --admission human-attested --source direct-human-skill --confirm-manual-compact --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <checkpoint_rel> --owner <owner_run_id> --generation <generation> --runtime <claude|codex|grok> --admission human-attested --source direct-human-skill --confirm-manual-compact --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 Automatic SessionStart, controller, retry, and fallback paths must never add

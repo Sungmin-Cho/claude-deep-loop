@@ -145,6 +145,7 @@ test('user docs carry the exact cross-runtime support matrix and distinguish Pow
     'Codex CLI, macOS/Linux',
     'Codex CLI, native Windows',
     'Codex App',
+    'Grok CLI, macOS',
   ];
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');
@@ -201,6 +202,26 @@ test('user docs publish the compatibility, authorization, recovery, and WAL cont
       'terminal/launch-command.txt',
       'terminal/launch-command.meta.json',
     ]) assert.ok(source.includes(artifact), `${path} missing ${artifact}`);
+  }
+});
+
+test('user docs publish the Grok attended-Darwin contract, closed compact, and 1.17.0 downgrade', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    const grokRow = source.split('\n').find(candidate => candidate.startsWith('| Grok CLI, macOS |'));
+    assert.ok(grokRow, `${path} missing support row Grok CLI, macOS`);
+    assert.match(grokRow, /workstream-session/, `${path} must publish workstream-session for Grok CLI`);
+    assert.match(grokRow, /compact (?:unsupported|미지원)/i, `${path} Grok row must close compact`);
+    assert.match(grokRow, /no measured headless/, `${path} Grok row must close measured headless`);
+    assert.match(source, /Grok CLI[\s\S]{0,400}attended Darwin/i,
+      `${path} must declare Grok as attended Darwin`);
+    assert.match(source, /Grok compact is unsupported/i,
+      `${path} must publish the Task 3 compact-off sentence`);
+    assert.match(source, /matcher `"\*"`.{0,160}did not fire on measured Grok 1\.0\.4/i,
+      `${path} must cite the measured matcher no-fire`);
+    assert.match(source, /1\.18[\s\S]{0,80}grok[\s\S]{0,200}1\.17\.0[\s\S]{0,160}validateSessionRuntime/i,
+      `${path} must publish the 1.18→1.17.0 grok fail-stop`);
+    assert.match(source, /fail-stop/i, `${path} must say grok downgrade fail-stops`);
   }
 });
 
@@ -279,7 +300,7 @@ test('user docs define runtime and launcher executable diagnosis, approval, and 
       'launcher-executable diagnose',
       'launcher-executable approve',
     ]) assert.ok(source.includes(command), `${path} missing ${command}`);
-    assert.match(source, /runtime-executable approve --runtime <claude\|codex> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>"/);
+    assert.match(source, /runtime-executable approve --runtime <claude\|codex\|grok> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>"/);
     assert.match(source, /launcher-executable approve --kind <wt\|powershell> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>"/);
     for (const token of ['canonical_path', 'sha256', '--actor human', '--confirm', '--owner', '--generation']) {
       assert.ok(source.includes(token), `${path} missing approval token ${token}`);

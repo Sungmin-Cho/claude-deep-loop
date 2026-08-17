@@ -153,6 +153,7 @@ test('legacy/default launch command remains byte-compatible with explicit Claude
   assert.deepEqual(legacy, explicit);
   assert.deepEqual(explicit, buildRuntimeResumeDescriptor({ ...base, runtime: 'claude' }).entries);
   assert.equal(explicit.headless.bin, 'claude');
+  assert.equal(explicit.headless.usageOutputKind, 'claude-json');
   assert.deepEqual(explicit.headless.argv, [
     '-p',
     'Read .deep-loop/runs/01PARENT/handoffs/next.md first; then run /deep-loop-resume',

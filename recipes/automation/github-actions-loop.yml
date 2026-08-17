@@ -527,7 +527,7 @@ jobs:
             ]) || manifest.operationId !== operationId || typeof manifest.kind !== 'string' || !manifest.kind
               || !exactKeys(manifest.expect, ['owner', 'generation']) || typeof manifest.expect.owner !== 'string'
               || !Number.isSafeInteger(manifest.expect.generation) || manifest.expect.generation < 1
-              || !['claude', 'codex'].includes(manifest.runtime) || typeof manifest.projectRoot !== 'string'
+              || !['claude', 'codex', 'grok'].includes(manifest.runtime) || typeof manifest.projectRoot !== 'string'
               || !/^[0-9a-f]{64}$/.test(manifest.preLoopHash || '')
               || !Array.isArray(manifest.eventLines) || !Array.isArray(manifest.targets)
               || typeof manifest.candidateLoopHash !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.candidateLoopHash))

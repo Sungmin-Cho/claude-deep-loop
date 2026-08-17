@@ -636,7 +636,7 @@ const handlers = {
       return 2;
     }
     const runtime = reqStr(f, 'runtime');
-    if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+    if (!runtime) { error('USAGE: --runtime <claude|codex|grok> is required'); return 2; }
     const candidatePath = reqStr(f, 'path');
     if (!candidatePath) { error('USAGE: --path ABSOLUTE_EXECUTABLE_OR_WRAPPER is required'); return 2; }
 
@@ -741,7 +741,7 @@ const handlers = {
     const f = parseFlags(a);
     const root = rootOf(f);
     const runtime = reqStr(f, 'runtime');
-    if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+    if (!runtime) { error('USAGE: --runtime <claude|codex|grok> is required'); return 2; }
     if (f['session-profile'] === undefined && (f.model === true || f.effort === true)) {
       error('USAGE: --model/--effort require a value'); return 2;
     }
@@ -1184,7 +1184,7 @@ const handlers = {
       const owner = strArg(f, 'owner');
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
-      if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+      if (!runtime) { error('USAGE: --runtime <claude|codex|grok> is required'); return 2; }
       // spec §3.6.1: optional additive 플래그. 형식 위반은 **invalid value → exit 1** 이며 strArg 의
       // fence 채널(exit 3)을 타지 않는다. 미지정은 위반이 아니다(현행 동작 완전 보존).
       let attemptId = null;
@@ -1507,6 +1507,7 @@ const handlers = {
           expect, expectedMode: mode,
         });
       json({ mode, ...r });
+      if (r.action === 'unmeasured-runtime' || r.action === 'paused') return 1;
       return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' || r.action === 'fenced' || r.action === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
       const msg = String(e?.message || e);

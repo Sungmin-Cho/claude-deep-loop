@@ -75,6 +75,30 @@ test('runStreamingProcess discards valid usage after timeout or non-zero exit', 
   assert.equal(nonzero.usage, undefined);
 });
 
+test('streaming process APIs reject a missing usageOutputKind before spawning', async () => {
+  const { runStreamingProcess, runStreamingProcessSync } = await streamingModule();
+  let runtimeSpawns = 0;
+  const asyncResult = await runStreamingProcess({ bin: process.execPath, argv: [] }, {
+    timeoutMs: 2_000,
+    spawnImpl: () => {
+      runtimeSpawns += 1;
+      throw new Error('missing usageOutputKind must not spawn runtime');
+    },
+  });
+  let workerSpawns = 0;
+  const syncResult = runStreamingProcessSync({ bin: process.execPath, argv: [] }, {
+    timeoutMs: 2_000,
+    spawnSyncImpl: () => {
+      workerSpawns += 1;
+      throw new Error('missing usageOutputKind must not spawn worker');
+    },
+  });
+  assert.deepEqual(asyncResult, { ok: false, reason: 'unsupported-usage-kind' });
+  assert.deepEqual(syncResult, { ok: false, reason: 'unsupported-usage-kind' });
+  assert.equal(runtimeSpawns, 0);
+  assert.equal(workerSpawns, 0);
+});
+
 test('streaming process APIs reject invalid timeouts before spawning runtime or worker', async () => {
   const { runStreamingProcess, runStreamingProcessSync } = await streamingModule();
   const invalidTimeouts = [NaN, Infinity, -Infinity, -1, 1.5, 2_147_483_648];
@@ -454,13 +478,14 @@ test('runStreamingProcessSync bounds worker request and result protocols before 
     bin: process.execPath,
     argv: [fixture, 'checkpoint', '/unused'],
     stdin: 'x'.repeat(2 * 1024 * 1024),
+    usageOutputKind: 'claude-json',
   }, {
     spawnSyncImpl: () => {
       spawns += 1;
       throw new Error('overflow request must not spawn a worker');
     },
   });
-  const rawStdoutProtocol = runStreamingProcessSync({ bin: process.execPath, argv: [] }, {
+  const rawStdoutProtocol = runStreamingProcessSync({ bin: process.execPath, argv: [], usageOutputKind: 'claude-json' }, {
     spawnSyncImpl: () => ({
       status: 0,
       signal: null,
@@ -468,7 +493,7 @@ test('runStreamingProcessSync bounds worker request and result protocols before 
       stderr: '',
     }),
   });
-  const missingUsageProtocol = runStreamingProcessSync({ bin: process.execPath, argv: [] }, {
+  const missingUsageProtocol = runStreamingProcessSync({ bin: process.execPath, argv: [], usageOutputKind: 'claude-json' }, {
     spawnSyncImpl: () => ({
       status: 0,
       signal: null,
@@ -476,7 +501,7 @@ test('runStreamingProcessSync bounds worker request and result protocols before 
       stderr: '',
     }),
   });
-  const resultOverflow = runStreamingProcessSync({ bin: process.execPath, argv: [] }, {
+  const resultOverflow = runStreamingProcessSync({ bin: process.execPath, argv: [], usageOutputKind: 'claude-json' }, {
     spawnSyncImpl: () => ({
       status: 0,
       signal: null,

@@ -63,8 +63,9 @@ function tmuxLauncherIdentity(platform = 'linux') {
 function seedVisible({ approval, launcher = 'cmux', platform = 'linux' } = {}) {
   const effectiveApproval = approval === undefined ? runtimeIdentity({ platform }) : approval;
   const root = mkdtempSync(join(tmpdir(), 'dl-posix-codex-'));
+  const initPlatform = ['darwin', 'linux', 'win32'].includes(platform) ? platform : 'linux';
   const { runId } = initRun(root, {
-    runtime: 'codex', goal: 'g', now: NOW0, env: {}, platform, run: noOpRun,
+    runtime: 'codex', goal: 'g', now: NOW0, env: {}, platform: initPlatform, run: noOpRun,
   });
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'visible';

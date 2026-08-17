@@ -1,7 +1,7 @@
-export const SESSION_RUNTIMES = Object.freeze(['claude', 'codex']);
+export const SESSION_RUNTIMES = Object.freeze(['claude', 'codex', 'grok']);
 
 // 각 필드 주석은 소비자 목록이다(유일 소비자 선언이 아니다).
-// 값은 전부 현행 동작에서 읽어온 것이며, 이 커밋은 어떤 값도 새로 정하지 않는다.
+// claude/codex 값은 1.16 동작의 전사다. grok 값은 Phase 0 attended-Darwin 계약이다.
 export const RUNTIME_CAPABILITIES = Object.freeze({
   claude: Object.freeze({
     skill_token_style: 'slash',                      // runtime-descriptor:123 · checkpoint:846 · sessionstart-restore:199,202,213
@@ -16,6 +16,9 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     max_effort_supported: true,                      // session-profile:27
     executable_name: 'claude',                       // runtime-executable:577
     version_probe: 'claude',                         // runtime-executable:375
+    supported_platforms: Object.freeze(['darwin', 'linux', 'win32']), // assertRuntimePlatform · acquireLease · acquireRecovery · acquireRootRecovery · initrun
+    measured_headless: true,                         // headless-host skip rewrite / would-spawn pause
+    session_effort_allowed: 'kernel-set',            // session-profile validateRuntimeProfile
   }),
   codex: Object.freeze({
     skill_token_style: 'dollar',
@@ -30,6 +33,26 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     max_effort_supported: false,
     executable_name: 'codex',
     version_probe: 'codex',
+    supported_platforms: Object.freeze(['darwin', 'linux', 'win32']),
+    measured_headless: true,
+    session_effort_allowed: 'kernel-set',
+  }),
+  grok: Object.freeze({
+    skill_token_style: 'slash',
+    provider_label: 'grok',
+    usage_output_kind: 'unmeasured',
+    entrypoint_heuristic: null,
+    desktop_transport: false,
+    unattended_checker: false,
+    requires_process_preflight: false,
+    requires_process_receipt_settlement: false,
+    requires_posix_visible_executable_trust: true,
+    max_effort_supported: false,
+    executable_name: 'grok',
+    version_probe: 'grok',
+    supported_platforms: Object.freeze(['darwin']),
+    measured_headless: false,
+    session_effort_allowed: 'none',
   }),
 });
 
@@ -45,6 +68,16 @@ export function runtimeCapability(runtime, field) {
   return row[field];
 }
 
+export function assertRuntimePlatform(runtime, platform) {
+  const allowed = runtimeCapability(runtime, 'supported_platforms');
+  if (!allowed.includes(platform)) {
+    throw Object.assign(
+      new Error(`UNSUPPORTED_RUNTIME_PLATFORM: ${runtime} on ${platform}`),
+      { code: 'UNSUPPORTED_RUNTIME_PLATFORM' },
+    );
+  }
+}
+
 // `deep-loop-compact restore`처럼 인자가 붙는 형태도 그대로 받는다.
 // 현행 출력과 문자 그대로 같아야 한다 — 특성화 테스트가 이를 고정한다.
 export function skillToken(runtime, skillWithArgs) {
@@ -55,7 +88,7 @@ export function skillToken(runtime, skillWithArgs) {
 
 export function validateSessionRuntime(value) {
   if (!SESSION_RUNTIMES.includes(value)) {
-    throw new Error(`INVALID_RUNTIME: expected claude or codex, got ${String(value)}`);
+    throw new Error(`INVALID_RUNTIME: expected claude, codex, or grok, got ${String(value)}`);
   }
   return value;
 }

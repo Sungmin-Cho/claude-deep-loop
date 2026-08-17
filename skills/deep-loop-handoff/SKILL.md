@@ -17,8 +17,11 @@ user-invocable: true
 literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경
 변수나 셸 확장으로 루트를 만들지 않는다.
 
-호출은 Claude에서 `/deep-loop-handoff`, Codex에서
-`$deep-loop:deep-loop-handoff` 형식을 사용한다.
+호출은 제품 이름(Claude Code / Codex / Grok Build)을 직접 assertion한다.
+Claude Code는 `/deep-loop-handoff`, Codex는
+`$deep-loop:deep-loop-handoff`, Grok Build는 `/deep-loop-handoff`(모호하면
+`/deep-loop:deep-loop-handoff`)를 사용한다. 슬래시 호출이 Claude를 뜻하지
+않는다. 환경 변수로 호스트를 단정하지 않는다.
 
 ## 단계 1: 현재 identity와 kernel action
 
@@ -46,9 +49,11 @@ logical run id로 run을 찾고, 이 스킬은 maker/checker 파일을 변경하
 `action.type !== 'handoff'`이면 handoff를 emit하지 않는다.
 
 - 열린 Workstream affinity가 있으면 현재 owner conversation에 남는다.
-- `action.advice === 'compact'`이면 `/deep-loop-compact prepare` 또는
-  `$deep-loop:deep-loop-compact prepare`를 사용해 host native `/compact`
-  명령을 준비한다. compact는 같은 conversation과 lease를 유지한다.
+- `action.advice === 'compact'`이면 durable `session_runtime`이 grok일 때
+  compact를 호출하지 않고 `needs-human`으로 멈춘다. 그 외에는
+  `/deep-loop-compact prepare` 또는 `$deep-loop:deep-loop-compact prepare`를
+  사용해 host native `/compact` 명령을 준비한다. compact는 같은
+  conversation과 lease를 유지한다.
 - `action.type === 'await_human'`이면 `action.reason`을 그대로 보고하고
   `/deep-loop-status`를 안내한다.
 
@@ -62,7 +67,24 @@ public `next-action --json`은 boundary를
 surface milestone, turn cap, launcher, 또는 spawn style로 boundary를 추론하지
 않는다.
 
-## 단계 3: Exact boundary emit
+## 단계 3: Runtime 승인 후 exact boundary emit
+
+emit 전에 실행파일을 진단하고 사람이 승인한 뒤에만 진행한다. 승인이 없으면
+emit하지 않고 `needs-human`으로 멈춘다. emit 뒤에 `runtime-executable
+approve` 또는 `attended-launch approve`를 호출하지 않는다.
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex|grok> --path "<human-supplied-absolute-exe>"
+```
+
+사람이 README의 **정확한** `runtime-executable approve` argv를 실행한다. 스킬이
+approve 명령을 합성하지 않는다.
+
+Path V(visible spawn)이면 emit 전에 사람이 `attended-launch approve --style visible`를
+실행한다. 이 스킬은 그 명령을 자동 발행하지 않는다. 승인이 없으면 emit하지 않고
+`needs-human`. 승인 후 owner/generation을 다시 읽고 emit한다:
+
+
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --boundary-event <boundary_seq>:<boundary_checksum> --reason "workstream-terminal" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -104,8 +126,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<cano
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <n> --mode preserve --reason "needs-human:workstream-terminal" --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-사람은 출력된 Claude `/deep-loop-resume` 또는 Codex
-`$deep-loop:deep-loop-resume` 명령을 새 conversation에서 그대로 실행한다.
+사람은 출력된 Claude `/deep-loop-resume`, Codex
+`$deep-loop:deep-loop-resume`, 또는 Grok `/deep-loop-resume` 명령을 새
+conversation에서 그대로 실행한다. 출력된 bin을 셸에 붙이는 것은 respawn
+재검증 우회이므로 자동으로 하지 않는다.
 Codex App task 생성은 수동이다. `codex-transport-not-activated` 또는
 `runtime-identity-unavailable`을 launcher 추측으로 우회하지 않는다. native
 Windows, macOS/Linux `cmux`, macOS iTerm2/Terminal.app 모두 exact

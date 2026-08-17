@@ -568,7 +568,8 @@ function buildClaudeEntries({
       ? {
         platform: 'win32', bin: runtimeBin,
         argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
-        cwd: root, shell: false, display: `# Claude CLI headless: ${JSON.stringify(runtimeBin)} (trusted native identity)`,
+        cwd: root, shell: false, usageOutputKind: 'claude-json',
+        display: `# Claude CLI headless: ${JSON.stringify(runtimeBin)} (trusted native identity)`,
       }
       : unavailableEntry('headless', 'trusted-native-runtime-unavailable');
     return {
@@ -615,6 +616,7 @@ function buildClaudeEntries({
       bin: 'claude',
       argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
       cwd: root,
+      usageOutputKind: 'claude-json',
       display: headlessDisplay,
     },
     interactive: {
@@ -623,13 +625,124 @@ function buildClaudeEntries({
   };
 }
 
+function grokModelSh(quote, model) {
+  return model ? ` --model ${quote(model)}` : '';
+}
+
+function grokCanonicalPath(runtimeExecutableIdentity, platform) {
+  if (platform !== 'darwin') return null;
+  return posixRuntimePath(runtimeExecutableIdentity, { runtime: 'grok', platform });
+}
+
+function buildGrokEntries({
+  root, parentRunId, childRunId, handoffRel,
+  launcher, launcherBin, launcherSocket, launcherSession,
+  platform = process.platform, exists = existsSync,
+  model = null, effort = null,
+  runtimeExecutableIdentity = null, launcherIdentity = null,
+}) {
+  void childRunId;
+  validateRuntimeProfile('grok', { model, effort });
+  const closed = (surface, reason) => unavailableEntry(surface, reason);
+  if (platform !== 'darwin') {
+    const reason = `unsupported-on-${platform}`;
+    return {
+      cmux: closed('cmux', reason),
+      tmux: closed('tmux', reason),
+      iterm2: closed('iterm2', reason),
+      'terminal-app': closed('terminal-app', reason),
+      wt: closed('wt', reason),
+      powershell: closed('powershell', reason),
+      desktop: closed('desktop', reason),
+      headless: closed('headless', reason),
+      interactive: closed('interactive', reason),
+    };
+  }
+  const canonical = grokCanonicalPath(runtimeExecutableIdentity, platform);
+  if (canonical == null) {
+    const reason = 'runtime-identity-unavailable';
+    return {
+      cmux: closed('cmux', reason),
+      tmux: closed('tmux', reason),
+      iterm2: closed('iterm2', reason),
+      'terminal-app': closed('terminal-app', reason),
+      wt: closed('wt', reason),
+      powershell: closed('powershell', reason),
+      desktop: closed('desktop', reason),
+      headless: closed('headless', reason),
+      interactive: closed('interactive', reason),
+    };
+  }
+  const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
+  const interactiveDisplay = `cd ${q(root)} && ${q(canonical)} ${q(resumePrompt)}${grokModelSh(q, model)}`;
+  const resumeShellCommand = `${q(canonical)} ${q(resumePrompt)}${grokModelSh(q, model)}`;
+  const cmuxCommand = `${q(canonical)} ${q(resumePrompt)}${grokModelSh(q, model)}`;
+  let cmux = closed('cmux', 'trusted-posix-launcher-unavailable');
+  if (launcher === 'cmux' && typeof launcherBin === 'string' && posix.isAbsolute(launcherBin)
+    && typeof launcherSocket === 'string' && launcherSocket.length > 0) {
+    const cmuxArgv = [
+      '--socket', launcherSocket,
+      'new-workspace', '--cwd', root,
+      '--command', cmuxCommand,
+      '--focus', 'true',
+    ];
+    cmux = {
+      bin: launcherBin,
+      argv: cmuxArgv,
+      shell: false,
+      display: `${q(launcherBin)} --socket ${q(launcherSocket)} new-workspace --cwd ${q(root)} --command ${q(cmuxCommand)} --focus true`,
+    };
+  }
+  const osascript = '/usr/bin/osascript';
+  let iterm2 = closed('iterm2', exists(osascript) ? 'launcher-not-selected' : 'osascript-unavailable');
+  let terminalApp = closed('terminal-app', exists(osascript) ? 'launcher-not-selected' : 'osascript-unavailable');
+  if (exists(osascript)) {
+    const innerSh = `cd ${q(root)} && exec ${resumeShellCommand}`;
+    const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
+    const terminalScript = `tell application "Terminal" to do script "${escApple(innerSh)}"`;
+    if (launcher === 'iterm2') {
+      iterm2 = {
+        bin: osascript,
+        argv: ['-e', iterm2Script],
+        shell: false,
+        display: `${q(osascript)} -e ${q(iterm2Script)}`,
+      };
+    }
+    if (launcher === 'terminal-app') {
+      terminalApp = {
+        bin: osascript,
+        argv: ['-e', terminalScript],
+        shell: false,
+        display: `${q(osascript)} -e ${q(terminalScript)}`,
+      };
+    }
+  }
+  return {
+    cmux,
+    tmux: tmuxEntry({
+      root, launcher, launcherBin, launcherSocket, launcherSession, launcherIdentity,
+      platform, resumeShellCommand,
+    }),
+    iterm2,
+    'terminal-app': terminalApp,
+    wt: closed('wt', 'grok-transport-unavailable'),
+    powershell: closed('powershell', 'grok-transport-unavailable'),
+    desktop: closed('desktop', 'grok-transport-unavailable'),
+    headless: closed('headless', 'grok-transport-unavailable'),
+    interactive: { display: interactiveDisplay },
+  };
+}
+
 const ENTRY_BUILDERS = Object.freeze({
   claude: buildClaudeEntries,
   codex: buildCodexEntries,
+  grok: buildGrokEntries,
 });
 
 const RESUME_PROMPTS = Object.freeze({
   claude: ({ parentRunId, handoffRel }) =>
+    `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`,
+  grok: ({ parentRunId, handoffRel }) =>
     `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`,
   codex: ({ platform, root, parentRunId, handoffRel, invocation }) =>
     `Read ${JSON.stringify(pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel))} first; then run ${invocation}`,

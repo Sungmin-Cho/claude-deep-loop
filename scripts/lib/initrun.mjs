@@ -6,12 +6,14 @@ import { writeState, runDir } from './state.mjs';
 import { ulid } from './envelope.mjs';
 import { detectTerminal, defaultProbeRun } from './detect-terminal.mjs';
 import { pluginPresent } from './detect.mjs';
-import { validateModel, validateEffort } from './session-profile.mjs';
-import { validateSessionRuntime } from './runtime.mjs';
+import { validateRuntimeProfile } from './session-profile.mjs';
+import { assertRuntimePlatform, validateSessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 
 export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {}, review, now = new Date(), runId, git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null, continuationPolicy = null }) {
   validateSessionRuntime(runtime);
+  assertRuntimePlatform(runtime, platform);
+  validateRuntimeProfile(runtime, { model, effort });
   if (review?.reviewer === 'standalone') throw new Error('REVIEWER_STANDALONE_INVALID: standalone reviewer is supported only for legacy-state resolution');
   if (continuationPolicy != null && continuationPolicy !== 'workstream-session') {
     throw new Error(`UNSUPPORTED_RUNTIME_POLICY: new runs require workstream-session, got ${continuationPolicy}`);
@@ -45,8 +47,8 @@ export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {
 
 export function initRun(root, { runtime, goal, protocol, recipe, review, detected = {}, now = new Date(), git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null, continuation = null }) {
   validateSessionRuntime(runtime);
-  if (model != null) validateModel(model);
-  if (effort != null) validateEffort(effort);
+  assertRuntimePlatform(runtime, platform);
+  validateRuntimeProfile(runtime, { model, effort });
   if (continuation != null && continuation !== 'workstream-session') {
     throw new Error(`UNSUPPORTED_RUNTIME_POLICY: new runs require workstream-session, got ${continuation}`);
   }

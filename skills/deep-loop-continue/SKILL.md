@@ -16,7 +16,7 @@ user-invocable: true
 
 로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
 
-호출은 Claude에서 `/deep-loop-continue`, Codex에서 `$deep-loop:deep-loop-continue` 형식을 사용한다.
+호출은 제품 이름(Claude Code / Codex / Grok Build)을 직접 assertion한다. Claude Code는 `/deep-loop-continue`, Codex는 `$deep-loop:deep-loop-continue`, Grok Build는 `/deep-loop-continue`(모호하면 `/deep-loop:deep-loop-continue`)를 사용한다. 슬래시 호출이 Claude를 뜻하지 않는다. 환경 변수로 호스트를 단정하지 않는다.
 
 ## Invocation mode
 
@@ -123,7 +123,7 @@ stop한다. model/effort are not part of the immutable capsule identity. 따라�
 model/effort를 public kernel route로 갱신한다. 스킬이 상태 파일을 직접
 쓰지 않는다.
 
-현재 호스트가 알려 준 model과 effort를 직접 관측한다. 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만들고 다음 완전한 명령 하나를 사용한다:
+현재 호스트가 알려 준 model과 effort를 직접 관측한다. 관측된 필드만 `model`/`effort` key로 넣어 한 줄 compact JSON을 만들고 다음 완전한 명령 하나를 사용한다. durable `session_runtime`이 grok이면 effort를 넣지 않는다:
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --session-profile '<session_profile_json_compact>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -230,7 +230,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --s
 
 ### dispatch_checker
 
-먼저 `references/adapters.md`의 **상호 배타 checker routing** Route A–D 중 실제 가능한 경로를 선택하되 아직 dispatch하지 않는다. Route D이면 `needs-human`으로 중단하며 계약 파일도 쓰지 않는다. Route A/B/C일 때만 아래 계약 준비를 수행한 뒤 선택한 경로로 dispatch한다.
+먼저 `references/adapters.md`의 **상호 배타 checker routing** Route A–D 중 실제 가능한 경로를 선택하되 아직 dispatch하지 않는다. durable `session_runtime`이 grok이면 Route D만 사용한다 — 이 대화에서 `review dispatch`, `deep-review:*`, `spawn_subagent` checker를 호출하지 않는다. Route D이면 `needs-human`으로 중단하며 계약 파일도 쓰지 않는다. Route A/B/C일 때만 아래 계약 준비를 수행한 뒤 선택한 경로로 dispatch한다.
 
 Route A/B/C 선택 후, 실제 spawn 전에 maker와 **별도** route를 한 번 수행한다. 성공한 결정은 아래 review dispatch의 `--routing` JSON으로 checker 생성 시 심는다. 생성 후 episode record로 routing을 추가하지 않는다. HIGH/CRITICAL 실패·human_gate면 review dispatch와 spawn을 하지 않고 `await_human`. 라우터 부재·LOW/MEDIUM degrade면 `--routing` 없이 dispatch하고 session_profile을 쓴다.
 
@@ -321,7 +321,9 @@ self-report는 best-effort 보정일 뿐이다. 커널이 각 business mutation�
 
 ### Compact advice
 
-`action.advice === 'compact'`이면 handoff하지 않는다. 현재 owner conversation에서
+`action.advice === 'compact'`이면 handoff하지 않는다. durable
+`session_runtime`이 grok이면 `/deep-loop-compact`를 호출하지 않고
+`needs-human`으로 멈춘다. 그 외에는 현재 owner conversation에서
 `/deep-loop-compact prepare` 또는 `$deep-loop:deep-loop-compact prepare`를
 호출하고, 그 스킬이 출력한 host native `/compact` 명령을 사람에게 제시한다.
 compact prepare/restore는 같은 conversation, 같은 lease, 같은 Workstream

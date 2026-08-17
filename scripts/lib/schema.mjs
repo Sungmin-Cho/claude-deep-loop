@@ -183,7 +183,7 @@ function validateCompactCursor(cursor, session, errors) {
   }
   if (cursor.owner_run_id !== session.run_id) fail('owner_run_id must match containing session run_id');
   if (!Number.isSafeInteger(cursor.generation) || cursor.generation < 1) fail('generation must be a positive integer');
-  if (!SESSION_RUNTIMES.includes(cursor.runtime)) fail('runtime must be claude or codex');
+  if (!SESSION_RUNTIMES.includes(cursor.runtime)) fail('runtime must be claude, codex, or grok');
   for (const field of ['workstream_id', 'episode_id']) {
     if (!nonEmptyString(cursor[field])) fail(`${field} must be a non-empty safe string`);
   }
@@ -387,7 +387,7 @@ function validateRuntimeExecutableApproval(approval, autonomy, errors) {
 
   const runtime = approval.runtime;
   const storedRuntime = autonomy.session_runtime ?? 'claude';
-  if (!SESSION_RUNTIMES.includes(runtime)) fail('runtime must be claude or codex');
+  if (!SESSION_RUNTIMES.includes(runtime)) fail('runtime must be claude, codex, or grok');
   else if (runtime !== storedRuntime) fail('runtime must match immutable autonomy.session_runtime');
   if (!portableAbsolute(approval.canonical_path)) fail('canonical_path must be absolute');
   if (!/^[0-9a-f]{64}$/.test(approval.sha256 || '')) fail('sha256 must be lowercase 64-hex');

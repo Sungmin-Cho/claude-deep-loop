@@ -38,7 +38,7 @@ import {
   normalizePortableRelativePath,
 } from './fs-safe.mjs';
 import { projectRootDigest } from './project-root.mjs';
-import { runtimeFence, sessionRuntime } from './runtime.mjs';
+import { runtimeCapability, runtimeFence, sessionRuntime } from './runtime.mjs';
 import { buildRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
 
 const RECOVERY_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
@@ -1052,6 +1052,7 @@ export function acquireRecovery(root, runId, {
   runtime,
   now,
   clock = Date.now,
+  platform = process.platform,
   __testPreCheckSeam,
 } = {}) {
   if (typeof capsuleRel !== 'string' || capsuleRel.length === 0
@@ -1069,6 +1070,13 @@ export function acquireRecovery(root, runId, {
     const runtimeResult = runtimeFence(loop, runtime);
     if (!runtimeResult.ok) throw new Error('RUNTIME_FENCED: recovery runtime mismatch');
     const lease = loop.session_chain?.lease || {};
+    if (!runtimeCapability(runtime, 'supported_platforms').includes(platform)) {
+      throw acquireHalt(contractFields({
+        ok: false,
+        reason: 'UNSUPPORTED_RUNTIME_PLATFORM',
+        generation: lease.generation,
+      }));
+    }
     if (lease.generation !== expectGeneration) {
       throw new Error('LEASE_FENCED: generation-mismatch');
     }

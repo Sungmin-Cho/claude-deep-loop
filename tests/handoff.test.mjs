@@ -84,6 +84,7 @@ test('headless entry has no bash; uses cwd=root, bin=claude', () => {
   const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'none' });
   assert.equal(c.headless.bin, 'claude');
   assert.equal(c.headless.cwd, '/p');
+  assert.equal(c.headless.usageOutputKind, 'claude-json');
   assert.ok(!c.headless.argv.includes('-c'), 'no bash -c');
   assert.notEqual(c.headless.bin, 'bash');
 });
@@ -259,6 +260,17 @@ test('tmux descriptor stays unavailable without the selected approved launcher i
   assert.equal(buildPosixLaunchCommand(base).tmux.unavailable, true);
   const tmux = launcherIdentity('tmux', '/opt/bin/tmux', { platform: 'linux', source: 'human-explicit' });
   assert.equal(buildPosixLaunchCommand({ ...base, launcherIdentity: tmux, launcherSession: null }).tmux.unavailable, true);
+});
+
+test('Windows Claude headless entry sets usageOutputKind when the native runtime is trusted', () => {
+  const claude = executableIdentity('claude', 'C:\\Program Files\\Claude\\claude.exe');
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: claude,
+  });
+  assert.equal(c.headless.bin, claude.canonical_path);
+  assert.equal(c.headless.usageOutputKind, 'claude-json');
+  assert.equal(c.headless.shell, false);
 });
 
 test('Windows Claude descriptors without trusted runtime and launcher identities stay manual/unavailable', () => {

@@ -9,6 +9,8 @@ import { execFileSync } from 'node:child_process';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from '../scripts/lib/spawn-optin.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { runtimeCapability } from '../scripts/lib/runtime.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const OWNER = 'SPAWNOPTIN01';
@@ -127,6 +129,31 @@ function mutatingCli(root, runId, args, options = {}) {
 }
 
 // ── lib: offerDesktop / confirmDesktop / declineDesktop ──────────────────────
+
+test('Codex desktop_transport is false: offer and confirm mutate nothing', () => {
+  assert.equal(runtimeCapability('codex', 'desktop_transport'), false);
+  const root = mkdtempSync(join(tmpdir(), 'dl-spawn-optin-codex-'));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', detected: {},
+    now: new Date('2026-07-01T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const expect = { owner: runId, generation: 1 };
+  const before = readState(root, runId).data;
+  const seq0 = before.event_log_head.seq;
+  const style0 = before.autonomy.spawn_style;
+  assert.throws(
+    () => offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' }),
+    /DESKTOP_TRANSPORT_UNSUPPORTED/,
+  );
+  assert.throws(
+    () => confirmDesktop(root, runId, { expect, now: T0, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe }),
+    /DESKTOP_TRANSPORT_UNSUPPORTED/,
+  );
+  const after = readState(root, runId).data;
+  assert.equal(after.event_log_head.seq, seq0);
+  assert.equal(after.autonomy.spawn_style, style0);
+  assert.equal(after.autonomy.spawn_style_optin_pending, undefined);
+});
 
 test('confirm without pending nonce is rejected', () => {
   const { root, runId, expect } = seedFreshRun();

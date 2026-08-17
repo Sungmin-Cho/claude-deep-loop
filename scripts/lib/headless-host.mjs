@@ -411,7 +411,9 @@ function driveIndependentChecker({
   const pending = findPendingIndependentChecker(initialLoop);
   if (!pending || !runtimeCapability(runtime, 'unattended_checker')) return null;
   if (initialLoop.session_chain?.lease?.resume_policy === 'human') {
-    return { ok: true, skipped: true, reason: 'human-resume-policy' };
+    return runtimeCapability(runtime, 'measured_headless')
+      ? { ok: true, skipped: true, reason: 'human-resume-policy' }
+      : { ok: false, action: 'unmeasured-runtime' };
   }
   if (initialLoop.status !== 'running') {
     return { ok: false, action: 'terminal', reason: initialLoop.status };
@@ -1093,6 +1095,26 @@ function driveHeadlessRunLocked({
   }
 
   if (terminal(initialLoop)) return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
+  const measuredHeadless = runtimeCapability(runtime, 'measured_headless');
+  if (!measuredHeadless) {
+    const stranded = inProgressIndependentChecker(initialLoop);
+    const pendingChecker = findPendingIndependentChecker(initialLoop);
+    const wouldDriveChecker = !stranded
+      && pendingChecker
+      && runtimeCapability(runtime, 'unattended_checker')
+      && initialLease.resume_policy !== 'human'
+      && initialLoop.status === 'running';
+    if (wouldDriveChecker) {
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: 'unmeasured-runtime',
+        expect: { owner: parentOwner, generation: parentGeneration },
+        now: entryNow,
+      });
+      if (pauseOutcome === 'terminal') return { ok: false, action: 'fail-closed-terminal', reason: 'unmeasured-runtime' };
+      if (pauseOutcome === 'fenced') return { ok: false, action: 'fenced', reason: 'unmeasured-runtime' };
+      return { ok: false, action: 'paused' };
+    }
+  }
   const checkerResult = driveIndependentChecker({
     root,
     runId,
@@ -1125,20 +1147,30 @@ function driveHeadlessRunLocked({
     attemptIdFactory,
   });
   if (checkerResult) return checkerResult;
-  if (!pendingHandoff(initialLoop)) return { ok: true, action: 'no-pending-handoff' };
+  if (!pendingHandoff(initialLoop)) {
+    return measuredHeadless
+      ? { ok: true, action: 'no-pending-handoff' }
+      : { ok: false, action: 'unmeasured-runtime' };
+  }
   if (initialLease.resume_policy === 'human') {
-    return { ok: true, skipped: true, reason: 'human-resume-policy' };
+    return measuredHeadless
+      ? { ok: true, skipped: true, reason: 'human-resume-policy' }
+      : { ok: false, action: 'unmeasured-runtime' };
   }
   const visiblePolicyOverride = overrideVisiblePolicy === true
     && initialLoop.status === 'running'
     && initialLease.resume_policy === 'visible';
   if (initialLease.resume_policy !== 'headless' && !visiblePolicyOverride) {
-    return { ok: true, skipped: true, reason: 'not-headless-intended' };
+    return measuredHeadless
+      ? { ok: true, skipped: true, reason: 'not-headless-intended' }
+      : { ok: false, action: 'unmeasured-runtime' };
   }
 
   if (initialLease.handoff_phase === 'spawned') {
     if (exactChildAcquired(initialLoop, childRunId)) {
-      return { ok: true, action: 'already-spawned' };
+      return measuredHeadless
+        ? { ok: true, action: 'already-spawned' }
+        : { ok: false, action: 'unmeasured-runtime' };
     }
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
@@ -1161,6 +1193,17 @@ function driveHeadlessRunLocked({
       action: 'mode-changed',
       reason: `spawn-mode-changed:headless->${initialMode}`,
     };
+  }
+
+  if (!measuredHeadless) {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: 'unmeasured-runtime',
+      expect: { owner: parentOwner, generation: parentGeneration },
+      now: entryNow,
+    });
+    if (pauseOutcome === 'terminal') return { ok: false, action: 'fail-closed-terminal', reason: 'unmeasured-runtime' };
+    if (pauseOutcome === 'fenced') return { ok: false, action: 'fenced', reason: 'unmeasured-runtime' };
+    return { ok: false, action: 'paused' };
   }
 
   const child = (initialLoop.session_chain?.sessions || []).find((session) => session.run_id === childRunId);
