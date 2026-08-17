@@ -73,7 +73,7 @@ export const ROUTE_FLAGS = Object.freeze({
   'review import': route(['stdin', ...R, ...F, ...L], { rejected: R }),
   'handoff emit': route(['boundary-event', 'headless', 'reason', 'trigger', ...F, ...L]),
   respawn: route(['dry-run', 'headless', 'attended', 'timeout-ms', ...F, ...L]),
-  'state get': route(['field', ...L]),
+  'state get': route(['field', 'json', ...L], { unread: Object.freeze(['json']) }),
   'state patch': route(['field', 'value', ...F, ...L]),
   pause: route(['reason', 'mode', ...F, ...L]),
   recover: route(['confirm', 'supersede-affinity', 'reason', ...F, ...L]),
@@ -153,6 +153,7 @@ export function levenshtein(left, right) {
 }
 
 export function suggestFlag(unknown, allowed) {
+  if (typeof unknown !== 'string' || unknown.length > 64) return null;
   let best = [];
   let bestDistance = Infinity;
   for (const name of allowed) {

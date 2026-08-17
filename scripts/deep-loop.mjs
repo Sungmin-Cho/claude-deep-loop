@@ -2019,19 +2019,25 @@ if (MUTATING_ROUTE_SET.has(routeKey) && !requireExactRunId(rest).ok) {
 }
 const flagArgv = rest.slice(consumedPositionalCount(sub, rest));
 if (!HANDLER_OWNED_GRAMMAR.has(routeKey) && !knownFlagVocabulary(flagArgv, vocabulary(routeSpec))) {
-  const unknown = flagArgv.find((token) => typeof token === 'string' && token.startsWith('--'));
-  const name = unknown
-    ? unknown.slice(2, unknown.includes('=') ? unknown.indexOf('=') : undefined)
-    : flagArgv.find((token) => typeof token === 'string' && !token.startsWith('--')) || 'unknown';
-  // Prefer the first flag that is actually outside the vocabulary.
-  let flagged = name;
-  for (const token of flagArgv) {
-    if (typeof token !== 'string' || !token.startsWith('--')) continue;
+  const names = vocabulary(routeSpec);
+  let flagged = null;
+  let stray = null;
+  for (let index = 0; index < flagArgv.length; index += 1) {
+    const token = flagArgv[index];
+    if (typeof token !== 'string') continue;
+    if (!token.startsWith('--')) {
+      stray = token;
+      break;
+    }
     const body = token.slice(2);
     const flag = body.includes('=') ? body.slice(0, body.indexOf('=')) : body;
-    if (!vocabulary(routeSpec).has(flag)) { flagged = flag; break; }
+    if (!names.has(flag)) { flagged = flag; break; }
+    if (!body.includes('=') && flagArgv[index + 1] !== undefined && !String(flagArgv[index + 1]).startsWith('--')) {
+      index += 1;
+    }
   }
-  error(formatUnknownFlag(routeKey, flagged, routeSpec));
+  if (flagged) error(formatUnknownFlag(routeKey, flagged, routeSpec));
+  else error(`USAGE: unexpected positional \`${stray || ''}\` for route \`${routeKey}\``);
   process.exit(2);
 }
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw

@@ -13,8 +13,8 @@ import {
   vocabulary,
 } from '../scripts/lib/route-flags.mjs';
 
-const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
 
 const EXPECTED_KEYS = Object.freeze([
   'path resolve', 'validate', 'detect-plugins', 'recipe-match',
@@ -47,6 +47,11 @@ function invoke(args) {
 test('ROUTE_FLAGS lists every rawRouteKey the dispatcher can produce', () => {
   assert.deepEqual(Object.keys(ROUTE_FLAGS).sort(), [...EXPECTED_KEYS].sort());
   assert.equal(EXPECTED_KEYS.length, 63);
+  const source = readFileSync(CLI, 'utf8');
+  const inventory = source.match(/const MUTATING_ROUTE_INVENTORY = Object\.freeze\(\[([\s\S]*?)\]\);/)?.[1];
+  assert.ok(inventory);
+  const mutating = [...inventory.matchAll(/['"]([^'"]+)['"]/g)].map((match) => match[1]);
+  assert.deepEqual(mutating.filter((key) => !Object.hasOwn(ROUTE_FLAGS, key)), []);
 });
 
 test('unknown flags are usage exit 2 and do not treat verbs as flags', () => {
@@ -64,12 +69,28 @@ test('unknown flags are usage exit 2 and do not treat verbs as flags', () => {
 
   const missing = invoke(['episode', 'not-a-verb', '--plugin', 'x']);
   assert.equal(missing.status, 2);
+
+  const stray = invoke(['episode', 'record', '--id', 'e1', 'stray', '--status', 'done', '--run-id', 'RUN']);
+  assert.equal(stray.status, 2);
+  assert.match(stray.stderr, /unexpected positional `stray`/);
+  assert.doesNotMatch(stray.stderr, /unknown flag --id/);
 });
 
 test('did you mean fires only for a unique distance-2 candidate', () => {
   assert.equal(suggestFlag('generatoin', ['generation', 'owner']), 'generation');
   assert.equal(suggestFlag('id', ['episode', 'owner']), null);
   assert.equal(suggestFlag('abc', ['abd', 'adc']), null);
+  assert.equal(suggestFlag('x'.repeat(65), ['generation']), null);
+});
+
+test('state get accepts unread --json used by recipes', () => {
+  const { root, runId } = seededReviewArgs();
+  const result = invoke([
+    'state', 'get', '--field', 'status', '--json',
+    '--project-root', root, '--run-id', runId,
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout), 'running');
 });
 
 function seededReviewArgs() {
@@ -98,7 +119,7 @@ function walkFiles(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) walkFiles(path, out);
-    else if (entry.isFile() && (entry.name.endsWith('.test.mjs') || entry.name.endsWith('.md'))) out.push(path);
+    else if (entry.isFile()) out.push(path);
   }
   return out;
 }
@@ -133,6 +154,21 @@ function extractSkillPairs(source) {
   return pairs;
 }
 
+function extractArrayInvocationPairs(source) {
+  const pairs = [];
+  const blockRe = /deep-loop\.mjs['"]\s*,\s*\[([\s\S]*?)\]/g;
+  let match;
+  while ((match = blockRe.exec(source))) {
+    const tokens = [...match[1].matchAll(/['"]([^'"]+)['"]/g)].map((item) => item[1]);
+    const key = routeKeyFromTokens(tokens);
+    if (!key) continue;
+    for (const token of tokens) {
+      if (token.startsWith('--')) pairs.push([key, token.slice(2).split('=')[0]]);
+    }
+  }
+  return pairs;
+}
+
 function extractTestPairs(source) {
   const pairs = [];
   const unresolved = [];
@@ -157,9 +193,10 @@ test('skill and test (route, flag) pairs are a subset of LOCATOR union allow', (
   const missingKeys = [];
   const missingFlags = [];
   const unresolved = [];
-  for (const file of walkFiles(join(ROOT, 'skills'))) {
-    if (!file.endsWith('.md')) continue;
-    for (const [route, flag] of extractSkillPairs(readFileSync(file, 'utf8'))) {
+  for (const file of [...walkFiles(join(ROOT, 'skills')), ...walkFiles(join(ROOT, 'recipes'))]) {
+    if (!file.endsWith('.md') && !file.endsWith('.yml') && !file.endsWith('.js') && !file.endsWith('.mjs')) continue;
+    const source = readFileSync(file, 'utf8');
+    for (const [route, flag] of [...extractSkillPairs(source), ...extractArrayInvocationPairs(source)]) {
       const spec = ROUTE_FLAGS[route];
       if (!spec) { missingKeys.push(`${file}:${route}`); continue; }
       if (!allowedNames(spec).includes(flag)) missingFlags.push(`${file}:${route} --${flag}`);
@@ -183,4 +220,10 @@ test('skill and test (route, flag) pairs are a subset of LOCATOR union allow', (
   assert.deepEqual(unresolved, []);
   assert.deepEqual(missingKeys, []);
   assert.deepEqual(missingFlags, []);
+
+  const recipe = readFileSync(join(ROOT, 'recipes', 'automation', 'github-actions-loop.yml'), 'utf8');
+  assert.ok(
+    extractArrayInvocationPairs(recipe).some(([route, flag]) => route === 'state get' && flag === 'json'),
+    'recipe argv array must contribute state get --json',
+  );
 });

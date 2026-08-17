@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ROUTE_FLAGS } from '../scripts/lib/route-flags.mjs';
 
-const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
 
 function invoke(args) {
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
@@ -33,6 +35,10 @@ test('help surfaces every route and never advertises rejected flags', () => {
   assert.match(episode.stdout, /--run-id/);
   assert.match(episode.stdout, /--now/);
   assert.match(episode.stdout, /episode new/);
+
+  const state = invoke(['help', 'state']);
+  assert.equal(state.status, 0);
+  assert.match(state.stdout, /--json/);
 
   const review = invoke(['help', 'review']);
   assert.equal(review.status, 0);
