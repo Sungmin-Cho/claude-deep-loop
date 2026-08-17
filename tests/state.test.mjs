@@ -476,6 +476,30 @@ test('lock and rename timing constants pin the two-replacement transaction budge
   assert.ok(2 * atomicApi.RENAME_RETRY_MAX_ELAPSED_MS < stateApi.LOCK_STALE_TTL_MS / 10);
 });
 
+// Windows CI: a live parent that swallows a transient release rename leaves `.lock`
+// owned by this process. Children cannot reclaim it (pid still alive) and every
+// concurrent diagnose then reports lock-busy at run-snapshot.
+test('transient Windows lock-release rename is retried and does not leave the lock', () => {
+  const { root, runId } = seed();
+  const lock = join(runDir(root, runId), '.lock');
+  const attempts = [];
+  withLock(root, runId, () => {}, {
+    platform: 'win32',
+    sleepFn() {},
+    renameFn(src, dst) {
+      attempts.push([src, dst]);
+      if (attempts.length === 1) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      return renameSync(src, dst);
+    },
+  });
+  assert.equal(existsSync(lock), false);
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[0][0], attempts[1][0]);
+  assert.equal(attempts[0][1], attempts[1][1]);
+});
+
 test('writeState performs exactly the loop and hash atomic replacements', () => {
   const { root, runId } = seed();
   const data = readState(root, runId).data;

@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
-import { durableAtomicWrite, flushDirectory } from './atomic-write.mjs';
+import { durableAtomicWrite, flushDirectory, renameAtomicWithRetry } from './atomic-write.mjs';
 import {
   canonicalNonSymlinkDirectory,
   captureStableFileIdentity,
@@ -455,6 +455,14 @@ export function withLock(root, runId, fn, {
     if (remaining !== null && remaining <= 0) throw new Error('LOCK_DEADLINE_EXCEEDED');
     return remaining;
   };
+  // Windows sharing errors on the lock directory are the same transient the
+  // artifact rename helper already retries. A swallowed first EACCES here leaves
+  // `.lock` owned by this still-alive process, and children cannot reclaim it.
+  const renameLock = (src, dst) => renameAtomicWithRetry(src, dst, {
+    platform,
+    renameFn,
+    sleepFn,
+  });
   let acquired = false;
   let lockIdentity = null;
   let owner = null;
@@ -498,7 +506,7 @@ export function withLock(root, runId, fn, {
     if (!inspectOwned(lock, observedOwner, observedIdentity)) return false;
     const quarantine = `${lock}.quarantine-${observedOwner.token}`;
     try {
-      renameFn(lock, quarantine);
+      renameLock(lock, quarantine);
     } catch {
       return false;
     }
@@ -616,7 +624,7 @@ export function withLock(root, runId, fn, {
         faultAt('release:validated');
         if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
         const quarantine = `${lock}.release-${token}`;
-        renameFn(lock, quarantine);
+        renameLock(lock, quarantine);
         faultAt('release:quarantined');
         flushDirectoryFn(path.dirname(lock), { platform });
         faultAt('release:quarantine-parent-flushed');

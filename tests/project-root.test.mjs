@@ -625,8 +625,12 @@ test('a contended root diagnose reports retryable contention, not an integrity f
 
 async function retryLockBusyDiagnose(result, args, cwd, runner = runCliAsync) {
   let current = result;
-  for (let attempt = 0; attempt < 5 && (lockBusyResult(current) || retryableVerifiedReadResult(current)); attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 100));
+  // Four concurrent diagnoses on a loaded Windows runner can each hold the lock
+  // for longer than 500ms. 100ms × 5 then reports lock-busy for every child
+  // even though the bytes are fine. Back off up to 1s and keep trying while
+  // the descriptor stays retryable.
+  for (let attempt = 0; attempt < 12 && (lockBusyResult(current) || retryableVerifiedReadResult(current)); attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
     current = await runner(args, cwd);
   }
   return current;
@@ -1874,6 +1878,12 @@ test('Round1 acceptance RED: retention removes commit-oldest only and concurrent
     operationIds.slice(0, -17).some(id => retained.has(id)),
     false,
     'commit-oldest unreferenced receipts must be pruned first',
+  );
+
+  assert.equal(
+    existsSync(join(runDir(currentRoot, runId), '.lock')),
+    false,
+    'in-process rebind must drop the lock before concurrent diagnose',
   );
 
   const diagnoseArgs = [
