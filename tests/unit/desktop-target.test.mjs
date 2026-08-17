@@ -6,7 +6,7 @@
 // match (not either alone) — can be exercised without shelling out to osascript/reg.exe.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS, ALLOW_WIN_PUBLISHERS, winProbeRun, WIN_REG_BIN } from '../scripts/lib/desktop-target.mjs';
+import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS, ALLOW_WIN_PUBLISHERS, winProbeRun, WIN_REG_BIN } from '../../scripts/lib/desktop-target.mjs';
 
 const idRp = (p) => p;   // injected realpath: identity (canonicalization itself is desktop-handler.test.mjs's concern)
 const okRun = (out, code = 0) => () => ({ code, stdout: out });
@@ -147,7 +147,7 @@ test('winProbeRun: probe failure (non-zero exit) fails closed', () => {
 // 2026-07-09 실제 Windows 11 머신 관측(Get-AuthenticodeSignature, Status=Valid, chain-to-trusted-root):
 // thumbprint 0D7581D2C51C59DF686C3000C70BF543F9F6C6CB (leaf, 만료 2026-10-21 — 로테이션 시 재-pin),
 // claude:// 핸들러는 MSIX 패키지 경로(WindowsApps\Claude_<ver>_x64__pzs8sxrjxfjjc\app\Claude.exe).
-import { ALLOW_WIN_PATH_PATTERNS } from '../scripts/lib/desktop-target.mjs';
+import { ALLOW_WIN_PATH_PATTERNS } from '../../scripts/lib/desktop-target.mjs';
 
 test('ALLOW_WIN_PUBLISHERS pins the observed real signer thumbprint (fail-closed posture replaced by observed pin)', () => {
   assert.deepEqual(ALLOW_WIN_PUBLISHERS, ['0D7581D2C51C59DF686C3000C70BF543F9F6C6CB']);
@@ -190,7 +190,7 @@ test('defaultDesktopProbe: win32 traditional-installer exact path + pinned thumb
 // Subject는 인증서 소유자가 통제하는 텍스트다. 구 파이프-프레이밍(`VALID|<Subject>|<Thumbprint>`)은
 // Subject에 `|<pinned thumbprint>`를 심으면 split('|')[2]가 pin 값으로 오파싱됐다.
 // v1.7.0: PowerShell이 ConvertTo-Json으로 구조화 출력 → Node JSON.parse + thumbprint 형식(40-hex) 검증.
-import { parseWinAuthenticodeOutput } from '../scripts/lib/desktop-target.mjs';
+import { parseWinAuthenticodeOutput } from '../../scripts/lib/desktop-target.mjs';
 
 test('parseWinAuthenticodeOutput: subject containing pipe+pinned-thumbprint cannot spoof the thumbprint field', () => {
   const pinned = '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB';

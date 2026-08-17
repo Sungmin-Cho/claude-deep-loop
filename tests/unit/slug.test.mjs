@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { slugify, runIdSlug } from '../scripts/lib/slug.mjs';
+import { slugify, runIdSlug } from '../../scripts/lib/slug.mjs';
 
 test('slugify kebab-cases and strips non-alnum', () => {
   assert.equal(slugify('Add Auth Flow!! 인증'), 'add-auth-flow');

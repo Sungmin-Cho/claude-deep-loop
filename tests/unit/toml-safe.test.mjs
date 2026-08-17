@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tomlBasicString, tomlQuotedKeySegment } from '../scripts/lib/toml-safe.mjs';
+import { tomlBasicString, tomlQuotedKeySegment } from '../../scripts/lib/toml-safe.mjs';
 
 test('tomlBasicString encodes path-like values as one TOML basic string', () => {
   const fixtures = [

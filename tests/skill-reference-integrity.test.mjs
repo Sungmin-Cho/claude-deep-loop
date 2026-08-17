@@ -1231,7 +1231,7 @@ test('an anchored path that leaves the root through a symlink is rejected', (t) 
   // symlink passes every other check and still lands outside the plugin.
   //
   // The fixture uses this repo's own symlink helper rather than a `symlinkSync`
-  // call: `tests/fs-safe.test.mjs` sweeps the test tree for direct calls, and it
+  // call: `tests/unit/fs-safe.test.mjs` sweeps the test tree for direct calls, and it
   // is the helper that decides junction-vs-dir on Windows and skips on EPERM.
   const outside = mkdtempSync(join(tmpdir(), 'dl-symlink-outside-'));
   const fakeRoot = mkdtempSync(join(tmpdir(), 'dl-symlink-root-'));

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateProfile, validateTask, STEP_VOCAB } from '../evals/lib/validate.mjs';
+import { validateProfile, validateTask, STEP_VOCAB } from '../../evals/lib/validate.mjs';
 
 test('task bank has the exact 42-row two-layer contract', () => {
   const dir = join(process.cwd(), 'evals', 'tasks');
@@ -94,6 +94,7 @@ test('profiles, taxonomy, result schema, and the 12-row synthetic sample match r
 test('fixture eval wiring remains separate from preflight and results are ignored', () => {
   const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8'));
   assert.equal(pkg.scripts.preflight, 'npm run validate && npm test');
+  assert.equal(pkg.scripts['test:unit'], 'node scripts/run-unit-tests.mjs');
   assert.equal(pkg.scripts['eval:fixture'], 'node scripts/eval-deep-loop.mjs --mode fixture');
   assert.equal(pkg.scripts['eval:report'], 'node scripts/eval-deep-loop.mjs --mode fixture --report');
   assert.match(readFileSync(join(process.cwd(), '.gitignore'), 'utf8'), /^\/evals\/results\/\*\*$/m);

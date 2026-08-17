@@ -4,7 +4,7 @@ import {
   buildCodexExecEntry,
   buildMinimalCodexEnv,
   codexIsolationProfileDigest,
-} from '../scripts/lib/codex-runtime.mjs';
+} from '../../scripts/lib/codex-runtime.mjs';
 
 const BIN = '/opt/codex/bin/codex';
 const ROOT = 'C:\\Work Trees\\repo.v1';

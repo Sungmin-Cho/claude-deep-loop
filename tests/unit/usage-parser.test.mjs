@@ -4,7 +4,7 @@ import {
   STREAM_LIMITS,
   createCodexJsonlParser,
   parseClaudeUsage,
-} from '../scripts/lib/usage-parser.mjs';
+} from '../../scripts/lib/usage-parser.mjs';
 
 function parseCodex(lines, options) {
   const parser = createCodexJsonlParser(options);

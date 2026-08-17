@@ -4,8 +4,8 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
-const envelopeApiPromise = import('../scripts/lib/envelope.mjs');
+const atomicApiPromise = import('../../scripts/lib/atomic-write.mjs').catch(() => ({}));
+const envelopeApiPromise = import('../../scripts/lib/envelope.mjs');
 
 async function atomicApi() {
   const api = await atomicApiPromise;

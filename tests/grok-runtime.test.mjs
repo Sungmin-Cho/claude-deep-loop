@@ -245,11 +245,11 @@ test('T-sentinel: unknown-runtime is the unknown token and grok is valid', () =>
   assert.throws(() => runtimeCapability('unknown-runtime', 'skill_token_style'), /INVALID_RUNTIME/);
   assert.throws(() => skillToken('unknown-runtime', 'deep-loop-resume'), /INVALID_RUNTIME/);
   assert.doesNotMatch(
-    readFileSync(join(ROOT, 'tests/runtime-capabilities.test.mjs'), 'utf8'),
+    readFileSync(join(ROOT, 'tests/unit/runtime-capabilities.test.mjs'), 'utf8'),
     /runtimeCapability\('grok'/,
   );
   assert.match(
-    readFileSync(join(ROOT, 'tests/runtime-capabilities.test.mjs'), 'utf8'),
+    readFileSync(join(ROOT, 'tests/unit/runtime-capabilities.test.mjs'), 'utf8'),
     /runtimeCapability\('unknown-runtime'/,
   );
 });
@@ -257,7 +257,7 @@ test('T-sentinel: unknown-runtime is the unknown token and grok is valid', () =>
 // ── T-literals ──────────────────────────────────────────────────────────────
 
 test('T-literals: PATTERN includes grok and scripts/ have no undeclared grok identity', () => {
-  const literalsSrc = readFileSync(join(ROOT, 'tests/runtime-literals.test.mjs'), 'utf8');
+  const literalsSrc = readFileSync(join(ROOT, 'tests/unit/runtime-literals.test.mjs'), 'utf8');
   assert.match(literalsSrc, /claude\|codex\|grok/);
   const pattern = /(?:[!=]==\s*'(?:claude|codex|grok)'|\['claude',\s*'codex'(?:,\s*'grok')?\])/;
   assert.equal(pattern.test("if (runtime === 'grok')"), true);

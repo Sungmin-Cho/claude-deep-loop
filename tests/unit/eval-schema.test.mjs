@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateTask, validateResult, validateProfile, STEP_VOCAB } from '../evals/lib/validate.mjs';
-import { validateJsonSchemaOnly } from '../evals/lib/schema-contract.mjs';
+import { validateTask, validateResult, validateProfile, STEP_VOCAB } from '../../evals/lib/validate.mjs';
+import { validateJsonSchemaOnly } from '../../evals/lib/schema-contract.mjs';
 
 const common = (overrides = {}) => ({
   schema_version: 1, id: 'task-1', class: 'lease-recovery', layer: 'kernel-invariant',
@@ -168,7 +168,7 @@ test('outcome commands are a closed safe Node-test contract', () => {
 });
 
 test('published schemas execute against the same positive and negative contract vectors', async () => {
-  const { validatePublishedSchema } = await import('../evals/lib/schema-contract.mjs');
+  const { validatePublishedSchema } = await import('../../evals/lib/schema-contract.mjs');
   const validTask = common();
   const badTask = common({ acceptance: [{ type: 'kernel-invariant', steps: [{ cmd: ['validate'], expect: { exit: 2 } }] }] });
   for (const value of [validTask, badTask]) {

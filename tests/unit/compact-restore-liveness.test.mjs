@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const COMPACT = readFileSync(new URL('../skills/deep-loop-compact/SKILL.md', import.meta.url), 'utf8');
-const CONTINUE = readFileSync(new URL('../skills/deep-loop-continue/SKILL.md', import.meta.url), 'utf8');
+const COMPACT = readFileSync(new URL('../../skills/deep-loop-compact/SKILL.md', import.meta.url), 'utf8');
+const CONTINUE = readFileSync(new URL('../../skills/deep-loop-continue/SKILL.md', import.meta.url), 'utf8');
 
 function simulatedRestoreOutcome({ directive = null, restore = 'committed', affinity = true } = {}) {
   if (directive === 'deep-loop-compact-preserve-pause-only') {

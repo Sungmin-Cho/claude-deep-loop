@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -21,6 +23,21 @@ test('package.json is module type with node>=20', () => {
 test('package.json uses portable Node test discovery without a shell glob', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
   assert.equal(pkg.scripts.test, 'node --test');
+  assert.equal(pkg.scripts['test:unit'], 'node scripts/run-unit-tests.mjs');
+});
+
+test('unit-test runner fail-closes when tests/unit is empty and lists *.test.mjs itself', () => {
+  const src = readFileSync('scripts/run-unit-tests.mjs', 'utf8');
+  assert.match(src, /tests['"]?, ['"]unit/);
+  assert.match(src, /files\.length === 0/);
+  assert.match(src, /--test/);
+  const empty = mkdtempSync(join(tmpdir(), 'dl-unit-empty-'));
+  const result = spawnSync(process.execPath, ['scripts/run-unit-tests.mjs'], {
+    encoding: 'utf8',
+    env: { ...process.env, DEEP_LOOP_UNIT_DIR: empty },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no tests\/unit\/\*\.test\.mjs files found/);
 });
 
 // Regression: the Claude Code plugin installer validates `.claude-plugin/plugin.json`

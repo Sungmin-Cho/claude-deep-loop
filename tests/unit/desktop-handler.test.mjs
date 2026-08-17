@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyDesktopHandler } from '../scripts/lib/desktop-handler.mjs';
+import { verifyDesktopHandler } from '../../scripts/lib/desktop-handler.mjs';
 
 const macRun = (out, code = 0) => () => ({ code, stdout: out });
 const idRp = (p) => p;   // injected realpath: tests use identity (path canonicalization tested separately elsewhere)

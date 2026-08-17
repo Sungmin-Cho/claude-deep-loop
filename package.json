@@ -7,6 +7,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test",
+    "test:unit": "node scripts/run-unit-tests.mjs",
     "validate": "node scripts/deep-loop.mjs validate",
     "preflight": "npm run validate && npm test",
     "eval:fixture": "node scripts/eval-deep-loop.mjs --mode fixture",

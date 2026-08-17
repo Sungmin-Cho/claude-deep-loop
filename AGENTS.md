@@ -175,7 +175,7 @@ node --test tests/<x>.test.mjs   # single file
   `runtime === 'claude' ? A : B` 형태를 새로 쓰지 않는다 — 세 번째 런타임이 조용히 B를
   상속한다. 정체성 검사가 정말 필요한 지점(fresh-loop 드리프트 fence, 불변식 6의 codex
   결제)은 `DEEP_LOOP_ROOT/schemas/runtime-literal-allowlist.json`에 사유와 함께 등재한다.
-  `DEEP_LOOP_ROOT/tests/runtime-literals.test.mjs`가 미등재 리터럴을 잡지만 **강제 장치가 아니다** —
+  `DEEP_LOOP_ROOT/tests/unit/runtime-literals.test.mjs`가 미등재 리터럴을 잡지만 **강제 장치가 아니다** —
   변수 경유 비교와 `??` 기본값은 잡지 못한다.
 - Every deep-loop artifact except `loop.json` — handoff, compaction-state,
   final-report — is wrapped in the M3 envelope (`producer:"deep-loop"`, ULID `run_id`,

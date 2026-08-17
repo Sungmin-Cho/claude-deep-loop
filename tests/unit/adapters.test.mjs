@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { wrap } from '../scripts/lib/envelope.mjs';
-import { loadProtocol, resolveAdapter, guardTierProtocol } from '../scripts/lib/adapters.mjs';
+import { wrap } from '../../scripts/lib/envelope.mjs';
+import { loadProtocol, resolveAdapter, guardTierProtocol } from '../../scripts/lib/adapters.mjs';
 
 test('loadProtocol reads declarative protocol', () => {
   assert.equal(loadProtocol('deep-work').protocol, 'deep-work');

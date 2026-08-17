@@ -5,8 +5,8 @@ import {
   validateSessionRuntime,
   sessionRuntime,
   runtimeFence,
-} from '../scripts/lib/runtime.mjs';
-import { classifyPatch } from '../scripts/lib/state.mjs';
+} from '../../scripts/lib/runtime.mjs';
+import { classifyPatch } from '../../scripts/lib/state.mjs';
 
 test('session runtime allowlist is immutable and validation returns the asserted enum', () => {
   assert.deepEqual(SESSION_RUNTIMES, ['claude', 'codex', 'grok']);

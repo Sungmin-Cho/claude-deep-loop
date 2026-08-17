@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import {
   REVIEW_IMPORT_MAX_BYTES,
   readBoundedText,
-} from '../scripts/lib/bounded-input.mjs';
+} from '../../scripts/lib/bounded-input.mjs';
 
 test('review import byte limit is pinned to 1 MiB', () => {
   assert.equal(REVIEW_IMPORT_MAX_BYTES, 1_048_576);

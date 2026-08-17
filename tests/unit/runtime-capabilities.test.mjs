@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken, assertRuntimePlatform } from '../scripts/lib/runtime.mjs';
-import { isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
-import { validateRuntimeProfile } from '../scripts/lib/session-profile.mjs';
+import { SESSION_RUNTIMES, RUNTIME_CAPABILITIES, runtimeCapability, skillToken, assertRuntimePlatform } from '../../scripts/lib/runtime.mjs';
+import { isHeadlessInvocation } from '../../scripts/lib/respawn.mjs';
+import { validateRuntimeProfile } from '../../scripts/lib/session-profile.mjs';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function walkScripts(dir = join(repoRoot, 'scripts'), out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

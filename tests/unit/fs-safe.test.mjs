@@ -9,8 +9,8 @@ import {
   matchingStableFileIdentity,
   normalizePortableRelativePath,
   pathWithin,
-} from '../scripts/lib/fs-safe.mjs';
-import * as fsFixtures from './helpers/fs-fixtures.mjs';
+} from '../../scripts/lib/fs-safe.mjs';
+import * as fsFixtures from '../helpers/fs-fixtures.mjs';
 
 const {
   createDirectoryJunction,
@@ -18,7 +18,7 @@ const {
   fixtureDir,
 } = fsFixtures;
 
-const TESTS_ROOT = dirname(fileURLToPath(import.meta.url));
+const TESTS_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function base() { return fixtureDir('dl-fss-'); }
 
