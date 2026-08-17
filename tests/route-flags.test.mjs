@@ -74,6 +74,16 @@ test('unknown flags are usage exit 2 and do not treat verbs as flags', () => {
   assert.equal(stray.status, 2);
   assert.match(stray.stderr, /unexpected positional `stray`/);
   assert.doesNotMatch(stray.stderr, /unknown flag --id/);
+
+  const empty = invoke(['state', 'get', '--', '--project-root', 'x', '--run-id', 'RUN']);
+  assert.equal(empty.status, 2);
+  assert.match(empty.stderr, /unknown flag -- /);
+  assert.doesNotMatch(empty.stderr, /unexpected positional/);
+
+  const eqEmpty = invoke(['state', 'get', '--=x', '--project-root', 'x', '--run-id', 'RUN']);
+  assert.equal(eqEmpty.status, 2);
+  assert.match(eqEmpty.stderr, /unknown flag -- /);
+  assert.doesNotMatch(eqEmpty.stderr, /unexpected positional/);
 });
 
 test('did you mean fires only for a unique distance-2 candidate', () => {
@@ -85,12 +95,17 @@ test('did you mean fires only for a unique distance-2 candidate', () => {
 
 test('state get accepts unread --json used by recipes', () => {
   const { root, runId } = seededReviewArgs();
-  const result = invoke([
-    'state', 'get', '--field', 'status', '--json',
-    '--project-root', root, '--run-id', runId,
-  ]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout), 'running');
+  const locator = ['--project-root', root, '--run-id', runId];
+  const withJson = invoke(['state', 'get', '--field', 'status', '--json', ...locator]);
+  const without = invoke(['state', 'get', '--field', 'status', ...locator]);
+  assert.equal(withJson.status, 0, withJson.stderr);
+  assert.equal(without.status, 0, without.stderr);
+  assert.equal(JSON.parse(withJson.stdout), 'running');
+  assert.equal(withJson.stdout, without.stdout);
+
+  const whole = invoke(['state', 'get', '--json', ...locator]);
+  assert.equal(whole.status, 0, whole.stderr);
+  assert.equal(JSON.parse(whole.stdout).status, 'running');
 });
 
 function seededReviewArgs() {
@@ -169,6 +184,35 @@ function extractArrayInvocationPairs(source) {
   return pairs;
 }
 
+function extractQuotedRoutePairs(source) {
+  const pairs = [];
+  const blockRe = /\[[^\]]{0,4000}\]/g;
+  let match;
+  while ((match = blockRe.exec(source))) {
+    const tokens = [...match[0].matchAll(/['"]([^'"]+)['"]/g)].map((item) => item[1]);
+    const key = routeKeyFromTokens(tokens);
+    if (!key) continue;
+    for (const token of tokens) {
+      if (token.startsWith('--')) pairs.push([key, token.slice(2).split('=')[0]]);
+    }
+  }
+  return pairs;
+}
+
+function landingPairs(source) {
+  const pairs = [...extractSkillPairs(source), ...extractArrayInvocationPairs(source)];
+  if (source.includes('deep-loop.mjs')) pairs.push(...extractQuotedRoutePairs(source));
+  return pairs;
+}
+
+function isLandingSource(file) {
+  return ['.md', '.yml', '.yaml', '.js', '.mjs', '.json'].some((ext) => file.endsWith(ext));
+}
+
+const SCRIPT_LANDING_EXEMPT = Object.freeze({
+  'scripts/lib/headless-host.mjs': 'kernel path snapshot only; no CLI argv',
+});
+
 function extractTestPairs(source) {
   const pairs = [];
   const unresolved = [];
@@ -193,10 +237,27 @@ test('skill and test (route, flag) pairs are a subset of LOCATOR union allow', (
   const missingKeys = [];
   const missingFlags = [];
   const unresolved = [];
-  for (const file of [...walkFiles(join(ROOT, 'skills')), ...walkFiles(join(ROOT, 'recipes'))]) {
-    if (!file.endsWith('.md') && !file.endsWith('.yml') && !file.endsWith('.js') && !file.endsWith('.mjs')) continue;
+  const unreadOutsideAllow = [];
+  for (const [key, spec] of Object.entries(ROUTE_FLAGS)) {
+    for (const name of spec.unread || []) {
+      if (!spec.allow.includes(name)) unreadOutsideAllow.push(`${key} unread --${name}`);
+    }
+  }
+  const silentScripts = [];
+  for (const file of [
+    ...walkFiles(join(ROOT, 'skills')),
+    ...walkFiles(join(ROOT, 'recipes')),
+    ...walkFiles(join(ROOT, 'scripts')),
+  ]) {
+    if (!isLandingSource(file)) continue;
     const source = readFileSync(file, 'utf8');
-    for (const [route, flag] of [...extractSkillPairs(source), ...extractArrayInvocationPairs(source)]) {
+    const pairs = landingPairs(source);
+    const rel = file.slice(ROOT.length + 1).split(/[\\/]/).join('/');
+    if (rel.startsWith('scripts/') && source.includes('deep-loop.mjs')
+      && pairs.length === 0 && !Object.hasOwn(SCRIPT_LANDING_EXEMPT, rel)) {
+      silentScripts.push(rel);
+    }
+    for (const [route, flag] of pairs) {
       const spec = ROUTE_FLAGS[route];
       if (!spec) { missingKeys.push(`${file}:${route}`); continue; }
       if (!allowedNames(spec).includes(flag)) missingFlags.push(`${file}:${route} --${flag}`);
@@ -217,6 +278,8 @@ test('skill and test (route, flag) pairs are a subset of LOCATOR union allow', (
       }
     }
   }
+  assert.deepEqual(unreadOutsideAllow, []);
+  assert.deepEqual(silentScripts, []);
   assert.deepEqual(unresolved, []);
   assert.deepEqual(missingKeys, []);
   assert.deepEqual(missingFlags, []);
@@ -225,5 +288,10 @@ test('skill and test (route, flag) pairs are a subset of LOCATOR union allow', (
   assert.ok(
     extractArrayInvocationPairs(recipe).some(([route, flag]) => route === 'state get' && flag === 'json'),
     'recipe argv array must contribute state get --json',
+  );
+  const observe = readFileSync(join(ROOT, 'scripts', 'hooks-impl', 'postcompact-observe.mjs'), 'utf8');
+  assert.ok(
+    extractQuotedRoutePairs(observe).some(([route, flag]) => route === 'checkpoint observe' && flag === 'json'),
+    'postcompact observe argv must contribute checkpoint observe --json',
   );
 });

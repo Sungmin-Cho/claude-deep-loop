@@ -38,7 +38,12 @@ test('help surfaces every route and never advertises rejected flags', () => {
 
   const state = invoke(['help', 'state']);
   assert.equal(state.status, 0);
-  assert.match(state.stdout, /--json/);
+  const getFlags = state.stdout.match(/ {2}state get\n {4}([^\n]+)/);
+  const patchFlags = state.stdout.match(/ {2}state patch\n {4}([^\n]+)/);
+  assert.ok(getFlags, state.stdout);
+  assert.match(getFlags[1], /--json/);
+  assert.ok(patchFlags, state.stdout);
+  assert.doesNotMatch(patchFlags[1], /--json/);
 
   const review = invoke(['help', 'review']);
   assert.equal(review.status, 0);

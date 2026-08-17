@@ -2036,8 +2036,9 @@ if (!HANDLER_OWNED_GRAMMAR.has(routeKey) && !knownFlagVocabulary(flagArgv, vocab
       index += 1;
     }
   }
-  if (flagged) error(formatUnknownFlag(routeKey, flagged, routeSpec));
-  else error(`USAGE: unexpected positional \`${stray || ''}\` for route \`${routeKey}\``);
+  if (flagged !== null) error(formatUnknownFlag(routeKey, flagged, routeSpec));
+  else if (stray !== null) error(`USAGE: unexpected positional \`${stray}\` for route \`${routeKey}\``);
+  else error(`USAGE: unexpected token for route \`${routeKey}\``);
   process.exit(2);
 }
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
