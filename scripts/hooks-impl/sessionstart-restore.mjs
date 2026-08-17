@@ -17,10 +17,12 @@ import {
 } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
-import { skillToken } from '../lib/runtime.mjs';
+import { readableSessionRuntime, skillToken } from '../lib/runtime.mjs';
 import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
 
 const CAP = 3072;
+const UNREADABLE_RESTORE_CONTEXT =
+  'deep-loop: compact 복원 컨텍스트를 확인할 수 없다. 이 run의 상태는 /deep-loop-status(Claude·Grok) 또는 $deep-loop:deep-loop-status(Codex)로 확인하라.';
 export const MAX_COMPACT_CAPSULE_WIRE_BYTES = 2048;
 export const MAX_SESSIONSTART_RUN_ENTRIES = 256;
 export const MAX_SESSIONSTART_LOOP_BYTES = 1024 * 1024;
@@ -273,7 +275,8 @@ export function runSessionStartRestore(input = {}, {
   now = Date.now(),
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
   inspectCompact = inspectCompactForSessionStart,
-  runtimeHint = 'claude',
+  // Tests may inject a host. Production main() never passes this.
+  runtimeHint,
   resolveContextFn = resolveRunContext,
   captureVerifiedCheckpointSetFn = captureVerifiedCheckpointSet,
 } = {}) {
@@ -299,6 +302,9 @@ export function runSessionStartRestore(input = {}, {
     };
   }
   const runId = selection.runId;
+  const { data: loop, hash } = selection.snapshot;
+  const derivedRuntime = readableSessionRuntime(loop);
+  const hostRuntime = runtimeHint ?? derivedRuntime;
 
   let hostSessionIdentity;
   try { hostSessionIdentity = hostSessionIdentityInput(input); } catch {
@@ -324,14 +330,18 @@ export function runSessionStartRestore(input = {}, {
         return {
           ok: true,
           branch: 'checkpoint-unavailable-with-trusted-evidence',
-          additionalContext: strictRejectedContext(runtimeHint),
+          additionalContext: hostRuntime == null
+            ? UNREADABLE_RESTORE_CONTEXT
+            : strictRejectedContext(hostRuntime),
         };
       }
       if (['checkpoint-not-found', 'checkpoint-ineligible'].includes(inspected.reason)) {
         return {
           ok: true,
           branch: 'no-checkpoint',
-          additionalContext: strictMissingContext(runtimeHint),
+          additionalContext: hostRuntime == null
+            ? UNREADABLE_RESTORE_CONTEXT
+            : strictMissingContext(hostRuntime),
         };
       }
       return {
@@ -350,8 +360,6 @@ export function runSessionStartRestore(input = {}, {
       ? { ok: true, branch: 'capsule-unavailable', additionalContext: null }
       : { ok: true, branch: inspected.phase, additionalContext };
   }
-
-  const { data: loop, hash } = selection.snapshot;
 
   if (['completed', 'stopped', 'paused'].includes(loop.status)) {
     return { ok: true, branch: 'terminal-or-paused', additionalContext: null };
@@ -439,7 +447,7 @@ export function runSessionStartRestore(input = {}, {
     ok: true,
     branch: 'resume',
     additionalContext: clamp(
-      `${advisory} deep-loop continuation (compact-in-place): run=${runId} ws=${payload.current_episode_detail?.workstream_id ?? 'none'} episode=${payload.current_episode ?? 'none'}`
+      `${advisory} deep-loop continuation (${loop.autonomy?.continuation_policy ?? 'unknown'}): run=${runId} ws=${payload.current_episode_detail?.workstream_id ?? 'none'} episode=${payload.current_episode ?? 'none'}`
       + `${payload.current_episode_detail ? `(${payload.current_episode_detail.role}/${payload.current_episode_detail.status}@${payload.current_episode_detail.point})` : ''} `
       + `active_ws=${(payload.active_workstreams || []).join(',') || 'none'} `
       + `next=${payload.next_action_hint?.type ?? 'unknown'}(${payload.next_action_hint?.next_command ?? '/deep-loop-continue'}) `
@@ -460,7 +468,6 @@ export async function main() {
     const result = runSessionStartRestore(input ?? {}, {
       root,
       cwd,
-      runtimeHint: process.env.CLAUDE_PLUGIN_ROOT ? 'claude' : 'codex',
     });
     if (!result.ok) throw new Error('restore-context-invalid');
     if (result.additionalContext) {

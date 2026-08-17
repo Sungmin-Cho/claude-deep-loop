@@ -19,6 +19,8 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     supported_platforms: Object.freeze(['darwin', 'linux', 'win32']), // assertRuntimePlatform · acquireLease · acquireRecovery · acquireRootRecovery · initrun
     measured_headless: true,                         // headless-host skip rewrite / would-spawn pause
     session_effort_allowed: 'kernel-set',            // session-profile validateRuntimeProfile
+    compact_supported: true,                         // next-action withAdvice
+    handoff_continuity_note: 'desktop-model-effort',  // handoff markdown
   }),
   codex: Object.freeze({
     skill_token_style: 'dollar',
@@ -36,6 +38,8 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     supported_platforms: Object.freeze(['darwin', 'linux', 'win32']),
     measured_headless: true,
     session_effort_allowed: 'kernel-set',
+    compact_supported: true,
+    handoff_continuity_note: 'codex-preflight',
   }),
   grok: Object.freeze({
     skill_token_style: 'slash',
@@ -53,6 +57,8 @@ export const RUNTIME_CAPABILITIES = Object.freeze({
     supported_platforms: Object.freeze(['darwin']),
     measured_headless: false,
     session_effort_allowed: 'none',
+    compact_supported: false,
+    handoff_continuity_note: 'grok-attended',
   }),
 });
 
@@ -108,6 +114,16 @@ export function sessionRuntime(loop) {
     throw new Error('INVALID_RUNTIME_STATE: session_runtime requires runtime_source skill-asserted');
   }
   return validateSessionRuntime(stored);
+}
+
+// Do not treat sessionRuntime's legacy 'claude' fallback as a host identity.
+export function readableSessionRuntime(loop) {
+  if (loop?.autonomy?.session_runtime === undefined) return null;
+  try {
+    return sessionRuntime(loop);
+  } catch {
+    return null;
+  }
 }
 
 export function runtimeFence(loop, assertedRuntime) {
