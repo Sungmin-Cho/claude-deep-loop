@@ -116,7 +116,6 @@ test('handoff continuity notes are the three D5 strings', () => {
     const result = emitHandoff(root, runId, {
       now: NOW + 1,
       expect: { owner: runId, generation: 1 },
-      platform: runtime === 'grok' ? 'darwin' : 'linux',
     });
     assert.equal(result.ok, true, runtime);
     const md = readFileSync(result.handoffPath, 'utf8');
