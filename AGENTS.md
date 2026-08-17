@@ -73,7 +73,7 @@ migrated compatibility policies only.
 - `protocols/*.json` · `recipes/*.json` (+ `recipes/automation/*.yml`) · `schemas/*.json` —
   declarative adapters, policies, durable/input schemas.
 - Manifests: `DEEP_LOOP_ROOT/.claude-plugin/plugin.json` · `DEEP_LOOP_ROOT/.codex-plugin/plugin.json`.
-- `DEEP_LOOP_ROOT/tests/*.test.mjs` (`node --test`) · `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`.
+- `DEEP_LOOP_ROOT/tests/*.test.mjs` (`node --test`) · `DEEP_LOOP_ROOT/tests/unit/*.test.mjs` (`npm run test:unit`) · `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`.
 - Durable state is runtime and git-ignored: `<project-root>/.deep-loop/runs/<run-id>/`.
 
 ## Hard invariants — DO NOT break
@@ -156,6 +156,7 @@ identity and platform checks and cannot authorize a spawn.
 ```bash
 npm run preflight                # = npm run validate (schema + builder self-test) && npm test
 npm test                         # node --test, portable built-in discovery
+npm run test:unit                # tests/unit lane via scripts/run-unit-tests.mjs
 node --test tests/<x>.test.mjs   # single file
 ```
 

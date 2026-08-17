@@ -10,20 +10,21 @@ All notable changes to deep-loop are documented in this file.
 ### Added
 
 - **`help` read-only surface.** `help`, `--help`, `-h`, and empty argv list every
-  `ROUTE_FLAGS` route. `help <handler>` prints that handler's verbs and
-  `(LOCATOR ∪ allow) − rejected` flags.
+  `ROUTE_FLAGS` route and exit 0. Empty argv previously exited 2
+  (`unknown subcommand: <none>`). `help <handler>` prints that handler's verbs
+  and `(LOCATOR ∪ allow) − rejected` flags.
 
-- **`npm run test:unit`.** Nineteen kernel-transaction-free files live under
-  `tests/unit/` and run through `scripts/run-unit-tests.mjs` so Node 20/26 both
-  discover the lane.
+- **`npm run test:unit`.** The `tests/unit/` lane runs through
+  `scripts/run-unit-tests.mjs` so Node 20/26 both discover it.
 
 ### Changed
 
-- **Unknown flags are usage exit 2 on every dispatcher-owned route.** The table
-  is the allowlist. Review denylist spellings stay in `allow` so they still
-  reach `REVIEW_METADATA_FORBIDDEN` (exit 1). Handler-owned grammar routes keep
-  fence-first polarity. **Compatibility:** callers that passed unread or
-  mistyped flags which used to be silently dropped now fail closed.
+- **Unknown flags and unexpected positionals are usage exit 2 on every
+  dispatcher-owned route.** The table is the allowlist. Review denylist
+  spellings stay in `allow` so they still reach `REVIEW_METADATA_FORBIDDEN`
+  (exit 1). Handler-owned grammar routes keep fence-first polarity.
+  **Compatibility:** callers that passed unread or mistyped flags, or stray
+  positionals, which used to be silently dropped now fail closed.
 
 - **Grok guidance.** `compact_supported` is false, so grok loops never receive
   `advice:'compact'`. Handoff continuity uses `handoff_continuity_note` (grok
