@@ -58,7 +58,8 @@ migrated compatibility policies only.
   validation, run lifecycle, fenced recovery, executable approval, review, accounting.
 - `DEEP_LOOP_ROOT/scripts/lib/*.mjs` — deterministic kernel, portable path/write helpers, runtime
   descriptors, executable trust, isolated Codex transport, review import, durable
-  receipts. `DEEP_LOOP_ROOT/scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention
+  receipts. `DEEP_LOOP_ROOT/scripts/lib/route-flags.mjs` owns `ROUTE_FLAGS` (help and
+  unknown-flag vocabulary). `DEEP_LOOP_ROOT/scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention
   and freshness selection.
 - Hook and headless glue, spelled out rather than brace-expanded so each path stays
   greppable — `DEEP_LOOP_ROOT/tests/docs.test.mjs` checks these by literal, which is how a stale
