@@ -4,6 +4,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { error } from './lib/log.mjs';
 import { classifyKernelError, kernelFailure } from './lib/kernel-failure.mjs';
+import {
+  HANDLER_OWNED_GRAMMAR,
+  ROUTE_FLAGS,
+  consumedPositionalCount,
+  formatUnknownFlag,
+  renderHelp,
+  vocabulary,
+} from './lib/route-flags.mjs';
 import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
@@ -397,7 +405,14 @@ function requireLease(root, runId, f, intent = 'business') {
   return data;
 }
 
-const [, , sub, ...rest] = process.argv;
+const rawArgv = process.argv.slice(2);
+if (rawArgv.length === 0 || rawArgv[0] === 'help' || rawArgv[0] === '--help' || rawArgv[0] === '-h') {
+  const help = renderHelp(rawArgv);
+  if (help.stdout) process.stdout.write(help.stdout);
+  if (help.stderr) error(help.stderr);
+  process.exit(help.code);
+}
+const [sub, ...rest] = rawArgv;
 
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
@@ -405,7 +420,7 @@ const [, , sub, ...rest] = process.argv;
 const handlers = {
   path: async (a) => {
     const [verb, ...args] = a;
-    const allowed = new Set(['target', 'workstream', 'project-root', 'run-id']);
+    const allowed = new Set(['target', 'workstream', 'project-root', 'run-id', 'now']);
     if (verb !== 'resolve' || !knownFlagVocabulary(args, allowed) || !exactFlagGrammar(args, allowed)) {
       error('USAGE: path resolve has invalid grammar');
       return 2;
@@ -1328,7 +1343,7 @@ const handlers = {
   review: async (a) => {
     const [verb, ...rest] = a;
     if (verb === 'configure') {
-      const allowed = new Set(['profile', 'source-checker', 'confirm', 'owner', 'generation', 'project-root', 'run-id']);
+      const allowed = new Set(['profile', 'source-checker', 'confirm', 'owner', 'generation', 'project-root', 'run-id', 'now']);
       if (!exactFlagGrammar(rest, allowed)) { error('USAGE: review configure has invalid grammar'); return 2; }
       const locatorFlags = parseFlags(rest);
       if ((Object.hasOwn(locatorFlags, 'project-root') && reqStr(locatorFlags, 'project-root') === null)
@@ -1996,8 +2011,27 @@ const handlers = {
 const fn = handlers[sub];
 if (!fn) { error(`unknown subcommand: ${sub ?? '<none>'}`); process.exit(2); }
 const routeKey = rawRouteKey(sub, rest);
+const routeSpec = ROUTE_FLAGS[routeKey];
+if (!routeSpec) { error(`USAGE: unknown route: ${routeKey}`); process.exit(2); }
 if (MUTATING_ROUTE_SET.has(routeKey) && !requireExactRunId(rest).ok) {
   error('USAGE: mutating routes require exactly one valued --run-id');
+  process.exit(2);
+}
+const flagArgv = rest.slice(consumedPositionalCount(sub, rest));
+if (!HANDLER_OWNED_GRAMMAR.has(routeKey) && !knownFlagVocabulary(flagArgv, vocabulary(routeSpec))) {
+  const unknown = flagArgv.find((token) => typeof token === 'string' && token.startsWith('--'));
+  const name = unknown
+    ? unknown.slice(2, unknown.includes('=') ? unknown.indexOf('=') : undefined)
+    : flagArgv.find((token) => typeof token === 'string' && !token.startsWith('--')) || 'unknown';
+  // Prefer the first flag that is actually outside the vocabulary.
+  let flagged = name;
+  for (const token of flagArgv) {
+    if (typeof token !== 'string' || !token.startsWith('--')) continue;
+    const body = token.slice(2);
+    const flag = body.includes('=') ? body.slice(0, body.indexOf('=')) : body;
+    if (!vocabulary(routeSpec).has(flag)) { flagged = flag; break; }
+  }
+  error(formatUnknownFlag(routeKey, flagged, routeSpec));
   process.exit(2);
 }
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
