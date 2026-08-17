@@ -504,8 +504,8 @@ test('CLI and shared classifier retain invalid-value and fence exit classes', ()
     assert.match(result.stderr, new RegExp(`(?:^|\\s)${item.code}:`));
   }
 
-  const source = readFileSync(CLI, 'utf8');
-  const classifier = source.match(/function classifyKernelError\(e\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const source = readFileSync(join(process.cwd(), 'scripts', 'lib', 'kernel-failure.mjs'), 'utf8');
+  const classifier = source.match(/export function classifyKernelError\(e\) \{[\s\S]*?\n\}/)?.[0] || '';
   for (const code of [
     'PATH_TARGET_INVALID', 'WORKSTREAM_NOT_FOUND', 'RUN_DIR_ESCAPE',
     'WORKSTREAM_WORKTREE_ESCAPE', 'PROJECT_ROOT_UNRESOLVABLE',
