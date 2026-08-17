@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateTask, validateResult, validateProfile, STEP_VOCAB } from '../evals/lib/validate.mjs';
-import { validateJsonSchemaOnly } from '../evals/lib/schema-contract.mjs';
+import { validateTask, validateResult, validateProfile, STEP_VOCAB } from '../../evals/lib/validate.mjs';
+import { validateJsonSchemaOnly } from '../../evals/lib/schema-contract.mjs';
 
 const common = (overrides = {}) => ({
   schema_version: 1, id: 'task-1', class: 'lease-recovery', layer: 'kernel-invariant',
@@ -78,7 +78,7 @@ test('validateResult requires the five verdicts and seven metadata fields', () =
           changed_files: ['solution.json'],
           isolation_receipt: {
             schema_version: 1, boundary: 'node-permission-model:permission',
-            covered_effects: ['child-process','file-write','network-write'], profile_id: 'deep-loop-current-v1.18',
+            covered_effects: ['child-process','file-write','network-write'], profile_id: 'deep-loop-current-v1.19',
             allowed_effects: ['read-only'], declared_command: ['node','--test','.eval/verify-outcome.test.mjs'],
             executed_argv: ['--permission','.eval/verify-outcome.test.mjs'], exit: 0, timed_out: false,
             observed_effects: [], passed: true,
@@ -93,7 +93,7 @@ test('validateResult requires the five verdicts and seven metadata fields', () =
     }],
     kernel_findings: [],
     profile_comparison_stub: [],
-    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.18', kernel_version: '1.18.0', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
+    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.19', kernel_version: '1.19.0', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
   };
   assert.equal(validateResult(result).ok, true);
   assert.equal(validateResult({ ...result, results: [{ verdict: 'nope' }] }).ok, false);
@@ -126,7 +126,7 @@ test('host status, row verification, and summary accounting are equivalent by co
       invariant_family: [4], host_binding: null,
     }],
     kernel_findings: [], profile_comparison_stub: [],
-    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.18', kernel_version: '1.18.0', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
+    meta: { model: 'none:fixture', harness: 'none:fixture', profile: 'deep-loop-current-v1.19', kernel_version: '1.19.0', node: 'v26', runtime: 'fixture', task_bank_sha256: '0'.repeat(64) },
   };
   assert.equal(validateResult(base).ok, true);
   const launderedRow = structuredClone(base);
@@ -139,7 +139,7 @@ test('host status, row verification, and summary accounting are equivalent by co
 
 test('profile runtime contract is exact and default-deny', () => {
   const profile = {
-    id: 'deep-loop-current-v1.18', driver: 'fixture', model: 'none:fixture',
+    id: 'deep-loop-current-v1.19', driver: 'fixture', model: 'none:fixture',
     harness: 'none:fixture', allowed_effects: ['read-only'],
     record: { transcript: false, observables: ['exit', 'effects'] },
   };
@@ -168,13 +168,13 @@ test('outcome commands are a closed safe Node-test contract', () => {
 });
 
 test('published schemas execute against the same positive and negative contract vectors', async () => {
-  const { validatePublishedSchema } = await import('../evals/lib/schema-contract.mjs');
+  const { validatePublishedSchema } = await import('../../evals/lib/schema-contract.mjs');
   const validTask = common();
   const badTask = common({ acceptance: [{ type: 'kernel-invariant', steps: [{ cmd: ['validate'], expect: { exit: 2 } }] }] });
   for (const value of [validTask, badTask]) {
     assert.equal(validatePublishedSchema('task', value).ok, validateTask(value).ok);
   }
-  const profile = JSON.parse(readFileSync(join(process.cwd(), 'evals', 'profiles', 'deep-loop-current-v1.18.json'), 'utf8'));
+  const profile = JSON.parse(readFileSync(join(process.cwd(), 'evals', 'profiles', 'deep-loop-current-v1.19.json'), 'utf8'));
   const spoof = { ...profile, id: 'host-native', model: 'spoof', harness: 'spoof' };
   for (const value of [profile, spoof]) {
     assert.equal(validatePublishedSchema('profile', value).ok, validateProfile(value).ok);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectPlugins, pluginPresent } from '../scripts/lib/detect.mjs';
+import { detectPlugins, pluginPresent } from '../../scripts/lib/detect.mjs';
 
 // versioned marketplace layout: <home>/<runtimeDir>/plugins/cache/<market>/<plugin>/<version>/<manifestDir>/plugin.json
 function writeVersioned(home, runtimeDir, plugin, version, manifestDir) {

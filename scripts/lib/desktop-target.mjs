@@ -117,7 +117,7 @@ export const WIN_REG_BIN = 'C:\\Windows\\System32\\reg.exe';
 // /ve` prints the default value; extract the quoted .exe path. Any failure (reg.exe missing, key
 // absent, malformed output) → empty stdout / non-zero code → verifyDesktopHandler fails closed.
 // `probeRun` is INJECTABLE (defaults to the real defaultProbeRun) purely for host-independent testing
-// (see tests/desktop-target.test.mjs) — production callers (defaultDesktopProbe passes this whole
+// (see tests/unit/desktop-target.test.mjs) — production callers (defaultDesktopProbe passes this whole
 // function as `run`, called with zero args) always get the real spawnSync-backed probe.
 export function winProbeRun({ probeRun = defaultProbeRun } = {}) {
   const r = probeRun(WIN_REG_BIN, ['query', 'HKCR\\claude\\shell\\open\\command', '/ve'], { timeoutMs: 5000, capture: true });
@@ -175,7 +175,7 @@ function winAuthenticodeVerify({ exePath } = {}, { timeoutMs = 5000, exists = ex
  * INJECTABLE (default to the real per-platform host probe / realpathSync / macCodesignVerify /
  * winAuthenticodeVerify) so tests can exercise the wiring — which platform selects which allowlist,
  * and that the module allowlist constants actually reach verifyDesktopHandler — without shelling out
- * to osascript/reg.exe/codesign/powershell (see tests/desktop-target.test.mjs). Production callers
+ * to osascript/reg.exe/codesign/powershell (see tests/unit/desktop-target.test.mjs). Production callers
  * (respawn/emitHandoff) never pass these, so real runtime behavior is unchanged: platform-appropriate
  * real probe + realpathSync + real codesign/Authenticode verification + the fixed module
  * allowlist/team-id/publisher constants.

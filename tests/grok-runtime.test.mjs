@@ -59,6 +59,7 @@ const FIELDS = [
   'requires_process_receipt_settlement', 'requires_posix_visible_executable_trust',
   'max_effort_supported', 'executable_name', 'version_probe',
   'supported_platforms', 'measured_headless', 'session_effort_allowed',
+  'compact_supported', 'handoff_continuity_note',
 ];
 
 function walkScripts(dir = join(ROOT, 'scripts'), out = []) {
@@ -245,11 +246,11 @@ test('T-sentinel: unknown-runtime is the unknown token and grok is valid', () =>
   assert.throws(() => runtimeCapability('unknown-runtime', 'skill_token_style'), /INVALID_RUNTIME/);
   assert.throws(() => skillToken('unknown-runtime', 'deep-loop-resume'), /INVALID_RUNTIME/);
   assert.doesNotMatch(
-    readFileSync(join(ROOT, 'tests/runtime-capabilities.test.mjs'), 'utf8'),
+    readFileSync(join(ROOT, 'tests/unit/runtime-capabilities.test.mjs'), 'utf8'),
     /runtimeCapability\('grok'/,
   );
   assert.match(
-    readFileSync(join(ROOT, 'tests/runtime-capabilities.test.mjs'), 'utf8'),
+    readFileSync(join(ROOT, 'tests/unit/runtime-capabilities.test.mjs'), 'utf8'),
     /runtimeCapability\('unknown-runtime'/,
   );
 });
@@ -257,7 +258,7 @@ test('T-sentinel: unknown-runtime is the unknown token and grok is valid', () =>
 // ── T-literals ──────────────────────────────────────────────────────────────
 
 test('T-literals: PATTERN includes grok and scripts/ have no undeclared grok identity', () => {
-  const literalsSrc = readFileSync(join(ROOT, 'tests/runtime-literals.test.mjs'), 'utf8');
+  const literalsSrc = readFileSync(join(ROOT, 'tests/unit/runtime-literals.test.mjs'), 'utf8');
   assert.match(literalsSrc, /claude\|codex\|grok/);
   const pattern = /(?:[!=]==\s*'(?:claude|codex|grok)'|\['claude',\s*'codex'(?:,\s*'grok')?\])/;
   assert.equal(pattern.test("if (runtime === 'grok')"), true);
@@ -298,11 +299,15 @@ test('T-caps: grok row is complete and new fields have scripts/ consumers', () =
   assert.deepEqual(row.supported_platforms, ['darwin']);
   assert.equal(row.measured_headless, false);
   assert.equal(row.session_effort_allowed, 'none');
+  assert.equal(row.compact_supported, false);
+  assert.equal(row.handoff_continuity_note, 'grok-attended');
   assert.equal(runtimeCapability('claude', 'session_effort_allowed'), 'kernel-set');
   assert.equal(runtimeCapability('codex', 'session_effort_allowed'), 'kernel-set');
+  assert.equal(runtimeCapability('claude', 'compact_supported'), true);
+  assert.equal(runtimeCapability('grok', 'handoff_continuity_note'), 'grok-attended');
 
   const sources = walkScripts().map(file => readFileSync(file, 'utf8')).join('\n');
-  for (const field of ['supported_platforms', 'measured_headless', 'session_effort_allowed']) {
+  for (const field of ['supported_platforms', 'measured_headless', 'session_effort_allowed', 'compact_supported', 'handoff_continuity_note']) {
     assert.match(sources, new RegExp(`runtimeCapability\\([^\\n]*'${field}'`), `consumer for ${field}`);
   }
 });

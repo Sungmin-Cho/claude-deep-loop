@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WORKFLOW_PATH = join(ROOT, '.github', 'workflows', 'preflight.yml');
 const workflowExists = existsSync(WORKFLOW_PATH);
 const source = workflowExists ? readFileSync(WORKFLOW_PATH, 'utf8') : '';
@@ -124,8 +124,8 @@ test('all six jobs run the same shell-neutral preflight command without dependen
   assert.doesNotMatch(source, /(?:^|\s)(?:bash|sh|pwsh|powershell)(?:\s|$)/im);
 });
 
-test('the npm lockfile carries the 1.18.0 release identity used by every preflight cell', () => {
+test('the npm lockfile carries the 1.19.0 release identity used by every preflight cell', () => {
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'));
-  assert.equal(lock.version, '1.18.0');
-  assert.equal(lock.packages?.['']?.version, '1.18.0');
+  assert.equal(lock.version, '1.19.0');
+  assert.equal(lock.packages?.['']?.version, '1.19.0');
 });

@@ -58,7 +58,8 @@ migrated compatibility policies only.
   validation, run lifecycle, fenced recovery, executable approval, review, accounting.
 - `DEEP_LOOP_ROOT/scripts/lib/*.mjs` — deterministic kernel, portable path/write helpers, runtime
   descriptors, executable trust, isolated Codex transport, review import, durable
-  receipts. `DEEP_LOOP_ROOT/scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention
+  receipts. `DEEP_LOOP_ROOT/scripts/lib/route-flags.mjs` owns `ROUTE_FLAGS` (help and
+  unknown-flag vocabulary). `DEEP_LOOP_ROOT/scripts/lib/checkpoint.mjs` owns compact-checkpoint emission, retention
   and freshness selection.
 - Hook and headless glue, spelled out rather than brace-expanded so each path stays
   greppable — `DEEP_LOOP_ROOT/tests/docs.test.mjs` checks these by literal, which is how a stale
@@ -72,7 +73,7 @@ migrated compatibility policies only.
 - `protocols/*.json` · `recipes/*.json` (+ `recipes/automation/*.yml`) · `schemas/*.json` —
   declarative adapters, policies, durable/input schemas.
 - Manifests: `DEEP_LOOP_ROOT/.claude-plugin/plugin.json` · `DEEP_LOOP_ROOT/.codex-plugin/plugin.json`.
-- `DEEP_LOOP_ROOT/tests/*.test.mjs` (`node --test`) · `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`.
+- `DEEP_LOOP_ROOT/tests/*.test.mjs` (`node --test`) · `DEEP_LOOP_ROOT/tests/unit/*.test.mjs` (`npm run test:unit`) · `DEEP_LOOP_ROOT/integration/deep-suite.patch.md`.
 - Durable state is runtime and git-ignored: `<project-root>/.deep-loop/runs/<run-id>/`.
 
 ## Hard invariants — DO NOT break
@@ -155,6 +156,7 @@ identity and platform checks and cannot authorize a spawn.
 ```bash
 npm run preflight                # = npm run validate (schema + builder self-test) && npm test
 npm test                         # node --test, portable built-in discovery
+npm run test:unit                # tests/unit lane via DEEP_LOOP_ROOT/scripts/run-unit-tests.mjs
 node --test tests/<x>.test.mjs   # single file
 ```
 
@@ -175,7 +177,7 @@ node --test tests/<x>.test.mjs   # single file
   `runtime === 'claude' ? A : B` 형태를 새로 쓰지 않는다 — 세 번째 런타임이 조용히 B를
   상속한다. 정체성 검사가 정말 필요한 지점(fresh-loop 드리프트 fence, 불변식 6의 codex
   결제)은 `DEEP_LOOP_ROOT/schemas/runtime-literal-allowlist.json`에 사유와 함께 등재한다.
-  `DEEP_LOOP_ROOT/tests/runtime-literals.test.mjs`가 미등재 리터럴을 잡지만 **강제 장치가 아니다** —
+  `DEEP_LOOP_ROOT/tests/unit/runtime-literals.test.mjs`가 미등재 리터럴을 잡지만 **강제 장치가 아니다** —
   변수 경유 비교와 `??` 기본값은 잡지 못한다.
 - Every deep-loop artifact except `loop.json` — handoff, compaction-state,
   final-report — is wrapped in the M3 envelope (`producer:"deep-loop"`, ULID `run_id`,

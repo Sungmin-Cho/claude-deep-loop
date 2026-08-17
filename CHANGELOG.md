@@ -5,6 +5,46 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.19.0] — 2026-08-17
+
+### Added
+
+- **`help` read-only surface.** `help`, `--help`, `-h`, and empty argv list every
+  `ROUTE_FLAGS` route and exit 0. Empty argv previously exited 2
+  (`unknown subcommand: <none>`). `help <handler>` prints that handler's verbs
+  and `(LOCATOR ∪ allow) − rejected` flags.
+
+- **`npm run test:unit`.** The `tests/unit/` lane runs through
+  `scripts/run-unit-tests.mjs` so Node 20/26 both discover it.
+
+### Changed
+
+- **Unknown flags and unexpected positionals are usage exit 2 on every
+  dispatcher-owned route.** The table is the allowlist. Review denylist
+  spellings stay in `allow` so they still reach `REVIEW_METADATA_FORBIDDEN`
+  (exit 1). Handler-owned grammar routes keep fence-first polarity.
+  **Compatibility:** callers that passed unread or mistyped flags, or stray
+  positionals, which used to be silently dropped now fail closed.
+
+- **Grok guidance.** `compact_supported` is false, so grok loops never receive
+  `advice:'compact'`. Handoff continuity uses `handoff_continuity_note` (grok
+  attended-Darwin sentence; claude/codex strings unchanged). SessionStart no
+  longer defaults the host token to `'claude'`.
+
+### Fixed
+
+- **Nine mutating routes now return exit 3 for `PROJECT_ROOT_FENCED`.**
+  `pause`, `breaker reset`, `recover`, `recover --supersede-affinity`,
+  `recovery acquire`, `attended-launch revoke`, `spawn-style reset-desktop`,
+  `budget extend`, and `root recovery acquire` used to fold that fence to
+  exit 1. Read-only `next-action` / `state get` stay exit 1; `path resolve`
+  stays 3.
+
+### Notes
+
+- **Evals profile** `deep-loop-current-v1.18` is replaced by `v1.19`. Schema
+  stays `0.4.0`. Deep-suite re-pin is proposal-only.
+
 ## [1.18.0] — 2026-08-17
 
 ### Added

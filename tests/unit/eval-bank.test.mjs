@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateProfile, validateTask, STEP_VOCAB } from '../evals/lib/validate.mjs';
+import { validateProfile, validateTask, STEP_VOCAB } from '../../evals/lib/validate.mjs';
 
 test('task bank has the exact 42-row two-layer contract', () => {
   const dir = join(process.cwd(), 'evals', 'tasks');
@@ -70,7 +70,7 @@ test('profiles, taxonomy, result schema, and the 12-row synthetic sample match r
   assert.equal(profiles.length, 4);
   profiles.forEach(profile => assert.equal(validateProfile(profile).ok, true, profile.id));
   assert.deepEqual(new Set(profiles.map(profile => profile.id)), new Set([
-    'host-native', 'deep-loop-kernel-minimal', 'deep-loop-current-v1.18', 'deep-loop-experimental',
+    'host-native', 'deep-loop-kernel-minimal', 'deep-loop-current-v1.19', 'deep-loop-experimental',
   ]));
 
   const resultSchema = JSON.parse(readFileSync(join(process.cwd(), 'schemas', 'eval-result.schema.json'), 'utf8'));
@@ -78,7 +78,7 @@ test('profiles, taxonomy, result schema, and the 12-row synthetic sample match r
     'not-applicable', 'harness-constraint', 'procedural-rigidity', 'model-error', 'task-error', 'environment-error',
   ]);
   const readme = readFileSync(join(process.cwd(), 'evals', 'README.md'), 'utf8');
-  assert.match(readme, /agency_loss_incident.*host-native.*deep-loop-current-v1\.18.*valid solution.*deep-loop-experimental.*fails.*harness-constraint.*procedural-rigidity.*hard safety invariant/is);
+  assert.match(readme, /agency_loss_incident.*host-native.*deep-loop-current-v1\.19.*valid solution.*deep-loop-experimental.*fails.*harness-constraint.*procedural-rigidity.*hard safety invariant/is);
   assert.match(readme, /harness_block_incident.*valid solution.*harness.*prevented.*outcome/is);
   assert.match(readme, /`not-applicable`/);
   assert.match(readme, /without (?:a|the) manifest bank[^.]*structural validation only[^.]*does not recompute task-bound evidence/i);
@@ -94,6 +94,7 @@ test('profiles, taxonomy, result schema, and the 12-row synthetic sample match r
 test('fixture eval wiring remains separate from preflight and results are ignored', () => {
   const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8'));
   assert.equal(pkg.scripts.preflight, 'npm run validate && npm test');
+  assert.equal(pkg.scripts['test:unit'], 'node scripts/run-unit-tests.mjs');
   assert.equal(pkg.scripts['eval:fixture'], 'node scripts/eval-deep-loop.mjs --mode fixture');
   assert.equal(pkg.scripts['eval:report'], 'node scripts/eval-deep-loop.mjs --mode fixture --report');
   assert.match(readFileSync(join(process.cwd(), '.gitignore'), 'utf8'), /^\/evals\/results\/\*\*$/m);

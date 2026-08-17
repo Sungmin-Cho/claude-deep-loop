@@ -3,6 +3,15 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { error } from './lib/log.mjs';
+import { classifyKernelError, kernelFailure } from './lib/kernel-failure.mjs';
+import {
+  HANDLER_OWNED_GRAMMAR,
+  ROUTE_FLAGS,
+  consumedPositionalCount,
+  formatUnknownFlag,
+  renderHelp,
+  vocabulary,
+} from './lib/route-flags.mjs';
 import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
@@ -387,25 +396,6 @@ function strArg(f, name) {
   if (typeof v !== 'string' || v.length === 0) { error('INVALID_' + name.toUpperCase().replace(/-/g, '_') + ': must be a non-empty string'); process.exit(3); }
   return v;
 }
-function classifyKernelError(e) {
-  const message = String(e?.message || e);
-  if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
-    return { code: 3, message };
-  }
-  if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE|PATH_TARGET_INVALID|WORKSTREAM_NOT_FOUND|RUN_DIR_ESCAPE|WORKSTREAM_WORKTREE_ESCAPE)(?::|$)/.test(message)) {
-    return { code: 1, message };
-  }
-  if (/^CHECKPOINT_[A-Z_]+(?::|$)/.test(message)) {
-    return { code: 1, message };
-  }
-  if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
-    return { code: 1, message };
-  }
-  if (/^(?:RUNTIME_EXECUTABLE_|LAUNCHER_EXECUTABLE_|CODEX_HOME_)(?:[A-Z_]+)(?::|$)/.test(message)) {
-    return { code: 1, message };
-  }
-  return null;
-}
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
@@ -415,7 +405,14 @@ function requireLease(root, runId, f, intent = 'business') {
   return data;
 }
 
-const [, , sub, ...rest] = process.argv;
+const rawArgv = process.argv.slice(2);
+if (rawArgv.length === 0 || rawArgv[0] === 'help' || rawArgv[0] === '--help' || rawArgv[0] === '-h') {
+  const help = renderHelp(rawArgv);
+  if (help.stdout) process.stdout.write(help.stdout);
+  if (help.stderr) error(help.stderr);
+  process.exit(help.code);
+}
+const [sub, ...rest] = rawArgv;
 
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
@@ -423,7 +420,7 @@ const [, , sub, ...rest] = process.argv;
 const handlers = {
   path: async (a) => {
     const [verb, ...args] = a;
-    const allowed = new Set(['target', 'workstream', 'project-root', 'run-id']);
+    const allowed = new Set(['target', 'workstream', 'project-root', 'run-id', 'now']);
     if (verb !== 'resolve' || !knownFlagVocabulary(args, allowed) || !exactFlagGrammar(args, allowed)) {
       error('USAGE: path resolve has invalid grammar');
       return 2;
@@ -567,9 +564,9 @@ const handlers = {
         }));
         return 0;
       } catch (e) {
-        const message = String(e?.message || e);
-        error(message);
-        return /^(?:LEASE_FENCED|RUNTIME_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message) ? 3 : 1;
+        const failure = kernelFailure(e);
+        error(failure.message);
+        return failure.code;
       }
     }
     const f = parseFlags(rest);
@@ -586,9 +583,9 @@ const handlers = {
         json(diagnosed); return 0;
       }
       catch (cause) {
-        const message = String(cause?.message || cause);
-        error(message);
-        return /^(?:PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message) ? 3 : 1;
+        const failure = kernelFailure(cause);
+        error(failure.message);
+        return failure.code;
       }
       return 0;
     }
@@ -1219,9 +1216,8 @@ const handlers = {
           });
           return 1;
         }
-        const classified = classifyKernelError(e);
-        if (!classified) throw e;
-        error(classified.message); return classified.code;
+        const failure = kernelFailure(e, { unclassified: 'rethrow' });
+        error(failure.message); return failure.code;
       }
       json(r);
       if (Number.isInteger(r.kernel_exit_code)) return r.kernel_exit_code;
@@ -1291,12 +1287,8 @@ const handlers = {
         });
         json({ ok: true }); return 0;
       } catch (e) {
-        const message = String(e?.message || e);
-        if (message.startsWith('CONFIRM_REQUIRED') || message.startsWith('CONFIRM_FORBIDDEN')) {
-          error(message); return 2;
-        }
-        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
-        error(message); return 1;
+        const failure = kernelFailure(e, { extra: [['CONFIRM_REQUIRED', 2], ['CONFIRM_FORBIDDEN', 2]] });
+        error(failure.message); return failure.code;
       }
     }
     error(`unknown workstream verb: ${verb}`); return 2;
@@ -1342,9 +1334,8 @@ const handlers = {
       try {
         abandonEpisode(root, runId, id, { reason, confirm: true, fence, now: parseNow(f) }); json({ ok: true, status: 'abandoned' }); return 0;
       } catch (e) {
-        const msg = String(e?.message || e);
-        if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
-        error(msg); return 1;   // EPISODE_ALREADY_TERMINAL / EPISODE_NOT_FOUND / EPISODE_INPUT_INVALID → exit 1
+        const failure = kernelFailure(e);
+        error(failure.message); return failure.code;   // EPISODE_ALREADY_TERMINAL / EPISODE_NOT_FOUND / EPISODE_INPUT_INVALID → exit 1
       }
     }
     error(`unknown episode verb: ${verb}`); return 2;
@@ -1352,7 +1343,7 @@ const handlers = {
   review: async (a) => {
     const [verb, ...rest] = a;
     if (verb === 'configure') {
-      const allowed = new Set(['profile', 'source-checker', 'confirm', 'owner', 'generation', 'project-root', 'run-id']);
+      const allowed = new Set(['profile', 'source-checker', 'confirm', 'owner', 'generation', 'project-root', 'run-id', 'now']);
       if (!exactFlagGrammar(rest, allowed)) { error('USAGE: review configure has invalid grammar'); return 2; }
       const locatorFlags = parseFlags(rest);
       if ((Object.hasOwn(locatorFlags, 'project-root') && reqStr(locatorFlags, 'project-root') === null)
@@ -1377,12 +1368,8 @@ const handlers = {
         json(configureReviewFlags(root, runId, { profile, sourceCheckerId, confirm: true, fence }));
         return 0;
       } catch (e) {
-        const message = String(e?.message || e);
-        if (message.startsWith('CONFIRM_REQUIRED')) { error(message); return 2; }
-        // review record/import 와 같은 분류기 — PROJECT_ROOT_FENCED/FENCE_REQUIRED 도 fence(3)로 나간다.
-        const classified = classifyKernelError(e);
-        if (classified) { error(classified.message); return classified.code; }
-        error(message); return 1;
+        const failure = kernelFailure(e, { extra: [['CONFIRM_REQUIRED', 2]] });
+        error(failure.message); return failure.code;
       }
     }
     if (verb === 'dispatch') {
@@ -1414,9 +1401,8 @@ const handlers = {
       const findings = f.findings && f.findings !== true ? String(f.findings) : undefined;
       try { json(recordReviewOutcome(root, runId, { episodeId: episode, verdict, proof: { report, findings }, fence })); return 0; }
       catch (e) {
-        const classified = classifyKernelError(e);
-        if (classified) { error(classified.message); return classified.code; }
-        error(e.message); return 1;
+        const failure = kernelFailure(e);
+        error(failure.message); return failure.code;
       }
     }
     if (verb === 'import') {
@@ -1429,9 +1415,8 @@ const handlers = {
         json(importReviewOutcome(root, runId, { raw, fence, now: parseNow(f) }));
         return 0;
       } catch (e) {
-        const classified = classifyKernelError(e);
-        if (classified) { error(classified.message); return classified.code; }
-        error(e.message); return 1;
+        const failure = kernelFailure(e);
+        error(failure.message); return failure.code;
       }
     }
     error(`unknown review verb: ${verb}`); return 2;
@@ -1460,7 +1445,7 @@ const handlers = {
       // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
       // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
       try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', boundaryEvent, headless: h, expect, env: process.env, now: parseNow(f) })); return 0; }
-      catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
@@ -1510,9 +1495,8 @@ const handlers = {
       if (r.action === 'unmeasured-runtime' || r.action === 'paused') return 1;
       return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' || r.action === 'fenced' || r.action === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
-      const msg = String(e?.message || e);
-      if (msg.startsWith('LEASE_FENCED') || msg.startsWith('RESPAWN_FENCED')) { error(msg); return 3; }
-      error(msg); return 1;
+      const failure = kernelFailure(e, { extra: [['RESPAWN_FENCED', 3]] });
+      error(failure.message); return failure.code;
     }
   },
   state: async (a) => {
@@ -1535,7 +1519,7 @@ const handlers = {
       const rawVal = reqStr(f, 'value'); if (rawVal === null) { error('MISSING_VALUE'); return 2; }
       let value; try { value = JSON.parse(rawVal); } catch { error('INVALID_VALUE: must be JSON'); return 1; }   // 무효 값 → exit 1
       try { patchState(root, runId, field, value, { fence: { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' } }); }
-      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
       json({ ok: true }); return 0;
     }
     error(`unknown state verb: ${verb}`); return 2;
@@ -1562,9 +1546,8 @@ const handlers = {
       });
       json({ ok: true, status: 'paused' }); return 0;
     } catch (e) {
-      const msg = String(e?.message || e);
-      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
-      error(msg); return 1;
+      const failure = kernelFailure(e);
+      error(failure.message); return failure.code;
     }
   },
   // recover --owner <id> --generation <n> --confirm
@@ -1618,10 +1601,8 @@ const handlers = {
       }
       json(result); return 0;
     } catch (e) {
-      const msg = String(e?.message || e);
-      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
-      if (msg.startsWith('NOT_RECOVERABLE') || msg.startsWith('CONFIRM_REQUIRED')) { error(msg); return 2; }
-      error(msg); return 1;
+      const failure = kernelFailure(e, { extra: [['NOT_RECOVERABLE', 2], ['CONFIRM_REQUIRED', 2]] });
+      error(failure.message); return failure.code;
     }
   },
   recovery: async (a) => {
@@ -1665,13 +1646,9 @@ const handlers = {
       json(result);
       return result.ok ? 0 : 1;
     } catch (e) {
-      const message = String(e?.message || e);
-      if (/^(?:LEASE_FENCED|RUNTIME_FENCED)(?::|$)/.test(message)) {
-        error(message);
-        return 3;
-      }
-      error(message);
-      return 1;
+      const failure = kernelFailure(e);
+      error(failure.message);
+      return failure.code;
     }
   },
   adapter: async (a) => {
@@ -1719,7 +1696,7 @@ const handlers = {
       if (turns === null || tokens === null) { error('INVALID_COST: --turns/--tokens must be non-negative integers'); return 1; }
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
       try { recordCost(root, runId, { turns, tokens, fence }); }
-      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
       const { data } = captureReconciledRunSnapshot(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
     }
@@ -1750,9 +1727,8 @@ const handlers = {
         }));
         return 0;
       } catch (e) {
-        const message = String(e?.message || e);
-        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
-        error(message); return 1;
+        const failure = kernelFailure(e);
+        error(failure.message); return failure.code;
       }
     }
     error(`unknown budget verb: ${verb}`); return 2;
@@ -1778,7 +1754,7 @@ const handlers = {
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
       let r;
       try { r = ackComprehension(root, runId, episode, { actor, confirm, env: process.env, fence }); }
-      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // EPISODE_NOT_FOUND → exit 1
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }   // EPISODE_NOT_FOUND → exit 1
       if (r && r.ok === false && r.rejected) {
         // headless-human fail-closed (the ack-rejected event is already appended). Surface as usage error.
         error(`ACK_REJECTED: ${r.reason}`);
@@ -1802,7 +1778,7 @@ const handlers = {
       const owner = strArg(f, 'owner');
       const fence = { owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
       try { json(resetBreaker(root, runId, { fence })); return 0; }
-      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
   },
@@ -1844,7 +1820,7 @@ const handlers = {
       if (f.now !== undefined && nowMs > Date.now() + 60_000) { error('INSIGHTS_NOW_FUTURE: --now must not be more than 60s in the future'); return 1; }
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
       try { json(emitInsights(root, runId, { fence, now: nowMs })); return 0; }
-      catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     error(`unknown insights verb: ${verb}`); return 2;
   },
@@ -1883,22 +1859,22 @@ const handlers = {
     if (verb === 'offer-desktop') {
       let ttlSec; if (f['ttl-sec'] !== undefined) { ttlSec = optInt(f, 'ttl-sec'); if (ttlSec === null) { error('INVALID_TTL_SEC'); return 1; } }
       try { const r = offerDesktop(root, runId, { expect, now, nonce, ...(ttlSec != null ? { ttlSec } : {}) }); json(r); return r.ok ? 0 : 1; }
-      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     if (verb === 'confirm-desktop') {
       // desktopProbe not injected here — defaults to defaultDesktopProbe (real host probe on process.platform),
       // matching the (uninjected) `platform` default too. Round-6 part (a): a failing probe now returns
       // {ok:false, reason:'HANDLER_UNVERIFIED'} and persists NOTHING.
       try { const r = confirmDesktop(root, runId, { expect, now, nonce }); json(r); return r.ok ? 0 : 1; }
-      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     if (verb === 'decline-desktop') {
       try { json(declineDesktop(root, runId, { expect, now })); return 0; }
-      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     if (verb === 'reset-desktop') {
       try { const r = resetDesktop(root, runId, { expect, now }); json(r); return r.ok ? 0 : 1; }
-      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+      catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }
     }
     error(`unknown spawn-style verb: ${verb}`); return 2;
   },
@@ -1947,10 +1923,9 @@ const handlers = {
         json(result);
         return 0;
       } catch (error_) {
-        const message = String(error_?.message || error_);
-        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
-        error(message);
-        return 1;
+        const failure = kernelFailure(error_);
+        error(failure.message);
+        return failure.code;
       }
     }
 
@@ -1965,10 +1940,9 @@ const handlers = {
       json(result);
       return 0;
     } catch (error_) {
-      const message = String(error_?.message || error_);
-      if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
-      error(message);
-      return 1;
+      const failure = kernelFailure(error_);
+      error(failure.message);
+      return failure.code;
     }
   },
   // session-profile set --model <m> --effort <e> --owner <id> --generation <n>
@@ -1999,9 +1973,8 @@ const handlers = {
       });
       json(r); return 0;
     } catch (e) {
-      const msg = String(e?.message || e);
-      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
-      error(msg); return 1;
+      const failure = kernelFailure(e);
+      error(failure.message); return failure.code;
     }
   },
   'detect-terminal': async (a) => {
@@ -2014,8 +1987,8 @@ const handlers = {
       const d = detectAndPersist(root, runId, { owner: f.owner, generation: intArg(f, 'generation'), now });
       json(d); return 0;
     } catch (e) {
-      if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; }
-      error(e.message); return 1;
+      const failure = kernelFailure(e);
+      error(failure.message); return failure.code;
     }
   },
   finish: async (a) => {
@@ -2031,15 +2004,41 @@ const handlers = {
     if (reportRel && (reportRel.startsWith('/') || reportRel.split('/').includes('..'))) { error('FINISH_REPORT_PATH_UNSAFE'); return 1; }
     let proof; try { proof = f.proof ? JSON.parse(f.proof) : {}; } catch { error('INVALID_PROOF: must be JSON'); return 1; }   // 무효 값 → exit 1
     try { const r = finishRun(root, runId, { status, reportRel, proof, confirm, fence, now: parseNow(f) }); json(r); return 0; }
-    catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // FINISH_STATUS_INVALID/PROOF_UNMET → exit 1
+    catch (e) { const failure = kernelFailure(e); error(failure.message); return failure.code; }   // FINISH_STATUS_INVALID/PROOF_UNMET → exit 1
   },
 };
 
 const fn = handlers[sub];
 if (!fn) { error(`unknown subcommand: ${sub ?? '<none>'}`); process.exit(2); }
 const routeKey = rawRouteKey(sub, rest);
+const routeSpec = ROUTE_FLAGS[routeKey];
+if (!routeSpec) { error(`USAGE: unknown route: ${routeKey}`); process.exit(2); }
 if (MUTATING_ROUTE_SET.has(routeKey) && !requireExactRunId(rest).ok) {
   error('USAGE: mutating routes require exactly one valued --run-id');
+  process.exit(2);
+}
+const flagArgv = rest.slice(consumedPositionalCount(sub, rest));
+if (!HANDLER_OWNED_GRAMMAR.has(routeKey) && !knownFlagVocabulary(flagArgv, vocabulary(routeSpec))) {
+  const names = vocabulary(routeSpec);
+  let flagged = null;
+  let stray = null;
+  for (let index = 0; index < flagArgv.length; index += 1) {
+    const token = flagArgv[index];
+    if (typeof token !== 'string') continue;
+    if (!token.startsWith('--')) {
+      stray = token;
+      break;
+    }
+    const body = token.slice(2);
+    const flag = body.includes('=') ? body.slice(0, body.indexOf('=')) : body;
+    if (!names.has(flag)) { flagged = flag; break; }
+    if (!body.includes('=') && flagArgv[index + 1] !== undefined && !String(flagArgv[index + 1]).startsWith('--')) {
+      index += 1;
+    }
+  }
+  if (flagged !== null) error(formatUnknownFlag(routeKey, flagged, routeSpec));
+  else if (stray !== null) error(`USAGE: unexpected positional \`${stray}\` for route \`${routeKey}\``);
+  else error(`USAGE: unexpected token for route \`${routeKey}\``);
   process.exit(2);
 }
 // 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw

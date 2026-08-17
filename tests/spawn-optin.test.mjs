@@ -544,8 +544,8 @@ test('resetDesktop during a running+releasing+spawned handoff is also rejected (
 // Asserting a real positive verdict here would require an actual verified /Applications/Claude.app (or
 // win32 equivalent) install on the host running `npm test`, which fails on a clean CI runner / Windows
 // placeholder and breaks the zero-external-dep, host-independent preflight invariant (CLAUDE.md). The
-// POSITIVE (ok:true) path is proven deterministically via INJECTED probes in tests/desktop-target.test.mjs
-// (defaultDesktopProbe) and tests/desktop-handler.test.mjs (verifyDesktopHandler) — this CLI test only
+// POSITIVE (ok:true) path is proven deterministically via INJECTED probes in tests/unit/desktop-target.test.mjs
+// (defaultDesktopProbe) and tests/unit/desktop-handler.test.mjs (verifyDesktopHandler) — this CLI test only
 // proves the subcommand is wired, read-only, and returns a well-shaped verdict on ANY host.
 test('CLI spawn-style probe-desktop is read-only and prints a well-shaped probe verdict (host-independent)', () => {
   const out = execFileSync('node', [CLI, 'spawn-style', 'probe-desktop'], { encoding: 'utf8' });

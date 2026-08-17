@@ -25,6 +25,19 @@ export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+const CONTINUITY_NOTES = Object.freeze({
+  'desktop-model-effort': '> desktop transport는 URL로 model/effort를 전달할 수 없으니, desktop 재개 시 이 값으로 세션을 맞추세요.',
+  'codex-preflight': '> Codex model과 low/medium/high/xhigh effort 매핑은 격리 descriptor에 고정되며 max effort는 fail-closed다. 실행은 별도 executable 승인·preflight 전까지 비활성이다.',
+  'grok-attended': '> Grok는 attended Darwin 세션 런타임이다. desktop transport와 측정 headless 경로가 없고 effort를 seed하지 않으므로, 재개는 승인된 실행파일 정체성으로 사람이 연 세션에서만 가능하다.',
+});
+
+function continuityNote(runtime) {
+  const key = runtimeCapability(runtime, 'handoff_continuity_note');
+  const text = CONTINUITY_NOTES[key];
+  if (typeof text !== 'string') throw new Error(`UNKNOWN_HANDOFF_CONTINUITY_NOTE: ${key}`);
+  return text;
+}
+
 function descriptorLauncherIdentity(loop, runtime, platform) {
   const sessionIdentity = loop.session_spawn?.launcher_identity ?? null;
   if (!runtimeCapability(runtime, 'desktop_transport') || platform !== 'win32'
@@ -98,9 +111,7 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
     `## Session continuity`,
     `- model: ${loop.autonomy?.session_model || '(미지정 — CLI 기본값)'}`,
     `- effort: ${loop.autonomy?.session_effort || '(미지정 — CLI 기본값)'}`,
-    runtimeCapability(descriptor.runtime, 'desktop_transport')
-      ? `> desktop transport는 URL로 model/effort를 전달할 수 없으니, desktop 재개 시 이 값으로 세션을 맞추세요.`
-      : `> Codex model과 low/medium/high/xhigh effort 매핑은 격리 descriptor에 고정되며 max effort는 fail-closed다. 실행은 별도 executable 승인·preflight 전까지 비활성이다.`, '',
+    continuityNote(descriptor.runtime), '',
     `## Episodes`, `- completed: ${doneEp}`, `- abandoned: ${abandonedEp}`, `- current: ${loop.current_episode || '(none)'}`, '',
     `## Workstreams`, wsLines, '',
     `## Triage`, `- actionable: ${(loop.triage?.actionable || []).length}, needs_human: ${(loop.triage?.needs_human || []).length}`, '',
