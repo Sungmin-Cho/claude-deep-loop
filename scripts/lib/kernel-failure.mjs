@@ -1,4 +1,3 @@
-// unclassified: 'exit-1' (default, preserves inline catch fold) | 'rethrow' (fail-stop)
 export function classifyKernelError(e) {
   const message = String(e?.message || e);
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
@@ -19,10 +18,14 @@ export function classifyKernelError(e) {
   return null;
 }
 
+// unclassified: 'exit-1' (default, preserves inline catch fold) | 'rethrow' (fail-stop)
 export function kernelFailure(cause, { extra = [], unclassified = 'exit-1' } = {}) {
+  if (unclassified !== 'exit-1' && unclassified !== 'rethrow') {
+    throw new Error('INVALID_KERNEL_FAILURE: unclassified must be exit-1 or rethrow');
+  }
   const message = String(cause?.message || cause);
   for (const [prefix, code] of extra) {
-    if (message.startsWith(prefix)) return { code, message };
+    if (message === prefix || message.startsWith(`${prefix}:`)) return { code, message };
   }
   const classified = classifyKernelError(cause);
   if (classified) return { code: classified.code, message: classified.message };

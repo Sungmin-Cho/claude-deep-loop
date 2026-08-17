@@ -19,10 +19,6 @@ function copiedFenceFixture() {
   const candidate = join(parent, 'B');
   mkdirSync(stored);
   mkdirSync(candidate);
-  spawnSync('git', ['init', '-q', stored], { encoding: 'utf8' });
-  spawnSync('git', ['-C', stored, 'commit', '-q', '--allow-empty', '-m', 'init'], { encoding: 'utf8' });
-  spawnSync('git', ['init', '-q', candidate], { encoding: 'utf8' });
-  spawnSync('git', ['-C', candidate, 'commit', '-q', '--allow-empty', '-m', 'init'], { encoding: 'utf8' });
   const created = invoke(stored, ['init-run', '--runtime', 'claude', '--goal', 'g', '--protocol', 'standalone']);
   assert.equal(created.status, 0, created.stderr);
   const runId = JSON.parse(created.stdout).run_id;
@@ -76,4 +72,16 @@ test('requireLease-path controls also keep PROJECT_ROOT_FENCED at exit 3', () =>
   const { candidate, runId } = copiedFenceFixture();
   const fence = ['--owner', 'O1', '--generation', '1', '--run-id', runId];
   assertFence3(candidate, ['spawn-style', 'offer-desktop', ...fence], 'spawn-style offer-desktop');
+});
+
+test('exact-read routes keep PROJECT_ROOT_FENCED at exit 1', () => {
+  const { candidate, runId } = copiedFenceFixture();
+  for (const [label, args] of [
+    ['next-action', ['next-action', '--run-id', runId]],
+    ['state get', ['state', 'get', '--run-id', runId]],
+  ]) {
+    const result = invoke(candidate, args);
+    assert.equal(result.status, 1, `${label}: status=${result.status} stderr=${result.stderr}`);
+    assert.match(result.stderr, /PROJECT_ROOT_FENCED/, label);
+  }
 });

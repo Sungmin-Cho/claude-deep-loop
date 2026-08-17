@@ -33,3 +33,17 @@ test('route extra mappings win over the default unclassified fold', () => {
   });
   assert.equal(confirm.code, 2);
 });
+
+test('unknown unclassified polarity fails closed instead of folding', () => {
+  assert.throws(
+    () => kernelFailure(new Error('x'), { unclassified: 're-throw' }),
+    /INVALID_KERNEL_FAILURE/,
+  );
+});
+
+test('extra prefixes do not match a longer sibling token', () => {
+  const folded = kernelFailure(new Error('NOT_RECOVERABLE_YET: x'), {
+    extra: [['NOT_RECOVERABLE', 2]],
+  });
+  assert.equal(folded.code, 1);
+});
