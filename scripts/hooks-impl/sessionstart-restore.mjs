@@ -21,8 +21,6 @@ import { readableSessionRuntime, skillToken } from '../lib/runtime.mjs';
 import { formatBoundedRoutingDiagnostic, resolveRunContext } from '../lib/run-context.mjs';
 
 const CAP = 3072;
-const UNREADABLE_RESTORE_CONTEXT =
-  'deep-loop: compact 복원 컨텍스트를 확인할 수 없다. 이 run의 상태는 /deep-loop-status(Claude·Grok) 또는 $deep-loop:deep-loop-status(Codex)로 확인하라.';
 export const MAX_COMPACT_CAPSULE_WIRE_BYTES = 2048;
 export const MAX_SESSIONSTART_RUN_ENTRIES = 256;
 export const MAX_SESSIONSTART_LOOP_BYTES = 1024 * 1024;
@@ -34,6 +32,12 @@ function clamp(value) {
   let cut = bytes.toString('utf8');
   if (cut.endsWith('\uFFFD')) cut = cut.slice(0, -1);
   return `${cut}...`;
+}
+
+function unreadableRestoreContext() {
+  return clamp(
+    `deep-loop: compact 복원 컨텍스트를 확인할 수 없다. 이 run의 상태는 ${skillToken('claude', 'deep-loop-status')}(Claude·Grok) 또는 ${skillToken('codex', 'deep-loop-status')}(Codex)로 확인하라.`,
+  );
 }
 
 function safeRunId(value) {
@@ -331,7 +335,7 @@ export function runSessionStartRestore(input = {}, {
           ok: true,
           branch: 'checkpoint-unavailable-with-trusted-evidence',
           additionalContext: hostRuntime == null
-            ? UNREADABLE_RESTORE_CONTEXT
+            ? unreadableRestoreContext()
             : strictRejectedContext(hostRuntime),
         };
       }
@@ -340,7 +344,7 @@ export function runSessionStartRestore(input = {}, {
           ok: true,
           branch: 'no-checkpoint',
           additionalContext: hostRuntime == null
-            ? UNREADABLE_RESTORE_CONTEXT
+            ? unreadableRestoreContext()
             : strictMissingContext(hostRuntime),
         };
       }

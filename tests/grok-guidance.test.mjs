@@ -59,6 +59,9 @@ test('readableSessionRuntime does not consume the claude fallback', () => {
   assert.equal(readableSessionRuntime({
     autonomy: { session_runtime: 'grok', runtime_source: 'skill-asserted' },
   }), 'grok');
+  assert.equal(readableSessionRuntime({
+    autonomy: { session_runtime: 'grok', runtime_source: 'wrong' },
+  }), null);
   assert.equal(readableSessionRuntime({ autonomy: { runtime_source: 'skill-asserted' } }), null);
   assert.equal(readableSessionRuntime({ autonomy: null }), null);
 });
@@ -77,11 +80,20 @@ test('grok and unreadable loops never receive compact advice from either cadence
   assert.notEqual(absentResult.action.advice, 'compact');
 
   const thrown = capLoop('claude', 'workstream-session');
-  thrown.autonomy = { continuation_policy: 'workstream-session', runtime_source: 'skill-asserted' };
+  thrown.autonomy = {
+    continuation_policy: 'workstream-session',
+    session_runtime: 'grok',
+    runtime_source: 'wrong',
+  };
   thrown.budget.per_session_turn_cap = 1;
   thrown.session_chain.sessions[0].turns = 5;
+  assert.doesNotThrow(() => nextAction(thrown, { now: NOW }));
   const thrownResult = nextAction(thrown, { now: NOW });
   assert.notEqual(thrownResult.action.advice, 'compact');
+
+  const grokRotate = nextAction(capLoop('grok', 'rotate-per-unit'), { now: NOW });
+  assert.equal(grokRotate.action.type, 'handoff');
+  assert.equal(grokRotate.action.reason, 'per_session_turn_cap');
 });
 
 test('claude and codex loops still receive compact advice at the cap', () => {
@@ -102,12 +114,13 @@ test('handoff continuity notes are the three D5 strings', () => {
     const { root, runId } = seedRuntime(runtime);
     migrateAuthenticLegacyTransport(root, runId);
     const result = emitHandoff(root, runId, {
-      now: NOW + 1, expect: { owner: runId, generation: 1 }, platform: 'linux',
+      now: NOW + 1,
+      expect: { owner: runId, generation: 1 },
+      platform: runtime === 'grok' ? 'darwin' : 'linux',
     });
     assert.equal(result.ok, true, runtime);
     const md = readFileSync(result.handoffPath, 'utf8');
     assert.match(md, new RegExp(note.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    if (runtime === 'grok') assert.doesNotMatch(md, /Codex model과/);
     if (runtime !== 'claude') assert.doesNotMatch(md, /desktop transport는 URL로/);
     if (runtime !== 'codex') assert.doesNotMatch(md, /Codex model과/);
   }
@@ -148,6 +161,20 @@ test('unreadable SessionStart runs emit the neutral sentence with both host toke
   assert.match(thrownResult.additionalContext, new RegExp(UNREADABLE_RESTORE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(thrownResult.additionalContext, /\/deep-loop-status/);
   assert.match(thrownResult.additionalContext, /\$deep-loop:deep-loop-status/);
+});
+
+test('readable grok SessionStart uses slash tokens, not the Codex dollar token', () => {
+  const grok = buildInitialLoop({
+    runtime: 'grok', goal: 'g', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' },
+    runId: 'R-grok', now: new Date(NOW), platform: 'darwin',
+  });
+  const missing = selectedRestore(grok);
+  assert.match(missing.additionalContext, /\/deep-loop-status/);
+  assert.doesNotMatch(missing.additionalContext, /\$deep-loop:deep-loop-status/);
+  assert.doesNotMatch(
+    missing.additionalContext,
+    new RegExp(UNREADABLE_RESTORE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
 });
 
 test('SessionStart production path does not default runtimeHint to claude', () => {
