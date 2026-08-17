@@ -156,7 +156,7 @@ identity and platform checks and cannot authorize a spawn.
 ```bash
 npm run preflight                # = npm run validate (schema + builder self-test) && npm test
 npm test                         # node --test, portable built-in discovery
-npm run test:unit                # tests/unit lane via scripts/run-unit-tests.mjs
+npm run test:unit                # tests/unit lane via DEEP_LOOP_ROOT/scripts/run-unit-tests.mjs
 node --test tests/<x>.test.mjs   # single file
 ```
 
