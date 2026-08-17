@@ -21,7 +21,7 @@ export function classifyKernelError(e) {
 // unclassified: 'exit-1' (default, preserves inline catch fold) | 'rethrow' (fail-stop)
 export function kernelFailure(cause, { extra = [], unclassified = 'exit-1' } = {}) {
   if (unclassified !== 'exit-1' && unclassified !== 'rethrow') {
-    throw new Error('INVALID_KERNEL_FAILURE: unclassified must be exit-1 or rethrow');
+    throw new Error('INVALID_KERNEL_FAILURE: unclassified must be exit-1 or rethrow', { cause });
   }
   const message = String(cause?.message || cause);
   for (const [prefix, code] of extra) {

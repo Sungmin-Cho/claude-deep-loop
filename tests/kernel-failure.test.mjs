@@ -47,3 +47,10 @@ test('extra prefixes do not match a longer sibling token', () => {
   });
   assert.equal(folded.code, 1);
 });
+
+test('extra prefixes match a bare token without a colon', () => {
+  const bare = kernelFailure(new Error('CONFIRM_REQUIRED'), {
+    extra: [['CONFIRM_REQUIRED', 2]],
+  });
+  assert.equal(bare.code, 2);
+});

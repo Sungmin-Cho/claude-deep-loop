@@ -74,7 +74,7 @@ test('requireLease-path controls also keep PROJECT_ROOT_FENCED at exit 3', () =>
   assertFence3(candidate, ['spawn-style', 'offer-desktop', ...fence], 'spawn-style offer-desktop');
 });
 
-test('exact-read routes keep PROJECT_ROOT_FENCED at exit 1', () => {
+test('next-action and state get keep PROJECT_ROOT_FENCED at exit 1', () => {
   const { candidate, runId } = copiedFenceFixture();
   for (const [label, args] of [
     ['next-action', ['next-action', '--run-id', runId]],
