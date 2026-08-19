@@ -42,6 +42,14 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 
 > 참고: `/deep-loop-workflow`는 `/deep-loop-continue` 등이 내부적으로 사용하는 비공개(user-invocable:false) 스킬입니다. Grok CLI는 Claude Code와 같은 `/deep-loop…` 슬래시 명령을 사용합니다.
 
+### 적합성 게이트 (suitability gate)
+
+`/deep-loop "<goal>"`은 run을 만들기 전에 goal이 루프감인지 먼저 판단합니다.
+적합하면 추가 마찰 없이 그대로 진행하고, 명백히 부적합하면(bounded one-shot
+질문, 리뷰만, 한 세션 사이즈 구현) 근거와 함께 대안(deep-work / deep-review /
+인라인)을 한 번 제안합니다 — "그래도 deep-loop" 선택은 항상 가능하며 자동
+적용은 없습니다. 애매하면 루프로 진행합니다.
+
 ## Multi-run identity와 worktree 라우팅
 
 한 프로젝트에는 여러 active/historical run이 함께 존재할 수 있습니다. 먼저 bounded verified 목록을 확인한 뒤 불변 logical id 하나를 명시적으로 선택합니다:

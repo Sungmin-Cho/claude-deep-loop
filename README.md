@@ -51,6 +51,15 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 
 > Note: `/deep-loop-workflow` is an internal non-user-invocable skill used by `/deep-loop-continue` and other skills. Grok CLI uses the same `/deep-loop…` slash commands as Claude Code.
 
+### Suitability gate
+
+Before creating a run, `/deep-loop "<goal>"` first judges whether the goal is
+loop-shaped. A fitting goal proceeds with zero extra friction; a clearly
+misfit goal (a bounded one-shot question, review-only work, a single-session
+implementation) gets a one-time alternative suggestion (deep-work /
+deep-review / inline) with the reasoning — choosing deep-loop anyway is always
+available, and nothing is auto-applied. Ambiguous goals proceed as a loop.
+
 ## Multi-run identity and worktree routing
 
 A project can contain multiple active or historical runs. Start with the bounded verified list, then choose one immutable logical id explicitly:

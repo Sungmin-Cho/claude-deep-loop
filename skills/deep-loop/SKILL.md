@@ -46,6 +46,24 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" detect-plugins --project-root "<cano
 감지된 플러그인 목록을 확인한다(deep-work, deep-review, deep-wiki, deep-memory 등).
 `detect-plugins`는 각 sibling을 `installed`(어느 런타임 캐시에든 설치 — best-effort union, 마켓플레이스/직접 git 레이아웃 모두 매니페스트 `name`으로 감지) / `initialized`(프로젝트·홈 마커) / `present`(installed‖initialized)로 구분 감지한다. 리뷰/recipe 전략 분기는 `present`를 본다(설치-but-미초기화 sibling 누락 방지). 실제 dispatch는 Execution-plane LLM이 수행하며 그 시점에 호출 가능 여부를 확인한다(2-plane).
 
+### 2-1.5. 적합성 판단 (suitability gate)
+
+단계 1에서 **새 run**이 확정된 직후에만 수행한다(이어가기·resume 경로 제외). 먼저 trim 기준 비어있지 않은 goal 문자열을 확보하고(없으면 goal 확보가 선행), 2-2가 소비할 그 확정 goal에 대해 정확히 1회 판단한다.
+
+- **루프 신호**: 여러 PR/workstream 스코프, 세션을 넘길 장기전, maker/checker 리뷰 규율이 가치 있는 변경, 크로스 플러그인 오케스트레이션, 장기·다중 세션 discovery/triage 분석.
+- **부적합 신호**: 내구 산출물·후속 조율·다중 세션이 필요 없는 bounded one-shot 질문/분석(→인라인), 리뷰만(→deep-review), 한 세션 사이즈 구현(→deep-work), 사소한 수정(→인라인).
+- **애매하면 루프로 진행한다** — 이 게이트는 명백한 부적합만 잡는다. 명시적 호출 자체가 의도 신호다.
+
+적합 판정이면 별도 출력 없이 §2-2로 계속한다.
+
+부적합 판정이면 **명시적 사람 응답 1회**를 받는다: Claude Code는 AskUserQuestion, 다른 호스트는 동일 옵션의 대화 질문으로 수행한다. 근거를 인용한 추천 대안이 첫 옵션이고, "그래도 deep-loop" 옵션을 항상 포함한다. 어떤 옵션도 preselect하지 않고 자동 적용하지 않는다(§2-2.5와 동일 규율). 무응답이나 도구 실패 시 기본값 없이 중단한다.
+
+대안 후보는 `detect-plugins`의 `present`로 발견만 하고, 질문을 만들기 전에 현재 호스트에서 그 qualified skill을 실제로 호출할 수 있는지 확인한다. 호출 불가한 sibling은 옵션에서 제외하고 인라인으로 대체한다. Grok Build에서는 `deep-review:*` 직접 호출을 추천하지 않는다.
+
+확정 시: 대안 스킬이면 같은 대화에서 goal을 그대로 넘겨 정확히 1회 직접 호출하고(Claude는 `Skill({ skill, args })`, Codex는 qualified dollar invocation — `Read("DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/adapters.md")`의 Invoke 관례), 인라인이면 그 자리에서 일반 작업으로 수행한다. 세 대안 경로(deep-work·deep-review·인라인)는 모두 **terminal branch**다 — 대안의 반환·실패·취소 어느 경우에도 §2-2(recipe-match)나 §2-5(init-run)로 진행하지 않는다. "그래도 deep-loop"만 §2-2로 계속한다.
+
+이 route 확인은 실행 방식의 선택일 뿐이며, proposal-only 행동(push/PR/merge/publish/delete)의 별도·대상 특정 사람 승인을 대체하지 않는다. 이 절의 판단 기준은 §2-2.5와 같은 prose-only 규율이다(자동 테스트는 마커 존재만 고정한다).
+
 ### 2-2. Recipe + Protocol 결정
 
 ```

@@ -434,6 +434,13 @@ test('CHANGELOG documents the current plugin release', () => {
   assert.match(readFileSync(join(R, 'CHANGELOG.md'), 'utf8'), new RegExp(`## \\[${version.replaceAll('.', '\\.')}\\]`));
 });
 
+test('README documents the suitability gate in both languages', () => {
+  const en = readFileSync(join(R, 'README.md'), 'utf8');
+  const ko = readFileSync(join(R, 'README.ko.md'), 'utf8');
+  assert.match(en, /suitability gate/i);
+  assert.match(ko, /적합성 게이트/);
+});
+
 test('Task 14 continuity docs do not route new sessions from legacy policy or launcher heuristics', () => {
   const decisionDocs = [
     'skills/deep-loop-continue/SKILL.md',
