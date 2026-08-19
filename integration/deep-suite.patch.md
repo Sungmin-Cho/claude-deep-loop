@@ -24,7 +24,7 @@ Apply the same replacement in both marketplace files:
    "name": "deep-loop",
    "source": {
      "source": "url",
-     "url": "https://github.com/Sungmin-Cho/claude-deep-loop.git",
+     "url": "https://github.com/Sungmin-Cho/deep-loop.git",
 -    "sha": "<OLD_SHA>"
 +    "sha": "<MERGED_MAIN_SHA>"
    }

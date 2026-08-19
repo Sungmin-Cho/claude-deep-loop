@@ -171,7 +171,7 @@ payload(`insights_schema_version`은 `1` 유지 — 아래는 additive 필드)�
 
 | Surface | 로컬 설치·발견 | 로컬 플러그인 변경 후 |
 |---|---|---|
-| Claude Code | 배포되지 않은 로컬 변경에는 `claude --plugin-dir /absolute/path/to/deep-loop`를 사용합니다. pin 된 릴리스에는 `/plugin marketplace add Sungmin-Cho/claude-deep-suite`와 `/plugin install deep-loop@claude-deep-suite`를 사용합니다. | **new session**을 시작합니다. |
+| Claude Code | 배포되지 않은 로컬 변경에는 `claude --plugin-dir /absolute/path/to/deep-loop`를 사용합니다. pin 된 릴리스에는 `/plugin marketplace add Sungmin-Cho/deep-suite`와 `/plugin install deep-loop@claude-deep-suite`를 사용합니다. | **new session**을 시작합니다. |
 | Codex CLI | 아래 결합 설치 단계 둘 다 완료한 뒤 `/plugins`를 엽니다. | **new task/session**을 시작하고 `/plugins`에서 확인합니다. |
 | Codex App | 같은 결합 설치를 완료합니다. ChatGPT desktop app에서 **Work or Codex**를 선택하고 **Plugins**를 연 뒤 deep-loop를 선택합니다. 연속성은 `workstream-session`을 사용합니다. | **restart the App** 후 **new task**를 시작합니다. |
 | Grok CLI | Attended Darwin only. Grok 1.0.4는 Claude-cache-loaded plugin을 발견하며 `.grok-plugin` 매니페스트는 없습니다. 캐시 엔트리를 위해 `claude --plugin-dir /absolute/path/to/deep-loop` 또는 pin된 Claude marketplace 설치를 사용한 뒤 새 Grok session을 시작합니다. | 새 Grok session을 시작합니다. |
