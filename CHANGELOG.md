@@ -5,6 +5,30 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.20.0] — 2026-08-19
+
+### Added
+
+- **Entry suitability gate (`/deep-loop` §2-1.5).** Before a run is created, the
+  entry skill judges once whether the confirmed goal is loop-shaped. A fitting
+  goal proceeds with zero extra friction; a clearly misfit goal (bounded
+  one-shot question/analysis, review-only, single-session implementation,
+  trivial fix) gets one reasoned alternative prompt — AskUserQuestion on Claude
+  Code, the same options as a conversational question elsewhere. Ambiguous
+  goals proceed as a loop, no option is preselected or auto-applied, and no
+  answer or a tool failure stops without a default. Choosing an alternative is a
+  terminal branch: the goal is handed to the sibling skill or done inline in the
+  same conversation and never falls through to `recipe-match` / `init-run`.
+  Prose, docs, and marker tests only — no kernel, recipe, schema, or skill
+  frontmatter change.
+
+### Notes
+
+- **Evals profile** `deep-loop-current-v1.19` is replaced by `v1.20`, in lockstep
+  with the plugin minor as `loadFixtureProfile` derives the expected id from it.
+  The durable schema stays `0.4.0` — this release does not touch the kernel.
+  Deep-suite re-pin is proposal-only.
+
 ## [1.19.0] — 2026-08-17
 
 ### Added

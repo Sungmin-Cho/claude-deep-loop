@@ -133,7 +133,10 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    remain a valid snapshot that intentionally excludes the final process measurement.
 7. **`withLock` is non-reentrant** — never take a lock inside a locked callback.
    Kernel durable writes are confined to `<root>/.deep-loop/`; `/deep-loop-finish` may
-   delegate to deep-memory's and deep-wiki's own skills. Compact hook glue never
+   delegate to deep-memory's and deep-wiki's own skills. The entry skill's suitability
+   gate may also, pre-run and only on the user's explicit downshift confirmation,
+   delegate the goal to a sibling skill or inline execution — before any run or lease
+   exists, so outside the kernel durable-write boundary. Compact hook glue never
    spawns: PreCompact is emit-only, PostCompact invokes only the bounded public
    `checkpoint observe` CLI, SessionStart emits restore context only, and every
    exception is best-effort and non-blocking.

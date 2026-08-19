@@ -1291,7 +1291,7 @@ const GATE_MARKERS = {
   'deep-loop-ack': ['--actor human', '--confirm', 'CONFIRM_REQUIRED', 'ACK_REJECTED'],
   'deep-loop-discover': ['state patch', '--owner', '--generation', 'debt_ratio'],
   'deep-loop-finish': ['proof', '--confirm', 'FINISH_PROOF_UNMET', 'proposal-only'],
-  'deep-loop': ['proposal-only', 'AskUserQuestion', 'fail-closed', 'recipe_override_auth'],
+  'deep-loop': ['proposal-only', 'AskUserQuestion', 'fail-closed', 'recipe_override_auth', 'suitability', '애매하면 루프', '그래도 deep-loop', 'terminal branch', '기본값 없이 중단'],
 };
 for (const [dir, markers] of Object.entries(GATE_MARKERS)) {
   test(`gate-critical markers present: ${dir}`, () => {
