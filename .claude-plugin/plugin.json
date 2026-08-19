@@ -3,7 +3,7 @@
   "version": "1.19.0",
   "description": "Loop Engineering control plane for Claude Code, Codex CLI, Codex App, Grok CLI, and native Windows",
   "author": { "name": "Sungmin Cho" },
-  "repository": "https://github.com/Sungmin-Cho/claude-deep-loop.git",
+  "repository": "https://github.com/Sungmin-Cho/deep-loop.git",
   "license": "MIT",
   "keywords": ["loop-engineering","orchestration","durable-state","handoff","deep-suite","claude-code","codex-cli","codex-app","grok-cli","windows"]
 }

@@ -113,7 +113,7 @@ test('user docs publish Claude Code, Codex CLI, and Codex App install and invoca
     assert.match(source, /~\/\.codex\/plugins\/deep-loop/);
     assert.match(source, /~\/\.codex\/plugins\/deep-loop[\s\S]{0,500}~\/\.agents\/plugins\/marketplace\.json[\s\S]{0,220}source\.path[\s\S]{0,120}"\.\/\.codex\/plugins\/deep-loop"/i,
       `${path} must bind the personal plugin directory to its marketplace-relative source.path value`);
-    assert.ok(source.includes('/plugin marketplace add Sungmin-Cho/claude-deep-suite'),
+    assert.ok(source.includes('/plugin marketplace add Sungmin-Cho/deep-suite'),
       `${path} missing the exact post-sync Claude marketplace command`);
     assert.ok(source.includes('/plugin install deep-loop@claude-deep-suite'),
       `${path} missing the exact post-sync Claude install command`);
