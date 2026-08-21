@@ -69,16 +69,16 @@ function initClaude(root, extra = {}) {
   return result;
 }
 
-function initBound(root, runtime = 'claude') {
+function initBound(root, runtime = 'claude', { worktree } = {}) {
   const { runId } = initRun(root, {
     runtime, goal: 'g', detected: {}, now: NOW, env: {}, platform: 'darwin', run: noRun, pid: 1,
   });
   const ownerFence = { owner: runId, generation: 1 };
-  const worktree = `.claude/worktrees/sessionstart-${runtime}`;
+  const resolvedWorktree = worktree ?? `.claude/worktrees/sessionstart-${runtime}`;
   const workstreamId = newWorkstream(root, runId, {
     title: `sessionstart-${runtime}`,
     branch: `feature/sessionstart-${runtime}`,
-    worktree,
+    worktree: resolvedWorktree,
     fence: ownerFence,
   }).id;
   setWorkstreamStatus(root, runId, workstreamId, 'in_progress', { fence: ownerFence });
@@ -512,6 +512,9 @@ test('SessionStart root mapping accepts only canonical base or contained worktre
   mkdirSync(nested, { recursive: true });
   assert.equal(resolveSessionStartProjectRoot(base, { expectedRoot: base }), base);
   assert.equal(resolveSessionStartProjectRoot(nested, { expectedRoot: base }), base);
+  const nestedPlain = join(base, '.worktrees', 'root-map', 'src');
+  mkdirSync(nestedPlain, { recursive: true });
+  assert.equal(resolveSessionStartProjectRoot(nestedPlain, { expectedRoot: base }), base);
   assert.equal(resolveSessionStartProjectRoot(`${nested}/..`, { expectedRoot: base }), null);
 
   const external = realpathSync(freshRoot());
@@ -543,6 +546,41 @@ test('SessionStart resolves the unique cwd-bound run and fails closed on project
   assert.equal(bound.branch, 'no-checkpoint');
   assert.deepEqual(selected, [first.runId],
     'a newer project-wide current run must not steal the originating worktree SessionStart');
+
+  selected.length = 0;
+  const ambiguous = runSessionStartRestore({
+    hook_event_name: 'SessionStart',
+    source: 'compact',
+  }, { root, cwd: root, now: NOW_MS, inspectCompact });
+  assert.equal(ambiguous.ok, true);
+  assert.equal(ambiguous.branch, 'multi-active-root-cwd');
+  assert.equal(ambiguous.additionalContext, null);
+  assert.equal(JSON.parse(ambiguous.diagnostic).reason, 'multi-active-root-cwd');
+  assert.deepEqual(selected, [], 'ambiguous base-root SessionStart must not inspect either run');
+});
+
+test('SessionStart resolves a unique cwd-bound run from .worktrees convention', () => {
+  const root = freshRoot();
+  const first = initBound(root, 'claude', { worktree: '.worktrees/sessionstart-claude' });
+  const second = initBound(root, 'codex', { worktree: '.worktrees/sessionstart-codex' });
+  const firstCwd = join(root, '.worktrees', 'sessionstart-claude', 'src');
+  const secondCwd = join(root, '.worktrees', 'sessionstart-codex', 'src');
+  mkdirSync(firstCwd, { recursive: true });
+  mkdirSync(secondCwd, { recursive: true });
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim(), second.runId);
+
+  const selected = [];
+  const inspectCompact = (_root, runId) => {
+    selected.push(runId);
+    return { ok: false, reason: 'checkpoint-not-found' };
+  };
+  const bound = runSessionStartRestore({
+    hook_event_name: 'SessionStart',
+    source: 'compact',
+  }, { root, cwd: firstCwd, now: NOW_MS, inspectCompact });
+  assert.equal(bound.branch, 'no-checkpoint');
+  assert.deepEqual(selected, [first.runId],
+    'a newer project-wide current run must not steal the originating .worktrees SessionStart');
 
   selected.length = 0;
   const ambiguous = runSessionStartRestore({
