@@ -225,7 +225,7 @@ function createHostHarness({ makerMode = 'success', model = 'gpt-5.4', effort = 
     entries,
     calls: () => invocationLog(logPath),
     writeControl,
-    runMaker({ timeoutMs = 20_000, ...overrides } = {}) {
+    runMaker({ timeoutMs = 20_000, makerTimeoutMs, ...overrides } = {}) {
       let makerResult = null;
       let makerCalls = 0;
       const result = driveHeadlessRun({
@@ -235,7 +235,11 @@ function createHostHarness({ makerMode = 'success', model = 'gpt-5.4', effort = 
         timeoutMs,
         spawnFn: (entry, options) => {
           makerCalls += 1;
-          makerResult = headlessSpawn(entry, { ...options, runSync: runThroughWorker });
+          makerResult = headlessSpawn(entry, {
+            ...options,
+            ...(makerTimeoutMs == null ? {} : { timeoutMs: makerTimeoutMs }),
+            runSync: runThroughWorker,
+          });
           return makerResult;
         },
         ...overrides,
@@ -350,13 +354,18 @@ test('hostile maker transport crosses the real worker once and preserves only bo
 });
 
 test('timeout, non-zero, and malformed maker JSONL discard usage and never retry after the CAS', () => {
-  for (const { mode, timeoutMs, reason } of [
-    { mode: 'timeout', timeoutMs: 300, reason: 'timeout' },
+  for (const { mode, timeoutMs, makerTimeoutMs, reason } of [
+    // timeoutMs bounds the two preflight smokes; makerTimeoutMs kills the hung
+    // maker. Sharing a 300ms bound with preflight flakes on loaded macos-24 CI.
+    { mode: 'timeout', timeoutMs: 20_000, makerTimeoutMs: 2_000, reason: 'timeout' },
     { mode: 'nonzero', timeoutMs: 5_000, reason: 'exit-7' },
     { mode: 'malformed', timeoutMs: 5_000, reason: 'codex-malformed-json' },
   ]) {
     const h = createHostHarness({ makerMode: mode });
-    const first = h.runMaker({ timeoutMs });
+    const first = h.runMaker({
+      timeoutMs,
+      ...(makerTimeoutMs == null ? {} : { makerTimeoutMs }),
+    });
 
     assert.equal(first.makerCalls, 1, mode);
     assert.deepEqual(first.result, {
