@@ -70,7 +70,7 @@ run 수명주기 (모든 단계가 기존 deep-loop 기계장치 재사용 — h
 각 maker episode는 일반 워크플로우와 동일하게 fence를 반드시 지킨다. 예:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ## 3. 증거 계약 + 2계층 화이트리스트 + ledger (spec §8)

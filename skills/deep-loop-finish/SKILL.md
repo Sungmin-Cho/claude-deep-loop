@@ -55,7 +55,7 @@ report 내용:
 - **Maker-Checker 흐름**: episode별 maker/checker 결과
 - **Worktree 사용 현황**: 브랜치 & 병합 상태
   - `merged`/`abandoned` worktree 정리 제안: native `ExitWorktree` 우선, 없으면 `git worktree remove` — proposal-only(자동 삭제 ❌, 사람 승인)
-  - reconcile audit: `<canonical_project_root>/.claude/worktrees/`(및 `.worktrees/`) 밑에서 기록에 없는(어떤 workstream에도 매핑 안 된) 디렉터리를 고아 후보로 surface(proposal-only); root-밖 native worktree는 audit 대상 아님(Step 1a가 애초에 생성 안 함)
+  - reconcile audit: `<canonical_project_root>/.worktrees/`(및 `.claude/worktrees/`) 밑에서 기록에 없는(어떤 workstream에도 매핑 안 된) 디렉터리를 고아 후보로 surface(proposal-only); root-밖 native worktree는 audit 대상 아님(Step 1a가 애초에 생성 안 함)
 - **Heartbeat & 검증 결과**: budget 소비, comprehension debt
 - **통합 여부**: PR/브랜치 병합 상태(proposal-only — 실제 push는 사람이)
 - **남은 TODO**: 미완료 항목 목록

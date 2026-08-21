@@ -176,49 +176,48 @@ surface heuristic으로 소비하지 않고 kernel `next-action`만 따른다.
 - **(b) base** — 의도한 base commit 기반
 - **(c) 소유** — 이 run 전용 브랜치/경로
 
-세 조건 충족 **+ 사용자 확인** 시에만 첫 workstream을 재사용(실제 path/branch 캡처 → Step 2). 부적격 또는 미확인이면 git 생성(Step 1b) 또는 human selection 중단.
+세 조건 충족 **+ 사용자 확인** 시에만 첫 workstream을 재사용(실제 path/branch 캡처 → Step 2). 캡처한 경로의 컨벤션 prefix를 rewrite하지 않는다(레거시 `.claude/worktrees/` 경로도 그대로 기록; 절대→루트-상대 정규화는 Step 2 규칙대로 유지). 부적격 또는 미확인이면 git 생성(Step 1b) 또는 human selection 중단.
 
 **비격리 상태이면:**
-- **`--runtime grok`이면 항상 Step 1b.** grok never Step 1a. never grok `--worktree` / `/fork --worktree` — Grok native worktree는 native-eligible이 아니다. 기록 경로는 `.claude/worktrees/<slug>` 또는 `.worktrees/<slug>`.
-- **단일 workstream run · claude/codex → native 우선(Step 1a)**
-- **다중 workstream run → 모든 ws를 전부 git(Step 1b)**, 세션은 ORIG_ROOT 유지
+- **`--runtime grok`이면 항상 Step 1b.** grok never Step 1a. never grok `--worktree` / `/fork --worktree` — Grok native worktree는 native-eligible이 아니다. 신규 생성·기록은 `.worktrees/<slug>`.
+- **단일·다중 workstream run · 모든 runtime → 전부 git(Step 1b)**, 세션은 ORIG_ROOT 유지. native 생성은 기본값이 아니다.
 
-#### Step 1a — native (단일 workstream run 전용, grok 금지)
+#### Step 1a — native는 생성 기본값이 아님 (grok 포함 전 runtime)
 
-> 적용 범위: 단일 workstream run의 비격리 케이스. 다중은 Step 1b.
+신규 생성의 기본 절차는 Step 1b(git)다. Claude Code `EnterWorktree`는 `<root>/.claude/worktrees/<slug>`에 worktree를 만든다. 그 경로가 호스트 전용이므로 신규 생성에 쓰지 않는다. grok never Step 1a. never grok `--worktree` / `/fork --worktree`.
 
-`EnterWorktree`(Claude Code), `/worktree`, `--worktree` 플래그 등 플랫폼 native worktree 도구가 있으면 ws 슬러그를 넘겨 격리 작업공간을 생성한다. Claude Code 컨벤션 경로: `<root>/.claude/worktrees/<slug>`, 브랜치 `worktree-<slug>`.
+> 적용 범위: 생성 기본값이 아님. 진입은 continue §1.5. 레거시 native가 호출되는 경우의 containment만 남긴다.
 
-**Containment(생성 전 보장이 유일 경로):**
-- ① native 호출 **전에** 그 도구가 `<canonical_project_root>/.claude/worktrees/` 밑에 worktree를 생성할 것이 **보장**되는지 확인한다. Claude Code `EnterWorktree`는 알려진 동작이므로 사용 가능; 보장 불가하면 처음부터 **Step 1b(git 폴백)**으로 전환.
+**Containment(생성 전 보장이 유일 경로 — 레거시 native에만 적용):**
+- ① native 호출 **전에** 그 도구가 `<canonical_project_root>/.claude/worktrees/` 밑에 worktree를 생성할 것이 **보장**되는지 확인한다. 보장 불가하면 **Step 1b(git)** 으로 전환. Claude `EnterWorktree`의 알려진 경로는 그 prefix이지만, 그것이 신규 생성의 기본값이라는 뜻은 아니다.
 - ② 보장했는데도 native가 root 밖에 생성했다면 **즉시 fail-closed STOP(needs-human)** — 사후 audit 의존 ❌.
 
-생성 후 **실제** path + branch를 캡처 → Step 2. **기록 전 변환 필수:** 캡처한 절대 경로가 `<canonical_project_root>/.claude/worktrees/` 밑이면 canonical root 접두를 제거해 루트-상대(`.claude/worktrees/<slug>`) 형태로 변환한 뒤 Step 2에서 `--worktree`로 기록한다.
+레거시 native가 만든 경로를 기록할 때는 캡처한 절대 경로를 canonical root 기준으로 잘라 루트-상대로 변환한 뒤 Step 2에서 `--worktree`로 기록한다. 컨벤션 prefix 자체는 rewrite하지 않는다.
 
-#### Step 1b — git (다중 workstream run의 모든 worktree, 또는 단일 run의 native 부재/폴백)
+#### Step 1b — git (모든 비격리 신규 생성)
 
 순서가 중요하다. 안전 검증을 먼저 수행한 **뒤에만** 생성 명령을 실행한다.
 
-① **`git check-ignore` 검증(proposal-only, 생성 전 필수):**
+① **`git check-ignore` 검증(proposal-only, 생성 전 필수):** canonical root에 앵커한다. cwd-relative ignore 검사는 금지한다.
 ```bash
-git check-ignore -q .claude/worktrees/
+git -C "<canonical_project_root>" check-ignore -q -- .worktrees/
 ```
-gitignore되어 있으면 통과. **ignore 안 됐으면 `.gitignore`를 자동 편집·커밋하지 않는다** — 사람에게 해당 한 줄 추가를 **제안(proposal-only)**하고 **승인 시에만** 진행, 미승인이면 fail-closed 중단. 이 repo는 `.claude/worktrees/`가 이미 gitignore되어 무수정 통과.
+gitignore되어 있으면 통과. **ignore 안 됐으면 `.gitignore`를 자동 편집·커밋하지 않는다** — 사람에게 `.worktrees/` 한 줄 추가를 **제안(proposal-only)**하고 **승인 시에만** 진행, 미승인이면 fail-closed 중단. 이 플러그인 리포는 `.worktrees/`가 gitignore되어 무수정 통과한다. 소비자 리포는 여전히 proposal-only다.
 
 ② **검증 통과 후** canonical root-앵커 절대경로 + 명시 base로 생성한다:
 ```bash
-git worktree add -b "worktree-<ws-slug>" "<canonical_project_root>/.claude/worktrees/<ws-slug>" "<base_ref>"
+git worktree add -b "worktree-<ws-slug>" "<canonical_project_root>/.worktrees/<ws-slug>" "<base_ref>"
 ```
 다중 run에서 git을 사용하는 이유: cwd를 이동시키지 않아 ORIG_ROOT에 머문 채 N개를 생성할 수 있다(native cwd 이동/중첩 회피).
 
-생성 후 **실제** path + branch를 캡처 → Step 2. **기록 시 루트-상대 변환 필수:** canonical root 접두를 제거해 `.claude/worktrees/<slug>` 형태로 `--worktree`를 지정한다(절대 경로 기록 금지 — artifact prefix가 절대 경로가 되면 `episode.mjs` containment 실패).
+생성 후 **실제** path + branch를 캡처 → Step 2. **기록 시 루트-상대 변환 필수:** canonical root 접두를 제거해 `.worktrees/<slug>` 형태로 `--worktree`를 지정한다(절대 경로 기록 금지 — artifact prefix가 절대 경로가 되면 `episode.mjs` containment 실패).
 
 #### §0.5 원본 root·base 캡처 + cwd 분리 + artifact 경로 규칙
 
 - **ORIG_ROOT/BASE_REF 캡처(sibling git 경로 구성용):** 어떤 worktree 전환보다 먼저 ORIG_ROOT(main repo root — git-common-dir 출력의 parent를 host path API로 파생)와 BASE_REF(의도한 base commit)를 캡처한다. 이 값이 sibling git 폴백의 절대경로·명시 base 인자가 된다.
 - **cwd 분리:** maker/checker 파일 편집은 해당 worktree 안에서(분리) 수행한다. 커널 상태 호출은 descriptor-bound `--project-root "<canonical_project_root>" --run-id <run_id>`를 계속 사용한다.
-- **artifact 경로는 ORIG_ROOT-상대로 기록:** episode artifact를 `.claude/worktrees/<slug>/…` 형태(ORIG_ROOT 기준 상대)로 기록해야 `episode.mjs` containment(절대경로·`..` 금지)를 통과한다. worktree가 root 밑에 있어야 이 경로가 성립한다.
-- **worktree 기록 경로 규율(FIX A/FIX N):** git worktree **생성**은 `<canonical_project_root>/.claude/worktrees/<slug>` 절대경로로 하되(git은 절대경로 필요), `workstream new`에 **기록**하는 worktree 값은 반드시 루트-상대(root-relative) 형태 `.claude/worktrees/<slug>` (또는 `.worktrees/<slug>`)여야 한다. native EnterWorktree 경로도 동일 — 캡처한 절대 경로를 canonical root 기준으로 잘라 루트-상대로 변환한 뒤 기록. 이유: artifact 경로는 `<recorded-worktree>/<artifact>`로 도출되는데, 기록된 worktree가 절대 경로이면 artifact prefix도 절대 경로가 되어 `episode.mjs` containment(`절대경로·.. 금지`)를 통과하지 못한다.
+- **artifact 경로는 ORIG_ROOT-상대로 기록:** episode artifact를 `.worktrees/<slug>/…` 형태(ORIG_ROOT 기준 상대)로 기록해야 `episode.mjs` containment(절대경로·`..` 금지)를 통과한다. worktree가 root 밑에 있어야 이 경로가 성립한다.
+- **worktree 기록 경로 규율(FIX A/FIX N):** git worktree **생성**은 `<canonical_project_root>/.worktrees/<slug>` 절대경로로 하되(git은 절대경로 필요), `workstream new`에 **기록**하는 worktree 값은 반드시 루트-상대(root-relative) 형태 `.worktrees/<slug>`여야 한다. Step 0 재사용으로 캡처한 레거시 경로는 prefix를 변환하지 않고 그대로 기록한다. 이유: artifact 경로는 `<recorded-worktree>/<artifact>`로 도출되는데, 기록된 worktree가 절대 경로이면 artifact prefix도 절대 경로가 되어 `episode.mjs` containment(`절대경로·.. 금지`)를 통과하지 못한다. 커널은 `.claude/worktrees/<slug>` 기록도 받는다.
 
 #### Step 1.5 — create↔record 정합 (고아 방지)
 
@@ -234,9 +233,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease check --owner <owner_run_id> -
 
 **(c) record 실패 시 proposal-only 정리:** `workstream new` 실패 시 "worktree `<path>` 고아(orphan) — 정리(`ExitWorktree`/`git worktree remove`) 제안"을 surface(proposal-only, 자동 삭제 ❌).
 
-**(d) reconcile audit(unattended 보강):** respawn/finish 시 `<canonical_project_root>/.claude/worktrees/`(및 폴백 `.worktrees/`) 밑의 실제 디렉터리 중 active workstream에 매핑되지 않는 것을 고아 후보로 surface(proposal-only 정리 제안). root-밖 native 고아는 Step 1a①②가 처음부터 안 만드므로 audit 대상 아님. **매핑 여부와 무관하게** 각 worktree의 `package.json`이 존재하나 JSON parse 불가면 해당 worktree를 정리 대상 후보로 surface하고 정리를 **제안**한다(proposal-only — 서드파티 preload 환경에서 모든 node hook 기동을 죽이는 E1-클래스 크래시 신호).
+**(d) reconcile audit(unattended 보강):** respawn/finish 시 `<canonical_project_root>/.worktrees/`(및 레거시 `.claude/worktrees/`) 밑의 실제 디렉터리 중 active workstream에 매핑되지 않는 것을 고아 후보로 surface(proposal-only 정리 제안). 기록에 없는 외래 디렉터리도 후보만이며 자동 삭제하지 않는다. root-밖 native 고아는 Step 1a①②가 처음부터 안 만드므로 audit 대상 아님. **매핑 여부와 무관하게** 각 worktree의 `package.json`이 존재하나 JSON parse 불가면 해당 worktree를 정리 대상 후보로 surface하고 정리를 **제안**한다(proposal-only — 서드파티 preload 환경에서 모든 node hook 기동을 죽이는 E1-클래스 크래시 신호).
 
-**(e) 잔여 TOCTOU:** `lease check`와 `workstream new`의 `requireLease` 사이에 좁은 TOCTOU가 남는다. 고아는 gitignored `.claude/worktrees/` 밑이므로 repo를 오염시키지 않으며 (d) audit으로 발견된다.
+**(e) 잔여 TOCTOU:** `lease check`와 `workstream new`의 `requireLease` 사이에 좁은 TOCTOU가 남는다. 고아는 gitignored `.worktrees/`(및 레거시 `.claude/worktrees/`) 밑이므로 repo를 오염시키지 않으며 (d) audit으로 발견된다.
 
 **(f) 커널 2-phase는 명시적 후속:** 고아 원천 차단은 커널 2-phase 예약이 필요(v1 비-스코프 — 스코프 상향 시 TDD 동반).
 
@@ -244,35 +243,34 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease check --owner <owner_run_id> -
 
 캡처한 실제 값으로 기록한다. descriptor-bound root/run과 lease fence를 모두 명시한다.
 
-**`--worktree`는 반드시 루트-상대(root-relative) 경로**로 기록한다 — git이 `<canonical_project_root>/.claude/worktrees/<slug>` 절대경로로 생성하더라도 기록 값은 `.claude/worktrees/<slug>` 형태다:
+**`--worktree`는 반드시 루트-상대(root-relative) 경로**로 기록한다 — git이 `<canonical_project_root>/.worktrees/<slug>` 절대경로로 생성하더라도 기록 값은 `.worktrees/<slug>` 형태다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".worktrees/<ws-slug>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 의존 관계가 있으면 다음 완전한 명령을 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --depends-on '["ws-id-1"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".worktrees/<ws-slug>" --depends-on '["ws-id-1"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 #### 결정표
 
 | 상황 | 동작 |
 |------|------|
-| 단일 run · 이미 격리 · 적격(clean·base·소유)+사용자 확인 | 현재 worktree 재사용 |
+| 단일 run · 이미 격리 · 적격(clean·base·소유)+사용자 확인 | 현재 worktree 재사용 (컨벤션 prefix를 rewrite하지 않는다) |
 | 단일 run · 이미 격리 · 부적격/미확인 | 재사용 ❌ → git(Step 1b) 또는 human 중단 |
-| 단일 run · 비격리 · native 있음 · claude/codex | `EnterWorktree` native 생성(Step 1a) |
+| 단일 run · 비격리 · 모든 runtime | git(Step 1b) `.worktrees/<slug>` |
 | `--runtime grok` · 모든 ws | 항상 git(Step 1b). grok never Step 1a. never grok `--worktree` |
-| 단일 run · 비격리 · native 없음 | git 컨벤션 경로(Step 1b) |
-| 다중 run · 모든 ws | 전부 git(Step 1b): 생성 `<canonical_project_root>/.claude/worktrees/<slug>` — 기록 `.claude/worktrees/<slug>` (루트-상대, native 미사용) |
+| 다중 run · 모든 ws | 전부 git(Step 1b): 생성 `<canonical_project_root>/.worktrees/<slug>` — 기록 `.worktrees/<slug>` (루트-상대, native 미사용) |
 | gitignore 미설정 | proposal-only 제안 — 승인 시에만 진행, 자동 커밋 ❌ |
 | native가 root 밖에 생성 | fail-closed STOP(needs-human) |
 
 ### 2-7. 첫 번째 Episode 생성
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".worktrees/<ws-slug>/expected-output.md"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 `--artifacts`는 필수다 — maker `done` 전이는 비어있지 않은 `expected_artifacts`와 실제 파일 존재를 요구한다.

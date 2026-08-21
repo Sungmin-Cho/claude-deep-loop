@@ -163,7 +163,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuat
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" path resolve --target workstream --workstream <workstream_id> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-반환된 한 줄의 절대 경로를 그대로 사용한다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 도구의 working-directory 옵션에 전달한다. 이후 커널 명령도 descriptor-bound `--project-root`와 `--run-id`를 계속 명시한다.
+반환된 한 줄의 절대 경로를 그대로 사용한다. 기본 진입은 그 경로를 도구의 working-directory 옵션에 전달하거나 cd 한다. native attach(`EnterWorktree` 등)는 도구가 그 절대 경로에 attach하고 새 sibling을 만들지 않는다고 보장될 때만 쓴다. 기록값이 `.worktrees/` 아래이면 Claude `EnterWorktree`를 생성 수단으로 호출하지 않는다. 이후 커널 명령도 descriptor-bound `--project-root`와 `--run-id`를 계속 명시한다.
 
 Artifact 상세 교정 규칙은 `deep-loop-workflow`의 `## 핵심 불변식`을 따른다.
 
@@ -225,7 +225,7 @@ inline owner 세션은 모델을 바꾸지 않고, freeze는 다음 handoff/resp
 
 완료 후:
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --status done --artifacts '[".claude/worktrees/<ws-slug>/path/to/artifact"]' --proof '{}' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --status done --artifacts '[".worktrees/<ws-slug>/path/to/artifact"]' --proof '{}' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ### dispatch_checker
@@ -272,7 +272,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_poin
 - **Route C — interactive independent skill session:** reviewed worktree를 root로 하는 distinct fresh session/task가 실제 준비됐을 때만 flag 없는 위 dispatch를 실행한다. Claude fresh session은 `Skill({ skill: checker.skill, args: checker.args })`, Codex fresh task는 `$<checker.skill>`에 args를 전달한다. Codex 자동 task 생성은 지원하지 않으므로 사람이 수동 task 생성을 완료해야 한다. 같은 task의 `$<checker.skill>` 실행은 proof가 아니다.
 - **Route D — no independent path:** `needs-human`으로 보고하고 dispatch/record/proof 생성을 모두 중단한다. pending checker를 만들지 않는다.
 
-Route A 또는 Route C의 fresh checker가 리뷰 대상 worktree 아래 실제 contained report를 반환한 경우에만 원래 execution session이 다음 단계로 간다. 커널은 checker episode에서 workstream/point/target maker/source를 파생하므로 해당 caller flag를 전달하지 않는다. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — 리뷰 대상 workstream의 worktree(`.claude/worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`(exit 1). REQUEST_CHANGES도 fresh checker가 실제 반환한 verdict여야 한다:
+Route A 또는 Route C의 fresh checker가 리뷰 대상 worktree 아래 실제 contained report를 반환한 경우에만 원래 execution session이 다음 단계로 간다. 커널은 checker episode에서 workstream/point/target maker/source를 파생하므로 해당 caller flag를 전달하지 않는다. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — 리뷰 대상 workstream의 worktree(`.worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`(exit 1). REQUEST_CHANGES도 fresh checker가 실제 반환한 verdict여야 한다:
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review record --episode <checker_episode_id> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --report "<review-report-path>" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
@@ -285,7 +285,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review record --episode <checker_epi
 없이 기록하고 session_profile로 degrade한다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 생성 직후, 거절된 maker의 freeze가 있으면:

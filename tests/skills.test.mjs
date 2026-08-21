@@ -311,13 +311,27 @@ test('tracked user command inventories expose every user skill on both hosts', (
 // Task 4: deep-loop §2-6 worktree creation discipline
 const dlSkill = () => _rf(skillPath('deep-loop'), 'utf8');
 
-test('deep-loop §2-6: native-first + git-fallback + convention path + single/multi split', () => {
+test('deep-loop §2-6: git-first preferred .worktrees path; native is not the creator', () => {
   const s = dlSkill();
-  assert.match(s, /EnterWorktree/, 'native example');
-  assert.match(s, /git worktree add/, 'git fallback');
-  assert.match(s, /\.claude\/worktrees\//, 'convention path');
-  assert.match(s, /단일[\s\S]{0,80}native/, 'single-run native');
-  assert.match(s, /다중[\s\S]{0,120}(git|전부 git|모든)/, 'multi-run git');
+  const joined = s.replace(/\\\n\s*/g, ' ');
+  assert.match(s, /EnterWorktree/, 'native token remains for entry/legacy');
+  assert.match(s, /git worktree add/, 'git creation');
+  assert.match(s, /\.worktrees\//, 'preferred path');
+  const addLines = joined.split('\n').filter((l) => /\bgit\b[^\n]*\bworktree\s+add\b/.test(l));
+  assert.ok(addLines.length > 0, 'git worktree add command line');
+  for (const addLine of addLines) {
+    assert.match(
+      addLine,
+      /(?:\$\{?ORIG_ROOT\}?|<canonical_project_root>)\/\.worktrees\//,
+      'every create is under canonical .worktrees/',
+    );
+    assert.doesNotMatch(addLine, /\.claude\/worktrees\//, 'creation command is not .claude/worktrees/');
+  }
+  const table = s.match(/#### 결정표([\s\S]*?)(?:\n### |\n## |$)/)?.[1] || '';
+  assert.ok(table.length > 0, 'decision table must extract');
+  assert.match(table, /비격리/);
+  assert.match(table, /git\(Step 1b\)/);
+  assert.doesNotMatch(table, /EnterWorktree/);
 });
 
 test('deep-loop §2-6: detection-first + reuse eligibility gate', () => {
@@ -334,6 +348,13 @@ test('deep-loop §2-6: gitignore proposal-only + check-ignore precedes add', () 
   const autoCommit = s.split('\n').some(l => /gitignore/i.test(l) && /\bgit\s+commit\b/.test(l));
   assert.ok(!autoCommit, 'no auto-commit .gitignore');
   assert.match(s, /proposal-only|제안|승인 시에만/, 'gitignore proposal-only');
+  assert.match(
+    s,
+    /git\s+-C\s+"<canonical_project_root>"\s+check-ignore\s+-q\s+--\s+\.worktrees\//,
+    'ignore probe is canonical-root anchored',
+  );
+  assert.doesNotMatch(s, /git check-ignore -q \.worktrees\//);
+  assert.doesNotMatch(s, /git check-ignore -q \.claude\/worktrees\//);
 });
 
 test('deep-loop §2-6: worktree creation never escapes root + post-init mutations pin root/run', () => {
@@ -690,22 +711,68 @@ test('workflow core alone explains adapter artifact transformation and kernel co
 
 // FIX N: workstream new --worktree must record root-relative path, not $ORIG_ROOT absolute.
 // git worktree add uses $ORIG_ROOT absolute (correct — git needs an absolute target); but the
-// value RECORDED via workstream new must be root-relative (.claude/worktrees/<slug>) so that
+// value RECORDED via workstream new must be root-relative (.worktrees/<slug>) so that
 // artifact prefixes are root-relative and pass episode.mjs containment (no absolute/.. paths).
-test('deep-loop §2-6: workstream new records root-relative .claude/worktrees/<slug> (not $ORIG_ROOT absolute)', () => {
+test('deep-loop §2-6: workstream new records root-relative .worktrees/<slug> (not $ORIG_ROOT absolute)', () => {
   const s = dlSkill();
   const joined = s.replace(/\\\n\s*/g, ' ');
-  // workstream new and --worktree must appear on the same logical line after joining continuations
-  const wsNewLine = joined.split('\n').find(l => /workstream\s+new/.test(l) && /--worktree/.test(l));
+  const wsNewLine = joined.split('\n').find((l) => /workstream\s+new/.test(l) && /--worktree/.test(l));
   assert.ok(wsNewLine, 'workstream new --worktree must appear in a joined logical command line');
   assert.ok(
-    /--worktree\s+"?\.claude\/worktrees\//.test(wsNewLine),
-    'workstream new --worktree must record root-relative .claude/worktrees/<slug> path (not $ORIG_ROOT absolute)'
+    /--worktree\s+"?\.worktrees\//.test(wsNewLine),
+    'workstream new --worktree must record root-relative .worktrees/<slug>',
   );
   assert.ok(
     !/--worktree\s+"?\$\{?ORIG_ROOT\}?\//.test(wsNewLine),
-    'workstream new --worktree must NOT use $ORIG_ROOT absolute path for the recorded value'
+    'workstream new --worktree must NOT use $ORIG_ROOT absolute path for the recorded value',
   );
+});
+
+test('deep-loop-continue §1.5: default entry is working-directory/cd; no EnterWorktree create for .worktrees', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  const section = cont.match(/## 1\.5\. Action-keyed Worktree 진입([\s\S]*?)## 2\./)?.[1] || '';
+  assert.ok(section.length > 0, 'continue §1.5 must extract');
+  assert.match(section, /working-directory|cd/);
+  assert.match(section, /\.worktrees\//);
+  assert.match(section, /절대 경로에 attach|새 sibling을 만들지 않/);
+  assert.match(section, /EnterWorktree/);
+  assert.doesNotMatch(
+    section,
+    /native attach 도구\(`EnterWorktree` 등\)가 있으면 그것으로 진입/,
+    'unconditional native attach is the old text',
+  );
+  assert.match(section, /EnterWorktree.*생성 수단으로 호출하지 않는다|생성 수단으로 호출하지 않는다/);
+});
+
+test('deep-loop-finish audit scans both convention dirs with .worktrees first', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  const audit = s.split('\n').find((l) => /reconcile audit|고아/.test(l) && /\.worktrees/.test(l));
+  assert.ok(audit, 'finish audit line names .worktrees');
+  assert.ok(audit.indexOf('.worktrees/') !== -1);
+  assert.ok(audit.indexOf('.claude/worktrees/') !== -1);
+  assert.ok(audit.indexOf('.worktrees/') < audit.indexOf('.claude/worktrees/'));
+});
+
+test('deep-loop §2-6 reconcile audit scans both convention dirs', () => {
+  const s = dlSkill();
+  const audit = s.split('\n').find((l) => /reconcile audit|고아/.test(l) && /\.worktrees/.test(l)) || '';
+  assert.ok(audit.length > 0, 'entry skill audit line names .worktrees');
+  assert.ok(audit.indexOf('.claude/worktrees/') !== -1);
+  assert.ok(audit.indexOf('.worktrees/') < audit.indexOf('.claude/worktrees/'));
+});
+
+test('deep-loop §2-6 Step 0 reuse keeps captured convention prefix', () => {
+  const s = dlSkill();
+  const step0 = s.match(/#### Step 0[\s\S]*?(?=#### Step 1)/)?.[0];
+  assert.ok(step0, 'Step 0 section must extract');
+  assert.match(step0, /재사용/);
+  assert.match(step0, /컨벤션 prefix를 rewrite하지 않는다|prefix를 변환하지 않/);
+  assert.doesNotMatch(step0, /\.claude\/worktrees\/<[^>]+>.*\.worktrees\//);
+});
+
+test('this repo gitignores .worktrees/', () => {
+  const gi = _rf(join(ROOT, '.gitignore'), 'utf8');
+  assert.match(gi, /^\.worktrees\/\s*$/m);
 });
 
 // FIX O replacement: manual project.root decoding is absent from path sections.
