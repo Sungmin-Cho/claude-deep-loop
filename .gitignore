@@ -6,6 +6,7 @@
 # whole .claude/ — hook input capture (.claude/.hook-tool-input.<pid>: transcript path / permission_mode /
 # personal paths+email) and .claude/.sensor-detection-cache.json are untracked-but-not-ignored otherwise (#6).
 .claude/
+.worktrees/
 node_modules/
 package-lock.json
 /evals/results/**
