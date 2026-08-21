@@ -635,6 +635,17 @@ test('handoff-respawn resume contract uses descriptor root/run/runtime and exact
 });
 
 // FIX D retarget: continuation keeps canonical examples and points to the single workflow-core rule.
+test('review-report containment binds to the recorded worktree, not a hardcoded preferred prefix', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  const adapters = _rf(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'adapters.md'), 'utf8');
+  for (const [name, src] of [['continue', cont], ['adapters', adapters]]) {
+    assert.match(src, /기록된 worktree|<recorded-worktree>/, `${name} names the recorded worktree for report containment`);
+    const rule = src.split('\n').find((l) => /REVIEW_NO_EVIDENCE/.test(l) && /--report/.test(l)) || '';
+    assert.ok(rule.length > 0, `${name} has a --report containment rule`);
+    assert.match(rule, /기록된 worktree|<recorded-worktree>/, `${name} rule is recorded-worktree, not a preferred-prefix literal`);
+  }
+});
+
 test('deep-loop-continue: artifact examples stay prefixed with a concise workflow-core pointer', () => {
   const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
   assert.ok(!cont.includes('"path/to/artifact"'), 'bare "path/to/artifact" must be replaced with worktree-prefixed path');

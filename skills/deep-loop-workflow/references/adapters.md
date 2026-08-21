@@ -108,7 +108,7 @@ Grok Build 호스트는 Route D만 사용한다. 이 대화에서 `review dispat
 
 Route A 또는 Route C에서 실제 contained report가 원래 execution session으로 돌아온 경우에만 이 단계를 수행한다. Route B는 host import가 소유하고 Route D는 proof가 없으므로 이 명령을 실행하지 않는다.
 
-APPROVE/CONCERN(통과)은 실재하는 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — **리뷰 대상 workstream의 worktree(`.worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`. 커널이 checker episode에서 workstream/point/target maker/source를 파생하고 리포트 경로+content hash를 event-log에 남기므로 caller는 해당 메타데이터 flag를 전달하지 않는다. REQUEST_CHANGES도 fresh checker가 반환한 실제 verdict여야 한다:
+APPROVE/CONCERN(통과)은 실재하는 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — **리뷰 대상 workstream의 기록된 worktree(`<recorded-worktree>/…`, 신규 기본 `.worktrees/<slug>`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`. 커널이 checker episode에서 workstream/point/target maker/source를 파생하고 리포트 경로+content hash를 event-log에 남기므로 caller는 해당 메타데이터 flag를 전달하지 않는다. REQUEST_CHANGES도 fresh checker가 반환한 실제 verdict여야 한다:
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review record --episode <checkerEpisodeId> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --report "<review-report-path>" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
