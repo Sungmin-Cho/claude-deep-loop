@@ -4,7 +4,7 @@
 // documentation-placeholder anchor model) carrying the newer rules from
 // deep-work's copy: the shipped-set index derived from an authority rather than
 // a skip list, malicious-workspace plants derived from that index, the landing
-// `isFile()` filter, and the three-arm workspace-output carve-out.
+// `isFile()` filter, and the four-arm workspace-output carve-out.
 //
 // ANCHOR MODEL — documentation placeholder, deliberately NOT a shell variable.
 //
@@ -830,7 +830,7 @@ const IGNORED_DIRS = (() => {
 
 // Not every gitignored directory is a leak when a document names it. For a
 // plugin's declared OUTPUT root, resolving against the analysed project is the
-// CONTRACT. Three arms, each with a stated authority, and no list of variable
+// CONTRACT. Four arms, each with a stated authority, and no list of variable
 // names:
 //
 // (1) ASK THE CODE — a directory this plugin WRITES into a project is its own
@@ -850,12 +850,17 @@ const IGNORED_DIRS = (() => {
 // (3) ASK THE HOST — a tool's per-project directory. `.claude` is Claude Code's,
 //     `.vscode` and `.idea` are the editors'. None belongs to any plugin, all
 //     live in the analysed project, and a document may correctly name one — this
-//     repo's worktree carve-out puts Execution-plane worktrees under
-//     `<root>/.claude/worktrees/`, which is 26 legitimate references. This arm
+//     repo's worktree carve-out still accepts Execution-plane worktrees under
+//     `<root>/.claude/worktrees/`. This arm
 //     IS a small enumeration and saying so is the point: its growth condition is
 //     known — a new host or editor project directory — and the alternative,
 //     treating anything unproven as a workspace output, is fail-open.
+// (4) ASK THE WORKTREE PARENT — gitignored Execution-plane worktree root.
+//     Preferred creation is `<root>/.worktrees/<slug>`. `.claude/worktrees/` is
+//     already covered by arm (3) via `.claude`. Kernel code does not write this
+//     directory (skills run `git worktree add`), so arm (1) cannot see it.
 const HOST_PROJECT_DIRS = new Set(['.claude', '.vscode', '.idea']);
+const WORKTREE_PARENT_DIRS = new Set(['.worktrees']);
 
 function pluginWrittenDirs(dirs) {
   const WRITE = /(mkdirSync|writeFileSync|appendFileSync|createWriteStream|rmSync|cpSync|renameSync)/;
@@ -885,6 +890,7 @@ const WORKSPACE_OUTPUT_DIRS = new Set([
   ...pluginWrittenDirs(IGNORED_DIRS),
   ...IGNORED_DIRS.filter((d) => d.startsWith('.deep-')),
   ...IGNORED_DIRS.filter((d) => HOST_PROJECT_DIRS.has(d)),
+  ...IGNORED_DIRS.filter((d) => WORKTREE_PARENT_DIRS.has(d)),
 ]);
 const MAINTAINER_ONLY_DIRS = IGNORED_DIRS
   .filter((d) => !WORKSPACE_OUTPUT_DIRS.has(d) && d !== 'node_modules');
@@ -957,8 +963,8 @@ test('the workspace-output split is derived from the convention, and is two-way'
   // both directions rather than only where it happens to matter today.
   assert.ok(IGNORED_DIRS.length > 0, '.gitignore yielded no ignored directories');
   assert.deepEqual([...WORKSPACE_OUTPUT_DIRS].sort(),
-    ['.claude', '.deep-loop', '.deep-memory', '.deep-review'],
-    'the three arms must classify exactly this repo\'s output roots');
+    ['.claude', '.deep-loop', '.deep-memory', '.deep-review', '.worktrees'],
+    'the four arms must classify exactly this repo\'s output roots');
   assert.deepEqual(MAINTAINER_ONLY_DIRS.sort(), ['.superpowers', 'docs'],
     'and everything else gitignored must stay maintainer-only');
   for (const dir of MAINTAINER_ONLY_DIRS) {
