@@ -142,7 +142,8 @@ Enforced by code and by review. Each is load-bearing; none is a summary of anoth
    exception is best-effort and non-blocking.
    **Worktree carve-out:** Execution-plane worktree creation is allowed **only** under
    `<root>/.claude/worktrees/` (or `.worktrees/`) — project-root-internal and
-   gitignored. Root escape is forbidden, enforced by kernel `newWorkstream`
+   gitignored. Execution-plane preferred creation is `<root>/.worktrees/<slug>`. Kernel `newWorkstream` still accepts `<root>/.claude/worktrees/` as well.
+   Root escape is forbidden, enforced by kernel `newWorkstream`
    containment. `.gitignore` changes and worktree removal are proposal-only, and an
    orphan audit is required before removal. `runId` must be a single safe path segment.
 8. **Circuit breaker latches** — human reset via lease-fenced `breaker reset --confirm`.

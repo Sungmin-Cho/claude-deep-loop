@@ -5,6 +5,27 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.21.0] — 2026-08-21
+
+### Changed
+
+- **Preferred Execution-plane worktree path is `.worktrees/`.** New worktrees are
+  created at `<canonical_project_root>/.worktrees/<slug>` and recorded as
+  `.worktrees/<slug>`. Native `EnterWorktree` is not the default creator; all
+  non-isolated new creation (single and multi, claude/codex/grok) uses git
+  Step 1b. Continue enters a kernel-resolved absolute path via
+  working-directory/`cd`; Claude `EnterWorktree` is not used as a creator for a
+  `.worktrees/` record. Kernel `newWorkstream` still accepts
+  `<root>/.claude/worktrees/` as a legacy/host path. The kernel allowlist,
+  containment, `findRoot`, and compact-hook implementations are unchanged.
+- Consumer repos that ignore only `.claude/worktrees/` may be re-prompted
+  (proposal-only) to ignore `.worktrees/`. This plugin repo gitignores
+  `.worktrees/` as a durable scratch parent.
+- **Evals profile** `deep-loop-current-v1.20` is replaced by `v1.21`, in lockstep
+  with the plugin minor as `loadFixtureProfile` derives the expected id from it.
+  The durable schema stays `0.4.0` — this release does not touch the kernel.
+  Deep-suite re-pin is proposal-only.
+
 ## [1.20.0] — 2026-08-19
 
 ### Added

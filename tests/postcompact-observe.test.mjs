@@ -32,6 +32,7 @@ function seed(runtime = 'claude', {
   root = realpathSync(mkdtempSync(join(tmpdir(), `dl-postcompact-${runtime}-`))),
   label = runtime,
   now = '2026-08-05T00:00:00.000Z',
+  worktree,
 } = {}) {
   const { runId } = initRun(root, {
     runtime,
@@ -39,13 +40,13 @@ function seed(runtime = 'claude', {
     now: new Date(now),
   });
   const fence = { owner: runId, generation: 1 };
-  const worktree = `.claude/worktrees/postcompact-${label}`;
-  const containedCwd = join(root, worktree, 'src');
+  const resolvedWorktree = worktree ?? `.claude/worktrees/postcompact-${label}`;
+  const containedCwd = join(root, resolvedWorktree, 'src');
   mkdirSync(containedCwd, { recursive: true });
   const workstreamId = newWorkstream(root, runId, {
     title: `postcompact-${label}`,
     branch: `feature/postcompact-${label}`,
-    worktree,
+    worktree: resolvedWorktree,
     fence,
   }).id;
   setWorkstreamStatus(root, runId, workstreamId, 'in_progress', { fence });
@@ -103,6 +104,33 @@ test('PostCompact resolves a unique cwd-bound run and fails closed on project-wi
     reason: 'observation-unavailable',
   });
   assert.equal(calls.length, 1, 'ambiguous project-wide PostCompact must not spawn');
+});
+
+test('PostCompact resolves a unique cwd-bound run from .worktrees convention', async () => {
+  const first = seed('claude', {
+    label: 'plain-first',
+    worktree: '.worktrees/postcompact-plain-first',
+  });
+  const second = seed('claude', {
+    root: first.root,
+    label: 'plain-second',
+    now: '2026-08-05T00:01:00.000Z',
+    worktree: '.worktrees/postcompact-plain-second',
+  });
+  const { runPostCompactObserve } = await loadAdapter();
+  const calls = [];
+  const spawnSyncImpl = (bin, argv, options) => {
+    calls.push({ bin, argv, options });
+    return { status: 0, signal: null, error: undefined };
+  };
+  const bound = runPostCompactObserve({
+    cwd: first.containedCwd,
+    hook_event_name: 'PostCompact',
+    trigger: 'auto',
+  }, { spawnSyncImpl, expectedRoot: first.root });
+  assert.deepEqual(bound, { ok: true, action: 'observed' });
+  assert.equal(calls[0].argv.at(-1), first.runId);
+  assert.equal(calls[0].argv.includes(second.runId), false);
 });
 
 test('PostCompact fails closed when a cwd-bound run is corrupt instead of observing another active run', async () => {
